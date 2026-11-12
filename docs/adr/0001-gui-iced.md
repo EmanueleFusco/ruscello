@@ -28,10 +28,10 @@ permissive MIT license). Confirmed with the project owner.
     Vulkan / OpenGL 3D swapchain (`wgpu`) causes the NVIDIA driver to classify the desktop app as a 3D game (triggering
     the NVIDIA App overlay popup, hooking G-SYNC to an event-driven variable-FPS window, causing OLED VRR gamma
     flickering, and inducing DWM desktop stutter).
-  - Therefore, `ruscello-gui` must compile `iced` with **both** `tiny-skia` (CPU 2D software renderer) and `wgpu`
-    enabled, and expose a user-selectable **UI Renderer** setting in *Settings → General / Advanced*:
-    - **`Software 2D (tiny-skia)` (Default):** set `ICED_BACKEND=tiny-skia` in `main()` before initializing `iced`.
-      Never initializes a DX12/Vulkan/OpenGL 3D swapchain, completely preventing NVIDIA App game detection, G-SYNC
-      OLED flickering, and DWM lag, while saving ~40–60 MB of RAM/VRAM.
-    - **`Hardware GPU (wgpu)` (Optional):** sets `ICED_BACKEND=wgpu` (with low-power adapter preference and VSync FIFO
-      presentation mode) for users who explicitly want GPU rasterization.
+  - Therefore, `ruscello-gui` must compile `iced` with **both** `wgpu` (GPU hardware renderer) and `tiny-skia` (CPU 2D
+    software renderer) enabled, and expose a user-selectable **UI Renderer** setting in *Settings → General / Advanced*:
+    - **`Hardware GPU (wgpu)` (Default):** standard `iced` hardware-accelerated renderer (using VSync FIFO presentation
+      mode).
+    - **`Software 2D (tiny-skia)` (Compatibility / G-SYNC & OLED mode):** sets `ICED_BACKEND=tiny-skia` in `main()`
+      before initializing `iced`. Never initializes a DX12/Vulkan/OpenGL 3D swapchain, completely preventing NVIDIA App
+      game detection, G-SYNC OLED flickering, and DWM lag on affected configurations.

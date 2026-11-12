@@ -186,7 +186,7 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [ ] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
       copy link, priority, reorder; multi-selection; keyboard shortcuts.
 - [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
-      **UI Renderer selector: `tiny-skia` Software 2D [default, G-SYNC/OLED safe] vs `wgpu` Hardware GPU**, see ADR-0001),
+      **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations (browser, `yt-dlp`/`ffmpeg`), Advanced.
 - [ ] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets to the running instance).

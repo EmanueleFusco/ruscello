@@ -119,7 +119,7 @@ expect_download = true      # response is the file → direct link
 
 | Area | Crates |
 |------|--------|
-| GUI | `iced` (features: `tiny-skia` [default at runtime], `wgpu` [optional in Settings], `tokio`, `advanced`, `image`, `svg` — see ADR-0001), `iced_test`, `tray-icon`, `notify-rust`, `rfd` (file dialogs) |
+| GUI | `iced` (features: `wgpu` [default], `tiny-skia` [selectable in Settings for G-SYNC/OLED setups], `tokio`, `advanced`, `image`, `svg` — see ADR-0001), `iced_test`, `tray-icon`, `notify-rust`, `rfd` (file dialogs) |
 | Async | `tokio`, `tokio-util`, `futures` |
 | HTTP | `reqwest` (`rustls`, `http2`, `stream`, `cookies`, `gzip`/`brotli` for HTML pages only), `hyper`, `url`, `cookie_store` |
 | FTP | `suppaftp` |
