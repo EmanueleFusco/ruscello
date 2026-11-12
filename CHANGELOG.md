@@ -25,6 +25,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
   reconciliation with HTTP checkpoints after restart or database corruption.
 - M2.3–M2.4: Persistent queue scheduling with priority, manual ordering, force start, retry and connection limits,
   automatic startup resume, and an asynchronous engine handle with aggregated progress events.
+- M2.5–M2.6: Automatic file types, configurable category rules and limits, a separate temporary directory option,
+  and checkpoint-preserving pauses when available disk space is low.
 
 ### Changed
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.

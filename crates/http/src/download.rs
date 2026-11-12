@@ -37,6 +37,11 @@ const RAMP_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_CHUNK_BYTES: usize = 128 * 1024;
 const MAX_RESTARTS: usize = 3;
 
+/// Synchronous preflight executed on a blocking worker after probing and before opening the writer.
+pub trait DownloadPreparation: std::fmt::Debug + Send + Sync {
+    fn prepare(&self, metadata: &Probe) -> Result<(), WriterError>;
+}
+
 /// Settings for one HTTP download.
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
@@ -53,6 +58,7 @@ pub struct DownloadOptions {
     pub checkpoint_job: Option<CheckpointJob>,
     /// Optional staging directory on the same volume as the partial file.
     pub completion_directory: Option<PathBuf>,
+    pub preparation: Option<Arc<dyn DownloadPreparation>>,
 }
 
 impl Default for DownloadOptions {
@@ -70,6 +76,7 @@ impl Default for DownloadOptions {
             expected_checksum: None,
             checkpoint_job: None,
             completion_directory: None,
+            preparation: None,
         }
     }
 }
@@ -214,6 +221,15 @@ impl HttpDownloader {
             () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
             result = self.transport.probe(current) => result?,
         };
+        if let Some(preparation) = options.preparation.clone() {
+            let metadata = data.clone();
+            tokio::task::spawn_blocking(move || preparation.prepare(&metadata))
+                .await
+                .map_err(|_| HttpError::WorkerStopped)??;
+        }
+        if options.cancellation.is_cancelled() {
+            return Err(HttpError::Cancelled);
+        }
         let limits = TransferLimits {
             global: self.global_bandwidth.clone(),
             local: options.bandwidth.clone(),

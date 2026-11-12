@@ -16,7 +16,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AddDownload, EngineError, EngineEvent, EngineLog, EngineSnapshot, Limits, ProgressUpdate,
+    AddDownload, CategorySettings, DiskPolicy, EngineError, EngineEvent, EngineLog, EngineOptions,
+    EngineSnapshot, Limits, ProgressUpdate,
+    categories::CategoryBook,
     handle::{Command, LIMITS_KEY, Reply, Update},
     transfer::{self, Published, TransferError, source_url},
 };
@@ -28,6 +30,9 @@ pub(super) struct Scheduler {
     storage: Storage,
     recovery: DatabaseRecovery,
     destination: PathBuf,
+    temporary_directory: Option<PathBuf>,
+    disk: DiskPolicy,
+    categories: CategoryBook,
     limits: Limits,
     events: broadcast::Sender<EngineEvent>,
     hosts: HostConnections,
@@ -57,17 +62,21 @@ impl Scheduler {
         storage: Storage,
         queue: Vec<QueueEntry>,
         recovery: DatabaseRecovery,
-        destination: PathBuf,
-        limits: Limits,
+        options: EngineOptions,
+        categories: CategoryBook,
         events: broadcast::Sender<EngineEvent>,
     ) -> Result<Self, EngineError> {
+        let limits = options.limits;
         let hosts = HostConnections::new(limits.connections_per_host);
         let http = HttpDownloader::with_host_connections(hosts.clone())?;
         http.global_bandwidth().set_rate(limits.bandwidth);
         Ok(Self {
             storage,
             recovery,
-            destination,
+            destination: options.destination,
+            temporary_directory: options.temporary_directory,
+            disk: options.disk,
+            categories,
             limits,
             events,
             hosts,
@@ -159,6 +168,7 @@ impl Scheduler {
                     downloads,
                     limits: self.limits,
                     recovery: self.recovery,
+                    categories: self.categories.settings(),
                 }));
             }
             Command::Shutdown(_) => {}
@@ -177,16 +187,27 @@ impl Scheduler {
         for (offset, request) in requests.into_iter().enumerate() {
             let url = source_url(&request.source)?;
             let id = self.allocate_id(&mut ids)?;
+            let category = self.categories.assign(
+                request.category,
+                request.source.kind(),
+                &url,
+                request.filename_hint.as_deref(),
+            )?;
             let destination = request
                 .destination
                 .as_deref()
                 .map(std::path::absolute)
                 .transpose()?
+                .or_else(|| category.and_then(|policy| policy.category.destination.clone()))
                 .unwrap_or_else(|| self.destination.clone());
-            let working_directory = transfer::working_directory(&destination, id);
+            let working_directory = transfer::working_directory(
+                self.temporary_directory.as_deref().unwrap_or(&destination),
+                id,
+            );
             let mut download = Download::new(id, Source::Http { url: url.into() }, destination);
             download.package = request.package;
-            download.category = request.category;
+            download.category = category.map(|policy| policy.category.id);
+            download.filename = request.filename_hint;
             download.tags = request.tags;
             download.priority = request.priority;
             if !request.start_immediately {
@@ -260,8 +281,36 @@ impl Scheduler {
                 self.emit(EngineEvent::QueueChanged);
                 Ok(())
             }
+            Update::Categories(settings) => self.set_categories(settings).await,
             Update::Pause(_) | Update::Cancel(_, _) => Err(EngineError::Stopped),
         }
+    }
+
+    async fn set_categories(&mut self, settings: CategorySettings) -> Result<(), EngineError> {
+        let mut categories =
+            tokio::task::spawn_blocking(move || CategoryBook::new(settings)).await??;
+        let mut changes = categories.changes(Some(&self.categories))?;
+        let mut uncategorized = Vec::new();
+        for entry in self.queue.values() {
+            if entry
+                .download
+                .category
+                .is_some_and(|id| categories.get(id).is_none())
+            {
+                let mut entry = entry.clone();
+                entry.download.category = None;
+                changes.push(save_entry(&entry));
+                uncategorized.push(entry);
+            }
+        }
+        self.storage.apply(changes).await?;
+        categories.reuse_buckets(&mut self.categories);
+        self.categories = categories;
+        for entry in uncategorized {
+            self.record(entry);
+        }
+        self.emit(EngineEvent::QueueChanged);
+        Ok(())
     }
 
     async fn resume(&mut self, id: DownloadId) -> Result<(), EngineError> {
@@ -345,8 +394,12 @@ impl Scheduler {
             )
         });
         let mut host_load = BTreeMap::<String, usize>::new();
-        for active in self.active.values() {
+        let mut category_load = BTreeMap::new();
+        for (id, active) in &self.active {
             *host_load.entry(active.host.clone()).or_default() += 1;
+            if let Some(category) = self.queue.get(id).and_then(|entry| entry.download.category) {
+                *category_load.entry(category).or_insert(0) += 1;
+            }
         }
         let mut launches = Vec::new();
         let mut rejected = Vec::new();
@@ -370,6 +423,18 @@ impl Scheduler {
             let running = host_load.entry(host.clone()).or_default();
             if *running >= self.limits.connections_per_host.get() {
                 continue;
+            }
+            if let Some(category) = entry.download.category {
+                let category_running = category_load.entry(category).or_insert(0);
+                if self
+                    .categories
+                    .get(category)
+                    .and_then(|policy| policy.limits.concurrent_downloads)
+                    .is_some_and(|limit| *category_running >= limit.get())
+                {
+                    continue;
+                }
+                *category_running += 1;
             }
             *running += 1;
             let mut entry = entry.clone();
@@ -396,10 +461,14 @@ impl Scheduler {
             let cancellation = CancellationToken::new();
             let (sender, progress) = watch::channel(DownloadProgress::default());
             let task = self.workers.spawn(Box::pin(transfer::run(
-                self.http.clone(),
+                transfer::Context {
+                    http: self.http.clone(),
+                    limits: self.limits,
+                    bandwidth: self.categories.bucket(entry.download.category),
+                    disk: self.disk.clone(),
+                },
                 entry.clone(),
                 url,
-                self.limits,
                 cancellation.clone(),
                 sender,
             )));
@@ -510,8 +579,7 @@ impl Scheduler {
                         }
                     }
                     Err(error) if !error.cancelled() && matches!(stop, Stop::Pause) => {
-                        let reason = error.reason();
-                        self.fail(entry, reason).await
+                        self.transfer_failed(entry, error).await
                     }
                     Err(_) => self.apply_stop(entry, stop).await,
                 };
@@ -526,13 +594,32 @@ impl Scheduler {
                     Err(error) if error.cancelled() && closing => Ok(()),
                     Err(error) => {
                         tracing::debug!(id = id.0, %error, "Download worker failed");
-                        self.fail(entry, error.reason()).await
+                        self.transfer_failed(entry, error).await
                     }
                 };
                 if let Err(error) = result {
                     self.storage_error(Some(id), &error);
                 }
             }
+        }
+    }
+
+    async fn transfer_failed(
+        &mut self,
+        mut entry: QueueEntry,
+        error: TransferError,
+    ) -> Result<(), EngineError> {
+        if error.low_disk() {
+            let id = entry.download.id;
+            entry.download.transition(Status::Paused)?;
+            self.save(entry).await?;
+            self.emit(EngineEvent::Log {
+                id: Some(id),
+                message: EngineLog::DiskSpaceLow,
+            });
+            Ok(())
+        } else {
+            self.fail(entry, error.reason()).await
         }
     }
 
@@ -612,4 +699,5 @@ fn complete_entry(entry: &mut QueueEntry, published: Published) {
     entry.download.completed_path = Some(published.path);
     entry.download.total_bytes = Some(published.bytes);
     entry.download.downloaded_bytes = published.bytes;
+    entry.download.file_type = Some(published.file_type);
 }

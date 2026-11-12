@@ -25,6 +25,37 @@ pub enum Source {
     Hoster { url: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceKind {
+    Http,
+    Torrent,
+    Media,
+    Hoster,
+}
+
+impl Source {
+    pub fn kind(&self) -> SourceKind {
+        match self {
+            Self::Http { .. } => SourceKind::Http,
+            Self::Torrent(_) => SourceKind::Torrent,
+            Self::Media { .. } => SourceKind::Media,
+            Self::Hoster { .. } => SourceKind::Hoster,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileType {
+    Video,
+    Audio,
+    Images,
+    Documents,
+    Archives,
+    Programs,
+    Torrents,
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TorrentSource {
     Magnet(String),
@@ -55,6 +86,47 @@ pub struct Category {
     pub destination: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultCategory {
+    Games,
+    MoviesAndTv,
+    Music,
+    Software,
+    Work,
+}
+
+impl DefaultCategory {
+    pub const ALL: [Self; 5] = [
+        Self::Games,
+        Self::MoviesAndTv,
+        Self::Music,
+        Self::Software,
+        Self::Work,
+    ];
+
+    pub fn id(self) -> CategoryId {
+        CategoryId(i64::MAX as u64 - 4 + self as u64)
+    }
+
+    pub fn english_name(self) -> &'static str {
+        match self {
+            Self::Games => "Games",
+            Self::MoviesAndTv => "Movies & TV",
+            Self::Music => "Music",
+            Self::Software => "Software",
+            Self::Work => "Work",
+        }
+    }
+}
+
+impl Category {
+    pub fn default_kind(&self) -> Option<DefaultCategory> {
+        DefaultCategory::ALL
+            .into_iter()
+            .find(|kind| kind.id() == self.id && kind.english_name() == self.name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Tag(pub String);
@@ -72,6 +144,8 @@ pub struct Download {
     pub total_bytes: Option<u64>,
     pub downloaded_bytes: u64,
     pub completed_path: Option<PathBuf>,
+    #[serde(default)]
+    pub file_type: Option<FileType>,
     status: Status,
 }
 
@@ -89,6 +163,7 @@ impl Download {
             total_bytes: None,
             downloaded_bytes: 0,
             completed_path: None,
+            file_type: None,
             status: Status::Queued,
         }
     }

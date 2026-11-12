@@ -94,6 +94,18 @@ fn reconcile(
         if download.status().is_active() {
             download.transition(Status::Queued)?;
         }
+        if download.status() == Status::Completed && download.file_type.is_none() {
+            let path = download
+                .completed_path
+                .as_deref()
+                .or_else(|| download.filename.as_deref().map(Path::new))
+                .unwrap_or(Path::new(""));
+            download.file_type = Some(super::file_types::detect(
+                path,
+                None,
+                download.source.kind(),
+            ));
+        }
         if download.status() != Status::Completed
             && let Source::Http { url } = &download.source
         {

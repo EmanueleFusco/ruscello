@@ -8,7 +8,7 @@ mod download;
 mod status;
 
 pub use download::{
-    Category, CategoryId, Download, DownloadId, Package, PackageId, Priority, Source, Tag,
-    TorrentSource,
+    Category, CategoryId, DefaultCategory, Download, DownloadId, FileType, Package, PackageId,
+    Priority, Source, SourceKind, Tag, TorrentSource,
 };
 pub use status::{FailureReason, InvalidTransition, Status};
