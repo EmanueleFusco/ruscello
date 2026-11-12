@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Seek},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -9,6 +9,9 @@ use std::{
 use bytes::Bytes;
 use tempfile::TempPath;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+
+use crate::ExpectedChecksum;
 
 mod control;
 mod disk;
@@ -36,6 +39,10 @@ pub enum WriterError {
     NoFilename,
     #[error("another process is writing this download")]
     Busy,
+    #[error("the downloaded file did not match the expected checksum")]
+    ChecksumMismatch,
+    #[error("file verification was cancelled")]
+    Cancelled,
 }
 
 /// Owns a bounded channel to a dedicated file writer. Dropping it leaves the partial file in place.
@@ -138,7 +145,26 @@ impl FileWriter {
 
     /// Syncs and publishes a complete file without overwriting an existing destination.
     pub async fn finish(self) -> Result<PathBuf, WriterError> {
-        self.send(Command::Finish).await
+        self.send(|reply| Command::Finish {
+            verification: None,
+            reply,
+        })
+        .await
+    }
+
+    pub(crate) async fn finish_verified(
+        self,
+        checksum: ExpectedChecksum,
+        cancellation: CancellationToken,
+    ) -> Result<PathBuf, WriterError> {
+        self.send(|reply| Command::Finish {
+            verification: Some(Verification {
+                checksum,
+                cancellation,
+            }),
+            reply,
+        })
+        .await
     }
 
     async fn send<T>(&self, command: impl FnOnce(Reply<T>) -> Command) -> Result<T, WriterError> {
@@ -153,6 +179,11 @@ impl FileWriter {
 
 type Reply<T> = oneshot::Sender<Result<T, WriterError>>;
 
+struct Verification {
+    checksum: ExpectedChecksum,
+    cancellation: CancellationToken,
+}
+
 enum Command {
     Write {
         offset: u64,
@@ -162,7 +193,10 @@ enum Command {
     Sync(Reply<()>),
     Checkpoint(Reply<()>),
     Invalidate(Reply<()>),
-    Finish(Reply<PathBuf>),
+    Finish {
+        verification: Option<Verification>,
+        reply: Reply<PathBuf>,
+    },
 }
 
 struct Worker {
@@ -310,8 +344,11 @@ impl Worker {
                 Command::Sync(reply) => (self.sync(), reply),
                 Command::Checkpoint(reply) => (self.checkpoint(), reply),
                 Command::Invalidate(reply) => (self.invalidate_checkpoint(), reply),
-                Command::Finish(reply) => {
-                    let _ = reply.send(self.finish());
+                Command::Finish {
+                    verification,
+                    reply,
+                } => {
+                    let _ = reply.send(self.finish(verification));
                     return;
                 }
             };
@@ -402,11 +439,28 @@ impl Worker {
         self.checkpoint()
     }
 
-    fn finish(mut self) -> Result<PathBuf, WriterError> {
+    fn finish(mut self, verification: Option<Verification>) -> Result<PathBuf, WriterError> {
         if !self.covered.complete(self.size) {
             return Err(WriterError::Incomplete);
         }
-        self.sync()?;
+        if let Some(verification) = verification {
+            self.checkpoint()?;
+            self.file.rewind()?;
+            let verified = verification
+                .checksum
+                .verify(&mut self.file, &verification.cancellation);
+            if verification.cancellation.is_cancelled() {
+                return Err(WriterError::Cancelled);
+            }
+            if !verified? {
+                self.invalidate_checkpoint()?;
+                tracing::warn!("Download checksum did not match");
+                return Err(WriterError::ChecksumMismatch);
+            }
+            tracing::debug!("Download checksum verified");
+        } else {
+            self.sync()?;
+        }
         let control_path = control::path(&self.partial);
         let mut partial = TempPath::try_from_path(self.partial)?;
         partial.disable_cleanup(true);

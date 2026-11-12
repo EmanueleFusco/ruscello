@@ -132,8 +132,9 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
       (transient / permanent / auth / expired link → requests re-resolve from plugin), network loss detection
       and waiting for connectivity restoration without burning retry attempts.
 - [x] **M1.8 Bandwidth limiter**: global + per-download token bucket, hot-reconfigurable at runtime.
-- [ ] **M1.9 Mirrors**: multiple URLs for the same file (verified by size/hash) → segments distributed across mirrors.
-- [ ] **M1.10 Integrity verification**: optional hash check (MD5/SHA-1/SHA-256/CRC32) supplied by user or plugin.
+- [x] **M1.9 Mirrors**: multiple URLs for the same file → segments distributed across matching-size sources
+      with usable range validators. An expected file checksum is required before combining mirror data.
+- [x] **M1.10 Integrity verification**: optional hash check (MD5/SHA-1/SHA-256/CRC32) supplied by user or plugin.
 - [ ] **M1.11 FTP/FTPS** (`suppaftp` crate) with resume via `REST` — low priority, may slip to M9.
 - [ ] **M1.12 Developer CLI** (`apps/cli`): `ruscello-cli get <url> [-o dir] [-x conns]` to test and benchmark
       the engine without the GUI.

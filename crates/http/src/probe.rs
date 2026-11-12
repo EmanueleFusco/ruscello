@@ -26,6 +26,8 @@ pub enum HttpError {
     RepresentationChanged,
     #[error("download cancelled")]
     Cancelled,
+    #[error("combining mirrors requires an expected checksum")]
+    MirrorChecksumRequired,
     #[error("the response ended before its declared length")]
     Truncated,
     #[error("an HTTP download worker stopped")]
