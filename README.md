@@ -4,7 +4,9 @@
 > crash-safe, resumable, and lightweight. Unites the capabilities of qBittorrent and JDownloader in a single,
 > minimal, professional interface.
 
-**Status:** The M1 HTTP engine is available through the developer CLI. See the [Work Plan & Roadmap](docs/PLAN.md).
+**M2 is complete (`v0.2.0`).** The developer CLI supports direct HTTP downloads. The Rust engine API
+provides a persistent SQLite queue, scheduling, automatic resume, categories, and low-disk-space pauses.
+M3 covers the first desktop GUI. See the [Work Plan & Roadmap](docs/PLAN.md).
 
 ## Key Features
 
