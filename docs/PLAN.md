@@ -117,7 +117,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
   - **connection slow start**: add connections while aggregate throughput grows (> +10%) up to the per-host limit;
     scale back on 429/503 or connection resets;
   - invariants: no overlap, complete coverage, monotonically increasing completed bytes.
-- [ ] **M1.4 Writer**: preallocated `*.rscpart` file (`set_len`; sparse on NTFS when applicable), positional writes
+- [x] **M1.4 Writer**: preallocated `*.rscpart` file (`set_len`; sparse on NTFS when applicable), positional writes
       (`FileExt::seek_write`/`write_at`) from a dedicated writer task with coalescing buffers
       (e.g., 1–4 MiB per segment) to avoid micro-writes; atomic rename to final filename upon completion;
       collision handling (`file (1).ext`) and OS-illegal character sanitization.
