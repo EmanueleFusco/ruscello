@@ -8,8 +8,8 @@ use std::{
 
 use bytes::Bytes;
 use reqwest::{
-    Client, Response, StatusCode, Url,
-    header::{self, HeaderValue},
+    StatusCode, Url,
+    header::{self, HeaderMap, HeaderValue},
 };
 use tokio::{
     sync::{mpsc, watch},
@@ -20,10 +20,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     BandwidthLimit, ConnectionController, Connectivity, DEFAULT_MIN_SEGMENT_SIZE, ErrorClass,
-    ExpectedChecksum, ExpiredLinkResolver, FileWriter, HttpError, Probe, RetryPolicy,
-    SegmentAllocator, Work, WorkId, WriterError, client, probe,
+    ExpectedChecksum, ExpiredLinkResolver, FileWriter, HostConnections, HttpError, Probe,
+    RetryPolicy, SegmentAllocator, Work, WorkId, WriterError,
     probe::{content_range, require_identity},
     retry::{self, RetryState, status_error},
+    transport::{ActiveResponse, Transport},
     writer::{CheckpointJob, Recovery, TransferKey},
 };
 
@@ -50,6 +51,8 @@ pub struct DownloadOptions {
     pub mirrors: Vec<Url>,
     pub expected_checksum: Option<ExpectedChecksum>,
     pub checkpoint_job: Option<CheckpointJob>,
+    /// Optional staging directory on the same volume as the partial file.
+    pub completion_directory: Option<PathBuf>,
 }
 
 impl Default for DownloadOptions {
@@ -66,6 +69,7 @@ impl Default for DownloadOptions {
             mirrors: Vec::new(),
             expected_checksum: None,
             checkpoint_job: None,
+            completion_directory: None,
         }
     }
 }
@@ -105,15 +109,23 @@ pub struct DownloadProgress {
 /// Shares HTTP connections across downloads.
 #[derive(Debug, Clone)]
 pub struct HttpDownloader {
-    client: Client,
+    transport: Transport,
     global_bandwidth: BandwidthLimit,
     connectivity: Connectivity,
 }
 
 impl HttpDownloader {
     pub fn new() -> Result<Self, HttpError> {
+        Self::with_hosts(None)
+    }
+
+    pub fn with_host_connections(hosts: HostConnections) -> Result<Self, HttpError> {
+        Self::with_hosts(Some(hosts))
+    }
+
+    fn with_hosts(hosts: Option<HostConnections>) -> Result<Self, HttpError> {
         Ok(Self {
-            client: client()?,
+            transport: Transport::new(hosts)?,
             global_bandwidth: BandwidthLimit::default(),
             connectivity: Connectivity::default(),
         })
@@ -200,7 +212,7 @@ impl HttpDownloader {
     ) -> Result<PathBuf, HttpError> {
         let data = tokio::select! {
             () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
-            result = probe(&self.client, current) => result?,
+            result = self.transport.probe(current) => result?,
         };
         let limits = TransferLimits {
             global: self.global_bandwidth.clone(),
@@ -208,7 +220,7 @@ impl HttpDownloader {
         };
         let source = data.size.and_then(|size| {
             (size > 0)
-                .then(|| RangeSource::new(&self.client, &data, size, limits.clone()))
+                .then(|| RangeSource::new(&self.transport, &data, size, limits.clone()))
                 .flatten()
         });
         let key = TransferKey::new(original, &data, options.expected_checksum.as_ref());
@@ -255,8 +267,15 @@ impl HttpDownloader {
             if data.size == Some(0) {
                 Ok(())
             } else {
-                match single::download(&self.client, &data, &limits, &mut writer, options, progress)
-                    .await
+                match single::download(
+                    &self.transport,
+                    &data,
+                    &limits,
+                    &mut writer,
+                    options,
+                    progress,
+                )
+                .await
                 {
                     Ok(completed) => {
                         progress.completed = completed;
@@ -271,14 +290,20 @@ impl HttpDownloader {
             Ok(()) => {
                 let path = if let Some(checksum) = options.expected_checksum.clone() {
                     match writer
-                        .finish_verified(checksum, options.cancellation.clone())
+                        .finish_verified(
+                            checksum,
+                            options.cancellation.clone(),
+                            options.completion_directory.clone(),
+                        )
                         .await
                     {
                         Err(WriterError::Cancelled) => return Err(HttpError::Cancelled),
                         result => result?,
                     }
                 } else {
-                    writer.finish().await?
+                    writer
+                        .finish_into(options.completion_directory.clone())
+                        .await?
                 };
                 options.report(progress);
                 Ok(path)
@@ -307,7 +332,7 @@ impl HttpDownloader {
         for url in &options.mirrors {
             let metadata = tokio::select! {
                 () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
-                result = probe(&self.client, url) => result,
+                result = self.transport.probe(url) => result,
             };
             let Ok(metadata) = metadata else {
                 tracing::warn!("Skipping an unavailable mirror");
@@ -322,7 +347,7 @@ impl HttpDownloader {
             }
             if metadata.size == Some(primary.size)
                 && let Some(source) =
-                    RangeSource::new(&self.client, &metadata, primary.size, limits.clone())
+                    RangeSource::new(&self.transport, &metadata, primary.size, limits.clone())
             {
                 sources.push(source);
             } else {
@@ -364,7 +389,7 @@ impl TransferLimits {
 
 #[derive(Clone)]
 struct RangeSource {
-    client: Client,
+    transport: Transport,
     url: Url,
     size: u64,
     validator: HeaderValue,
@@ -373,12 +398,17 @@ struct RangeSource {
 }
 
 impl RangeSource {
-    fn new(client: &Client, probe: &Probe, size: u64, limits: TransferLimits) -> Option<Self> {
+    fn new(
+        transport: &Transport,
+        probe: &Probe,
+        size: u64,
+        limits: TransferLimits,
+    ) -> Option<Self> {
         if !probe.supports_ranges {
             return None;
         }
         Some(Self {
-            client: client.clone(),
+            transport: transport.clone(),
             url: probe.final_url.clone(),
             size,
             validator: probe.validators.if_range()?.clone(),
@@ -394,15 +424,13 @@ impl RangeSource {
         }
     }
 
-    async fn response(&self, start: u64, end: u64) -> Result<Response, HttpError> {
-        let response = self
-            .client
-            .get(self.url.clone())
-            .header(header::ACCEPT_ENCODING, "identity")
-            .header(header::RANGE, format!("bytes={start}-{}", end - 1))
-            .header(header::IF_RANGE, self.validator.clone())
-            .send()
-            .await?;
+    async fn response(&self, start: u64, end: u64) -> Result<ActiveResponse, HttpError> {
+        let mut headers = HeaderMap::new();
+        let range = HeaderValue::from_str(&format!("bytes={start}-{}", end - 1))
+            .map_err(|_| HttpError::InvalidResponse("invalid range request"))?;
+        headers.insert(header::RANGE, range);
+        headers.insert(header::IF_RANGE, self.validator.clone());
+        let response = self.transport.get(&self.url, headers, false).await?;
         match response.status() {
             StatusCode::PARTIAL_CONTENT => {}
             StatusCode::OK | StatusCode::RANGE_NOT_SATISFIABLE => {

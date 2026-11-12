@@ -161,9 +161,9 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 - [x] **M2.2 SQLite storage** with versioned migrations (`rusqlite_migration` or equivalent), WAL mode,
       batched async writes (dedicated actor), automatic DB backup. Corrupted DB recovery
       (rebuilding state from `.rscpart.ctl` control files).
-- [ ] **M2.3 Scheduler**: max global concurrent downloads, max connections per host, priorities, manual ordering
+- [x] **M2.3 Scheduler**: max global concurrent downloads, max connections per host, priorities, manual ordering
       (drag), "force start", automatic retries with cap, automatic resume on startup for downloads that were active.
-- [ ] **M2.4 Engine API**: `EngineHandle` with commands (`add`, `pause`, `resume`, `cancel{delete_files}`,
+- [x] **M2.4 Engine API**: `EngineHandle` with commands (`add`, `pause`, `resume`, `cancel{delete_files}`,
       `set_priority`, `move`, `set_limits`…) and events (`Added`, aggregated/throttled `Progress`,
       `StatusChanged`, `Log`). All `Send + Clone`; no locks exposed to the GUI.
 - [ ] **M2.5 Automatic categorization**:

@@ -19,6 +19,7 @@ mod names;
 
 pub use control::CheckpointJob;
 pub(crate) use control::{Recovery, TransferKey};
+pub use names::candidate as filename_candidate;
 pub use names::sanitize_filename;
 
 const BATCH_BYTES: usize = 1024 * 1024;
@@ -160,8 +161,16 @@ impl FileWriter {
 
     /// Syncs and publishes a complete file without overwriting an existing destination.
     pub async fn finish(self) -> Result<PathBuf, WriterError> {
+        self.finish_into(None).await
+    }
+
+    pub(crate) async fn finish_into(
+        self,
+        directory: Option<PathBuf>,
+    ) -> Result<PathBuf, WriterError> {
         self.send(|reply| Command::Finish {
             verification: None,
+            directory,
             reply,
         })
         .await
@@ -171,12 +180,14 @@ impl FileWriter {
         self,
         checksum: ExpectedChecksum,
         cancellation: CancellationToken,
+        directory: Option<PathBuf>,
     ) -> Result<PathBuf, WriterError> {
         self.send(|reply| Command::Finish {
             verification: Some(Verification {
                 checksum,
                 cancellation,
             }),
+            directory,
             reply,
         })
         .await
@@ -210,6 +221,7 @@ enum Command {
     Invalidate(Reply<()>),
     Finish {
         verification: Option<Verification>,
+        directory: Option<PathBuf>,
         reply: Reply<PathBuf>,
     },
 }
@@ -364,9 +376,10 @@ impl Worker {
                 Command::Invalidate(reply) => (self.invalidate_checkpoint(), Some(reply)),
                 Command::Finish {
                     verification,
+                    directory,
                     reply,
                 } => {
-                    let _ = reply.send(self.finish(verification));
+                    let _ = reply.send(self.finish(verification, directory));
                     return;
                 }
             };
@@ -461,7 +474,11 @@ impl Worker {
         self.checkpoint()
     }
 
-    fn finish(mut self, verification: Option<Verification>) -> Result<PathBuf, WriterError> {
+    fn finish(
+        mut self,
+        verification: Option<Verification>,
+        directory: Option<PathBuf>,
+    ) -> Result<PathBuf, WriterError> {
         if !self.covered.complete(self.size) {
             return Err(WriterError::Incomplete);
         }
@@ -486,10 +503,14 @@ impl Worker {
         let control_path = control::path(&self.partial);
         let mut partial = TempPath::try_from_path(self.partial)?;
         partial.disable_cleanup(true);
+        let directory = directory.as_deref().unwrap_or(&self.directory);
         for index in 0..CANDIDATES {
-            let destination = self.directory.join(names::candidate(&self.name, index));
+            let destination = directory.join(names::candidate(&self.name, index));
             match partial.persist_noclobber(&destination) {
                 Ok(()) => {
+                    if directory != self.directory {
+                        disk::sync_directory(directory)?;
+                    }
                     disk::sync_directory(&self.directory)?;
                     if self.control.is_some()
                         && let Err(error) = fs::remove_file(&control_path)

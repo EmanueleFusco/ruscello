@@ -97,7 +97,11 @@ pub struct Probe {
 
 /// Builds a reusable HTTP/HTTPS download client with finite connect and read timeouts.
 pub fn client() -> Result<Client, HttpError> {
-    Ok(Client::builder()
+    build_client(false)
+}
+
+pub(crate) fn build_client(manual_redirects: bool) -> Result<Client, HttpError> {
+    let builder = Client::builder()
         .user_agent(concat!("Ruscello/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(30))
@@ -105,8 +109,13 @@ pub fn client() -> Result<Client, HttpError> {
         .no_gzip()
         .no_brotli()
         .no_deflate()
-        .no_zstd()
-        .build()?)
+        .no_zstd();
+    let builder = if manual_redirects {
+        builder.redirect(reqwest::redirect::Policy::none())
+    } else {
+        builder
+    };
+    Ok(builder.build()?)
 }
 
 /// Probes an HTTP resource using a GET without consuming the body.
@@ -120,7 +129,11 @@ pub async fn probe(client: &Client, url: &Url) -> Result<Probe, HttpError> {
         .header(header::RANGE, "bytes=0-")
         .send()
         .await?;
-    let (size, supports_ranges) = probe_size(&response)?;
+    parse_probe(&response)
+}
+
+pub(crate) fn parse_probe(response: &Response) -> Result<Probe, HttpError> {
+    let (size, supports_ranges) = probe_size(response)?;
     let headers = response.headers();
     let final_url = response.url().clone();
     let filename = suggest_filename(headers, &final_url);
