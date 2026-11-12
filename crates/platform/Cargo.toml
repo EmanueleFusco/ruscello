@@ -1,0 +1,20 @@
+[package]
+name = "ruscello-platform"
+description = "Platform directories, logging, and startup localization."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+directories.workspace = true
+sys-locale.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

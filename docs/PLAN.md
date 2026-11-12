@@ -90,7 +90,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 - [x] `AGENTS.md`, work plan, ADRs, UI/testing/architecture docs
 - [x] GitHub Actions CI (`fmt`, `clippy`, tests on Windows/Linux/macOS, `cargo-deny`)
 - [x] GitHub repository, milestones, and issues
-- [ ] **(M0.1, first task for the next agent)** Verify `cargo check --workspace` is green in CI; add
+- [x] **M0.1** Verify `cargo check --workspace` is green in CI; add
       `tracing` + `tracing-subscriber` with rotating file logs in `%LOCALAPPDATA%`/`$XDG_STATE_HOME`
       (`directories` crate); error handling structure (`thiserror` in libraries, `anyhow` in binaries only).
 
