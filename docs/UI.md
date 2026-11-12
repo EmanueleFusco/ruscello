@@ -91,7 +91,7 @@ rather than cluttering toolbars.
 
 ## Settings Pages
 
-- **General**: Language (*System Default / English / Italiano*), Theme, Launch at startup, System tray behavior, Queue completion action.
+- **General**: Language (*System Default / English / Italiano*), Theme, **UI Renderer** (*Software 2D `tiny-skia` [Default — prevents G-SYNC/OLED flicker & NVIDIA game overlay] / Hardware GPU `wgpu`*, applied on restart), Launch at startup, System tray behavior, Queue completion action.
 - **Downloads**: Default folder, max concurrent downloads, max connections per file/host, temporary folder.
 - **Speed**: Global limits, Alternative speed limits (`🐢`), Time-of-day scheduler.
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.

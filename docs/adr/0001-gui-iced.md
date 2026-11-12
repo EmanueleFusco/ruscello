@@ -23,3 +23,15 @@ permissive MIT license). Confirmed with the project owner.
 - Virtualized download list for thousands of rows: use `table`/`lazy`/`scrollable` rendering only visible rows, or a
   custom widget if needed.
 - `iced` (`winit`) owns the main thread event loop → the browser helper webview runs in a separate process (ADR-0004).
+- **Dual Renderer Backend (`tiny-skia` + `wgpu`) & G-SYNC / OLED Compatibility:**
+  - On Windows systems with NVIDIA GPUs, G-SYNC Windowed Mode, and OLED monitors, initializing a raw DirectX 12 /
+    Vulkan / OpenGL 3D swapchain (`wgpu`) causes the NVIDIA driver to classify the desktop app as a 3D game (triggering
+    the NVIDIA App overlay popup, hooking G-SYNC to an event-driven variable-FPS window, causing OLED VRR gamma
+    flickering, and inducing DWM desktop stutter).
+  - Therefore, `ruscello-gui` must compile `iced` with **both** `tiny-skia` (CPU 2D software renderer) and `wgpu`
+    enabled, and expose a user-selectable **UI Renderer** setting in *Settings → General / Advanced*:
+    - **`Software 2D (tiny-skia)` (Default):** set `ICED_BACKEND=tiny-skia` in `main()` before initializing `iced`.
+      Never initializes a DX12/Vulkan/OpenGL 3D swapchain, completely preventing NVIDIA App game detection, G-SYNC
+      OLED flickering, and DWM lag, while saving ~40–60 MB of RAM/VRAM.
+    - **`Hardware GPU (wgpu)` (Optional):** sets `ICED_BACKEND=wgpu` (with low-power adapter preference and VSync FIFO
+      presentation mode) for users who explicitly want GPU rasterization.

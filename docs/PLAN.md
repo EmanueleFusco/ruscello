@@ -185,7 +185,8 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
       automatic type detection; category and destination folder picker; drag & drop of files and links.
 - [ ] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
       copy link, priority, reorder; multi-selection; keyboard shortcuts.
-- [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano**),
+- [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
+      **UI Renderer selector: `tiny-skia` Software 2D [default, G-SYNC/OLED safe] vs `wgpu` Hardware GPU**, see ADR-0001),
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations (browser, `yt-dlp`/`ffmpeg`), Advanced.
 - [ ] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets to the running instance).
@@ -238,8 +239,11 @@ Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
       (see legacy-scripts) into concise recipes.
 - [ ] **M5.4 Initial built-in plugins** (each backed by recorded HTML fixtures and offline tests):
   - generic "direct link" detector (identifies non-HTML responses);
-  - **fuckingfast** (extracts the `/dl/...` direct link from page scripts via plain HTTP without a browser;
-    browser fallback if needed) — high-priority owner use case;
+  - **fuckingfast** (recognizes `fuckingfast.co/...` share pages as hoster pages rather than raw files; extracts the
+    direct `/dl/...` download URL from the inline JavaScript `window.open("https://fuckingfast.co/dl/...")` or
+    `hx-redirect` response over HTTP without opening ad popups; enforces a safe per-host concurrency limit to avoid
+    `429 Too Many Requests`; automatically re-resolves expired `/dl/...` links on resume; falls back seamlessly to the
+    persistent-profile browser helper M6.4 if Cloudflare blocks plain HTTP) — high-priority owner use case;
   - **generic XFileSharing** (`op=download1`/`method_free` → countdown → `op=download2`/`downloadbtn`),
     pattern shared by many file hosters — high-priority owner use case;
   - pixeldrain, gofile, mediafire, Google Drive (public files including large-file confirmation), public
@@ -278,7 +282,9 @@ See ADR-0004. The browser helper is a **separate process** (`wry` + `tao`: WebVi
 Linux, WKWebView on macOS) spawned on demand and shut down after inactivity (saving RAM). It communicates with
 the engine over stdin/stdout JSON-lines defined in `ruscello-browser::protocol`.
 
-- [ ] **M6.1 Process lifecycle & IPC protocol** (spawn on demand, timeouts, crash recovery/restart).
+- [ ] **M6.1 Process lifecycle, persistent profile & IPC protocol**: spawn on demand, idle timeout shutdown, crash
+      recovery/restart, and a **persistent browser profile on disk** (`<data_dir>/webview_profile/`) so clearance cookies
+      (e.g., `cf_clearance`) survive across batches and application restarts.
 - [ ] **M6.2 "Verification Required" window**: when a plugin/recipe detects an anti-bot challenge page
       (full-page Cloudflare challenge, hoster CAPTCHA, login wall), the engine puts the download into
       `WaitingUser`, shows a non-intrusive notification; the user opens the helper window, **completes the
