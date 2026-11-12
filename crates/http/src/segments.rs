@@ -157,9 +157,13 @@ pub struct ConnectionController {
 
 impl ConnectionController {
     pub fn new(maximum: NonZeroUsize) -> Self {
+        Self::with_initial(maximum, NonZeroUsize::MIN)
+    }
+
+    pub(crate) fn with_initial(maximum: NonZeroUsize, initial: NonZeroUsize) -> Self {
         Self {
             maximum: maximum.get(),
-            limit: 1,
+            limit: initial.min(maximum).get(),
             previous: None,
             cooldown: 0,
         }

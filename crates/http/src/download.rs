@@ -30,8 +30,9 @@ use crate::{
 mod single;
 
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
-const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
+const CHECKPOINT_BYTES: u64 = 64 * 1024 * 1024;
 const RATE_INTERVAL: Duration = Duration::from_millis(250);
+const RAMP_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_CHUNK_BYTES: usize = 128 * 1024;
 const MAX_RESTARTS: usize = 3;
 
@@ -501,7 +502,10 @@ impl Segmented {
             mirrors: mirrors.into_iter().map(Some).collect(),
             next_source: 0,
             allocator,
-            connections: ConnectionController::new(cap),
+            connections: ConnectionController::with_initial(
+                cap,
+                NonZeroUsize::new((cap.get() / 4).clamp(1, 4)).unwrap_or(NonZeroUsize::MIN),
+            ),
             tasks: JoinSet::new(),
             active: BTreeMap::new(),
             events,
@@ -553,9 +557,10 @@ impl Segmented {
     ) -> Result<(), HttpError> {
         let start = Instant::now();
         let mut sample_time = start;
+        let mut reported = start;
         let mut sample_bytes = self.allocator.completed();
         let mut persisted = sample_bytes;
-        let mut rate_tick = time::interval_at(start + RATE_INTERVAL, RATE_INTERVAL);
+        let mut rate_tick = time::interval_at(start + RAMP_INTERVAL, RAMP_INTERVAL);
         rate_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let mut checkpoint_tick =
             time::interval_at(start + CHECKPOINT_INTERVAL, CHECKPOINT_INTERVAL);
@@ -607,11 +612,18 @@ impl Segmented {
                 _ = rate_tick.tick() => {
                     let now = Instant::now();
                     let completed = self.allocator.completed();
-                    self.connections.observe(completed - sample_bytes, now - sample_time);
+                    let previous_limit = self.connections.limit();
+                    let limit = self.connections.observe(completed - sample_bytes, now - sample_time);
+                    if limit != previous_limit {
+                        tracing::debug!(limit, "Adjusted HTTP connection budget");
+                    }
                     sample_time = now;
                     sample_bytes = completed;
-                    progress.completed = completed;
-                    options.report(progress);
+                    if now - reported >= RATE_INTERVAL {
+                        progress.completed = completed;
+                        options.report(progress);
+                        reported = now;
+                    }
                 }
                 _ = checkpoint_tick.tick() => {
                     if self.allocator.completed() > persisted {
@@ -635,7 +647,7 @@ impl Segmented {
         let length = (range.end - range.start).min(bytes.len() as u64);
         if length > 0 {
             writer
-                .write_at(range.start, bytes.slice(..length as usize))
+                .queue_at(range.start, bytes.slice(..length as usize))
                 .await?;
             self.allocator.advance(id, length)?;
         }

@@ -121,9 +121,21 @@ impl FileWriter {
         self.send(|reply| Command::Write {
             offset,
             bytes,
-            reply,
+            reply: Some(reply),
         })
         .await
+    }
+
+    /// The checkpoint and finalization commands run after all queued writes.
+    pub(crate) async fn queue_at(&mut self, offset: u64, bytes: Bytes) -> Result<(), WriterError> {
+        self.commands
+            .send(Command::Write {
+                offset,
+                bytes,
+                reply: None,
+            })
+            .await
+            .map_err(|_| WriterError::Stopped)
     }
 
     pub async fn sync_data(&mut self) -> Result<(), WriterError> {
@@ -188,7 +200,7 @@ enum Command {
     Write {
         offset: u64,
         bytes: Bytes,
-        reply: Reply<()>,
+        reply: Option<Reply<()>>,
     },
     Sync(Reply<()>),
     Checkpoint(Reply<()>),
@@ -341,9 +353,9 @@ impl Worker {
                     bytes,
                     reply,
                 } => (self.write(offset, &bytes), reply),
-                Command::Sync(reply) => (self.sync(), reply),
-                Command::Checkpoint(reply) => (self.checkpoint(), reply),
-                Command::Invalidate(reply) => (self.invalidate_checkpoint(), reply),
+                Command::Sync(reply) => (self.sync(), Some(reply)),
+                Command::Checkpoint(reply) => (self.checkpoint(), Some(reply)),
+                Command::Invalidate(reply) => (self.invalidate_checkpoint(), Some(reply)),
                 Command::Finish {
                     verification,
                     reply,
@@ -353,7 +365,11 @@ impl Worker {
                 }
             };
             let failed = result.is_err();
-            let _ = reply.send(result);
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            } else if let Err(error) = result {
+                tracing::debug!(%error, "Queued download write failed");
+            }
             if failed {
                 return;
             }

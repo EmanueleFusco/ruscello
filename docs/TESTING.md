@@ -37,6 +37,18 @@ Later milestones add mock HTML pages replicating real hoster patterns (fuckingfa
 script; XFileSharing-like: `method_free` form → countdown → `downloadbtn`; mock verification challenge page) so
 plugins, TOML recipes, and the browser helper are tested **completely offline**.
 
+## HTTP throughput benchmark
+
+Install `aria2c` or set `ARIA2C` to its executable path, then run:
+
+```sh
+cargo test -p ruscello-cli --release --test http_benchmark -- --ignored --nocapture
+```
+
+The benchmark compares five alternating runs of each client using 16 connections, a seeded 256 MiB file,
+and 50 ms of loopback response latency per request. It checks each result against the expected SHA-256
+outside the timed interval and requires Ruscello's median throughput to reach at least 95% of aria2's.
+
 ## Fixtures
 
 - Binary payloads are generated deterministically from seeds at test time (never committed to git).

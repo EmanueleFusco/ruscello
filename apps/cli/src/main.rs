@@ -1,85 +1,213 @@
-//! Headless command-line front-end, also used by crash/resume tests.
+//! Headless command-line front-end for the HTTP download engine.
 
 use std::{
     env,
-    io::{self, Write},
-    num::NonZeroUsize,
+    ffi::{OsStr, OsString},
+    io::{self, IsTerminal, Write},
+    iter::Peekable,
+    num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
     process::ExitCode,
 };
 
-use ruscello_engine::{DownloadOptions, HttpDownloader, Url};
+use ruscello_engine::{
+    ChecksumAlgorithm, DownloadOptions, DownloadProgress, ExpectedChecksum, HttpDownloader,
+    HttpError, Url,
+};
 use ruscello_platform::{language::Language, logging};
+use tokio::sync::watch;
 
 mod messages;
+mod progress;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 2)]
 async fn main() -> ExitCode {
-    let language = Language::system();
+    let mut argv = env::args_os().skip(1).peekable();
+    let language = match language(&mut argv) {
+        Ok(language) => language,
+        Err(()) => {
+            error(messages::get(Language::system()).usage);
+            return ExitCode::from(2);
+        }
+    };
+    let messages = messages::get(language);
+    let arguments = match parse(argv) {
+        Ok(Command::Help) => return output(messages.usage),
+        Ok(Command::Version) => return output(concat!("ruscello-cli ", env!("CARGO_PKG_VERSION"))),
+        Ok(Command::Get(arguments)) => arguments,
+        Err(()) => {
+            error(messages.usage);
+            return ExitCode::from(2);
+        }
+    };
     let log = if let Some(directory) = env::var_os("RUSCELLO_LOG_DIR") {
         logging::init_in("ruscello-cli", &PathBuf::from(directory))
     } else {
         logging::init("ruscello-cli")
     };
     let Ok(_log) = log else {
-        eprintln!("{}", language.logging_unavailable());
+        error(language.logging_unavailable());
         return ExitCode::FAILURE;
     };
-    let messages = messages::get(language);
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            if error.is::<InvalidArguments>() {
-                eprintln!("{}", messages.usage);
-                return ExitCode::from(2);
+    match run(*arguments, language).await {
+        Ok(path) => output(path.display()),
+        Err(failure) => {
+            tracing::debug!(error = %failure, "Download command failed");
+            let http_error = failure.downcast_ref::<HttpError>();
+            error(messages.failure(http_error));
+            if matches!(http_error, Some(HttpError::Cancelled)) {
+                ExitCode::from(130)
+            } else {
+                ExitCode::FAILURE
             }
-            tracing::debug!(%error, "Download command failed");
-            eprintln!("{}", messages.failed);
-            ExitCode::FAILURE
         }
     }
 }
 
-async fn run() -> anyhow::Result<()> {
-    let (url, options) = arguments()?;
-    let path = HttpDownloader::new()?.download(&url, options).await?;
-    writeln!(io::stdout().lock(), "{}", path.display())?;
-    Ok(())
+async fn run(mut arguments: Arguments, language: Language) -> anyhow::Result<PathBuf> {
+    tokio::fs::create_dir_all(&arguments.options.directory).await?;
+    let downloader = HttpDownloader::new()?;
+    let terminal = io::stderr().is_terminal();
+    let show_progress = arguments.progress.unwrap_or(terminal);
+    let show_warnings = arguments.progress != Some(false);
+    let view = if show_progress || show_warnings {
+        let (sender, receiver) = watch::channel(DownloadProgress::default());
+        arguments.options.progress = Some(sender);
+        Some(tokio::spawn(progress::render(
+            receiver,
+            language,
+            terminal,
+            show_progress,
+        )))
+    } else {
+        None
+    };
+    let cancellation = arguments.options.cancellation.clone();
+    let transfer = downloader.download(&arguments.url, arguments.options);
+    tokio::pin!(transfer);
+    let result = tokio::select! {
+        result = &mut transfer => result,
+        signal = tokio::signal::ctrl_c() => {
+            if signal.is_ok() {
+                cancellation.cancel();
+            }
+            transfer.await
+        }
+    };
+    if let Some(view) = view {
+        let _ = view.await;
+    }
+    Ok(result?)
 }
 
-fn arguments() -> anyhow::Result<(Url, DownloadOptions)> {
-    let invalid = || anyhow::Error::msg(InvalidArguments);
-    let mut args = env::args_os().skip(1);
-    if args.next().as_deref().and_then(|value| value.to_str()) != Some("get") {
-        return Err(invalid());
+fn output(value: impl std::fmt::Display) -> ExitCode {
+    if writeln!(io::stdout().lock(), "{value}").is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
-    let url = args
+}
+
+fn error(message: &str) {
+    let _ = writeln!(io::stderr().lock(), "{message}");
+}
+
+struct Arguments {
+    url: Url,
+    options: DownloadOptions,
+    progress: Option<bool>,
+}
+
+enum Command {
+    Help,
+    Version,
+    Get(Box<Arguments>),
+}
+
+fn language(args: &mut Peekable<impl Iterator<Item = OsString>>) -> Result<Language, ()> {
+    if !args.peek().is_some_and(|argument| argument == "--language") {
+        return Ok(Language::system());
+    }
+    args.next();
+    match args
         .next()
-        .and_then(|value| value.into_string().ok())
-        .ok_or_else(invalid)?;
-    let url = Url::parse(&url).map_err(|_| invalid())?;
-    let mut options = DownloadOptions::default();
+        .as_deref()
+        .and_then(|argument| argument.to_str())
+    {
+        Some("en") => Ok(Language::English),
+        Some("it") => Ok(Language::Italian),
+        Some("system") => Ok(Language::system()),
+        _ => Err(()),
+    }
+}
+
+fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
+    match args
+        .next()
+        .as_deref()
+        .and_then(|argument| argument.to_str())
+    {
+        None | Some("-h" | "--help") => return Ok(Command::Help),
+        Some("-V" | "--version") => return Ok(Command::Version),
+        Some("get") => {}
+        _ => return Err(()),
+    }
+    let url = args.next().ok_or(())?;
+    if url == "-h" || url == "--help" {
+        return Ok(Command::Help);
+    }
+    let mut arguments = Arguments {
+        url: url_arg(&url)?,
+        options: DownloadOptions::default(),
+        progress: None,
+    };
     while let Some(flag) = args.next() {
-        let value = args.next().ok_or_else(invalid)?;
         match flag.to_str() {
-            Some("-o") => options.directory = value.into(),
-            Some("-x") => {
-                options.connections = value
+            Some("-h" | "--help") => return Ok(Command::Help),
+            Some("--progress") => arguments.progress = Some(true),
+            Some("--quiet") => arguments.progress = Some(false),
+            Some("-o" | "--output") => arguments.options.directory = args.next().ok_or(())?.into(),
+            Some("-x" | "--connections") => {
+                let value = args.next().ok_or(())?;
+                arguments.options.connections = value
                     .to_str()
                     .and_then(|value| value.parse::<NonZeroUsize>().ok())
-                    .ok_or_else(invalid)?;
+                    .filter(|value| value.get() <= 32)
+                    .ok_or(())?;
             }
-            _ => return Err(invalid()),
+            Some("--mirror") => arguments
+                .options
+                .mirrors
+                .push(url_arg(&args.next().ok_or(())?)?),
+            Some("--checksum") => {
+                let value = args.next().ok_or(())?;
+                let (algorithm, digest) = value
+                    .to_str()
+                    .and_then(|value| value.split_once(':'))
+                    .ok_or(())?;
+                let algorithm = algorithm.parse::<ChecksumAlgorithm>().map_err(|_| ())?;
+                arguments.options.expected_checksum =
+                    Some(ExpectedChecksum::from_hex(algorithm, digest).map_err(|_| ())?);
+            }
+            Some("--limit") => {
+                let value = args.next().ok_or(())?;
+                let limit = value
+                    .to_str()
+                    .and_then(|value| value.parse::<NonZeroU64>().ok())
+                    .ok_or(())?;
+                arguments.options.bandwidth.set_rate(Some(limit));
+            }
+            _ => return Err(()),
         }
     }
-    Ok((url, options))
+    Ok(Command::Get(Box::new(arguments)))
 }
 
-#[derive(Debug)]
-struct InvalidArguments;
-
-impl std::fmt::Display for InvalidArguments {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("invalid command arguments")
+fn url_arg(value: &OsStr) -> Result<Url, ()> {
+    let url = Url::parse(value.to_str().ok_or(())?).map_err(|_| ())?;
+    if matches!(url.scheme(), "http" | "https") {
+        Ok(url)
+    } else {
+        Err(())
     }
 }

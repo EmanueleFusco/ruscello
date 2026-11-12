@@ -64,7 +64,7 @@ pub(super) async fn download(
             while cursor < bytes.len() {
                 let chunk = limits.next_chunk(&bytes, cursor).await;
                 let size = chunk.len();
-                writer.write_at(progress.completed, chunk).await?;
+                writer.queue_at(progress.completed, chunk).await?;
                 cursor += size;
                 progress.completed += size as u64;
                 if notified.elapsed() >= RATE_INTERVAL {
