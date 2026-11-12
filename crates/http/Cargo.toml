@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 crc32fast.workspace = true
+getrandom.workspace = true
 httpdate.workspace = true
 mime_guess.workspace = true
 percent-encoding.workspace = true

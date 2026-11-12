@@ -6,13 +6,17 @@
 
 mod download;
 mod filename;
+mod limit;
 mod probe;
+mod retry;
 mod segments;
 mod writer;
 
-pub use download::{DownloadOptions, HttpDownloader};
+pub use download::{DownloadOptions, DownloadProgress, HttpDownloader};
+pub use limit::BandwidthLimit;
 pub use probe::{HttpError, Probe, Validators, client, probe};
 pub use reqwest::Url;
+pub use retry::{Connectivity, ErrorClass, ExpiredLinkResolver, ResolvedLink, RetryPolicy};
 pub use segments::{
     ConnectionController, DEFAULT_MIN_SEGMENT_SIZE, SegmentAllocator, SegmentError, Work, WorkId,
 };

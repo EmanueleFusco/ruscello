@@ -16,3 +16,5 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - M1.3: Pure byte-range allocation with work stealing and adaptive connection limits.
 - M1.4: Buffered positional file writer with preallocation and collision-safe publication.
 - M1.5: Versioned, checksummed HTTP download checkpoints and validator-checked resume after process termination.
+- M1.6–M1.8: Single-connection fallback, reconnect and retry handling, an expired-link resolver hook, and runtime
+  global and per-download bandwidth limits.

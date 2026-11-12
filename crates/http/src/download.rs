@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -11,18 +12,22 @@ use reqwest::{
     header::{self, HeaderValue},
 };
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, watch},
     task::{AbortHandle, JoinSet},
     time::{self, Instant},
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    ConnectionController, DEFAULT_MIN_SEGMENT_SIZE, FileWriter, HttpError, Probe, SegmentAllocator,
-    Work, WorkId, client, probe,
+    BandwidthLimit, ConnectionController, Connectivity, DEFAULT_MIN_SEGMENT_SIZE, ErrorClass,
+    ExpiredLinkResolver, FileWriter, HttpError, Probe, RetryPolicy, SegmentAllocator, Work, WorkId,
+    client, probe,
     probe::{content_range, require_identity},
+    retry::{self, RetryState, status_error},
     writer::TransferKey,
 };
+
+mod single;
 
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
 const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
@@ -37,6 +42,10 @@ pub struct DownloadOptions {
     pub connections: NonZeroUsize,
     pub min_segment_size: NonZeroU64,
     pub cancellation: CancellationToken,
+    pub retry: RetryPolicy,
+    pub bandwidth: BandwidthLimit,
+    pub progress: Option<watch::Sender<DownloadProgress>>,
+    pub expired_link_resolver: Option<Arc<dyn ExpiredLinkResolver>>,
 }
 
 impl Default for DownloadOptions {
@@ -46,19 +55,69 @@ impl Default for DownloadOptions {
             connections: NonZeroUsize::new(8).unwrap_or(NonZeroUsize::MIN),
             min_segment_size: NonZeroU64::new(DEFAULT_MIN_SEGMENT_SIZE).unwrap_or(NonZeroU64::MIN),
             cancellation: CancellationToken::new(),
+            retry: RetryPolicy::default(),
+            bandwidth: BandwidthLimit::default(),
+            progress: None,
+            expired_link_resolver: None,
         }
     }
+}
+
+impl DownloadOptions {
+    fn report(&self, progress: DownloadProgress) {
+        if let Some(sender) = &self.progress {
+            sender.send_if_modified(|current| {
+                let changed = *current != progress;
+                *current = progress;
+                changed
+            });
+        }
+    }
+
+    fn waiting(&self, waiting: bool) {
+        if let Some(sender) = &self.progress {
+            sender.send_if_modified(|current| {
+                let changed = current.waiting_for_network != waiting;
+                current.waiting_for_network = waiting;
+                changed
+            });
+        }
+    }
+}
+
+/// Progress snapshot for a download. An unknown length is represented by `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DownloadProgress {
+    pub completed: u64,
+    pub total: Option<u64>,
+    pub resumable: bool,
+    pub restarted: bool,
+    pub waiting_for_network: bool,
 }
 
 /// Shares HTTP connections across downloads.
 #[derive(Debug, Clone)]
 pub struct HttpDownloader {
     client: Client,
+    global_bandwidth: BandwidthLimit,
+    connectivity: Connectivity,
 }
 
 impl HttpDownloader {
     pub fn new() -> Result<Self, HttpError> {
-        Ok(Self { client: client()? })
+        Ok(Self {
+            client: client()?,
+            global_bandwidth: BandwidthLimit::default(),
+            connectivity: Connectivity::default(),
+        })
+    }
+
+    pub fn global_bandwidth(&self) -> BandwidthLimit {
+        self.global_bandwidth.clone()
+    }
+
+    pub fn connectivity(&self) -> Connectivity {
+        self.connectivity.clone()
     }
 
     /// Downloads a file and returns its published path.
@@ -67,58 +126,180 @@ impl HttpDownloader {
         url: &Url,
         options: DownloadOptions,
     ) -> Result<PathBuf, HttpError> {
-        for _ in 0..=MAX_RESTARTS {
-            let data = tokio::select! {
-                () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
-                result = probe(&self.client, url) => result?,
-            };
-            let size = data.size.ok_or(HttpError::NonResumable)?;
-            let source = if size == 0 {
-                None
-            } else {
-                Some(RangeSource::new(&self.client, &data, size).ok_or(HttpError::NonResumable)?)
-            };
-            let key = TransferKey::new(url, &data);
-            let (mut writer, completed, restarted) =
-                FileWriter::open_download(&options.directory, &data.filename, key).await?;
-            if restarted {
-                tracing::warn!("Saved download could not be resumed. Restarting from zero");
+        let mut current = url.clone();
+        let mut state = DownloadState {
+            cap: options
+                .connections
+                .min(NonZeroUsize::new(32).unwrap_or(NonZeroUsize::MIN)),
+            retry: RetryState::default(),
+            restarted: false,
+        };
+        let mut representation_changes = 0;
+        let mut refreshes = 0;
+        loop {
+            if !self.connectivity.is_online() {
+                options.waiting(true);
+                self.connectivity.wait_online(&options.cancellation).await?;
+                options.waiting(false);
             }
-            let result = if let Some(source) = source {
-                let cap = options
-                    .connections
-                    .min(NonZeroUsize::new(32).unwrap_or(NonZeroUsize::MIN));
-                let allocator =
-                    SegmentAllocator::restore(size, cap, options.min_segment_size, &completed);
-                if allocator.is_complete() {
-                    source.check_complete(&options.cancellation).await
-                } else {
-                    Segmented::new(source, allocator, cap)
-                        .run(&mut writer, &options.cancellation)
-                        .await
-                }
-            } else {
-                Ok(())
+            let error = match self.attempt(url, &current, &options, &mut state).await {
+                Ok(path) => return Ok(path),
+                Err(error) => error,
             };
-            match result {
-                Ok(()) => return Ok(writer.finish().await?),
-                Err(HttpError::RepresentationChanged) => {
-                    tracing::warn!("Remote representation changed. Restarting from zero");
-                    writer.invalidate_checkpoint().await?;
-                    writer.close().await;
-                }
-                Err(error) => {
-                    if matches!(error, HttpError::InvalidResponse(_)) {
-                        writer.invalidate_checkpoint().await?;
-                    } else if !matches!(error, HttpError::Storage(_)) {
-                        writer.checkpoint().await?;
-                    }
-                    writer.close().await;
+            if matches!(error, HttpError::RepresentationChanged) {
+                if representation_changes == MAX_RESTARTS {
                     return Err(error);
                 }
+                representation_changes += 1;
+                state.restart();
+                continue;
+            }
+            if error.classification() == ErrorClass::ExpiredLink
+                && let Some(resolver) = &options.expired_link_resolver
+                && refreshes < MAX_RESTARTS
+            {
+                refreshes += 1;
+                current = tokio::select! {
+                    () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
+                    result = resolver.resolve(&current) => result?,
+                };
+                continue;
+            }
+            let Some(delay) =
+                state
+                    .retry
+                    .next_delay(&error, &options.retry, self.connectivity.is_online())
+            else {
+                return Err(error);
+            };
+            tracing::debug!(?delay, "Retrying HTTP download");
+            if error.offline() {
+                options.waiting(true);
+            }
+            retry::wait(delay, &options.cancellation).await?;
+            options.waiting(false);
+        }
+    }
+
+    async fn attempt(
+        &self,
+        original: &Url,
+        current: &Url,
+        options: &DownloadOptions,
+        state: &mut DownloadState,
+    ) -> Result<PathBuf, HttpError> {
+        let data = tokio::select! {
+            () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
+            result = probe(&self.client, current) => result?,
+        };
+        let limits = TransferLimits {
+            global: self.global_bandwidth.clone(),
+            local: options.bandwidth.clone(),
+        };
+        let source = data.size.and_then(|size| {
+            (size > 0)
+                .then(|| RangeSource::new(&self.client, &data, size, limits.clone()))
+                .flatten()
+        });
+        let key = TransferKey::new(original, &data);
+        let (mut writer, completed, restarted) =
+            FileWriter::open_download(&options.directory, &data.filename, key).await?;
+        if restarted {
+            state.restart();
+        }
+        let mut progress = DownloadProgress {
+            total: data.size,
+            resumable: source.is_some(),
+            restarted: state.restarted,
+            ..DownloadProgress::default()
+        };
+        let result = if let Some(source) = source {
+            let allocator = SegmentAllocator::restore(
+                source.size,
+                state.cap,
+                options.min_segment_size,
+                &completed,
+            );
+            progress.completed = allocator.completed();
+            options.report(progress);
+            if allocator.is_complete() {
+                source.check_complete(&options.cancellation).await
+            } else {
+                let mut segmented = Segmented::new(source, allocator, state.cap);
+                let result = segmented.run(&mut writer, options, progress).await;
+                progress.completed = segmented.allocator.completed();
+                state.retry.record_progress(progress.completed);
+                if result.as_ref().is_err_and(|error| error.congested()) {
+                    state.cap = NonZeroUsize::new(segmented.connections.congested())
+                        .unwrap_or(NonZeroUsize::MIN);
+                }
+                result
+            }
+        } else {
+            options.report(progress);
+            if data.size == Some(0) {
+                Ok(())
+            } else {
+                match single::download(&self.client, &data, &limits, &mut writer, options, progress)
+                    .await
+                {
+                    Ok(completed) => {
+                        progress.completed = completed;
+                        progress.total = Some(completed);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+        };
+        match result {
+            Ok(()) => {
+                let path = writer.finish().await?;
+                options.report(progress);
+                Ok(path)
+            }
+            Err(error) => {
+                if matches!(
+                    error,
+                    HttpError::RepresentationChanged | HttpError::InvalidResponse(_)
+                ) {
+                    writer.invalidate_checkpoint().await?;
+                } else if !matches!(error, HttpError::Storage(_)) {
+                    writer.checkpoint().await?;
+                }
+                writer.close().await;
+                Err(error)
             }
         }
-        Err(HttpError::RepresentationChanged)
+    }
+}
+
+struct DownloadState {
+    cap: NonZeroUsize,
+    retry: RetryState,
+    restarted: bool,
+}
+
+impl DownloadState {
+    fn restart(&mut self) {
+        if !self.restarted {
+            tracing::warn!("The saved representation could not be resumed. Restarting from zero");
+        }
+        self.restarted = true;
+    }
+}
+
+#[derive(Clone)]
+struct TransferLimits {
+    global: BandwidthLimit,
+    local: BandwidthLimit,
+}
+
+impl TransferLimits {
+    async fn next_chunk(&self, bytes: &Bytes, offset: usize) -> Bytes {
+        let requested = (bytes.len() - offset).min(MAX_CHUNK_BYTES);
+        let granted = self.global.acquire(&self.local, requested).await;
+        bytes.slice(offset..offset + granted)
     }
 }
 
@@ -129,10 +310,11 @@ struct RangeSource {
     size: u64,
     validator: HeaderValue,
     has_etag: bool,
+    limits: TransferLimits,
 }
 
 impl RangeSource {
-    fn new(client: &Client, probe: &Probe, size: u64) -> Option<Self> {
+    fn new(client: &Client, probe: &Probe, size: u64, limits: TransferLimits) -> Option<Self> {
         if !probe.supports_ranges {
             return None;
         }
@@ -142,6 +324,7 @@ impl RangeSource {
             size,
             validator: probe.validators.if_range()?.clone(),
             has_etag: probe.validators.etag.is_some(),
+            limits,
         })
     }
 
@@ -166,7 +349,7 @@ impl RangeSource {
             StatusCode::OK | StatusCode::RANGE_NOT_SATISFIABLE => {
                 return Err(HttpError::RepresentationChanged);
             }
-            status => return Err(HttpError::Status(status)),
+            _ => return Err(status_error(&response)),
         }
         let headers = response.headers();
         require_identity(headers)?;
@@ -212,12 +395,12 @@ impl RangeSource {
             }
             let mut offset = 0;
             while offset < bytes.len() {
-                let end = (offset + MAX_CHUNK_BYTES).min(bytes.len());
+                let chunk = self.limits.next_chunk(&bytes, offset).await;
+                offset += chunk.len();
                 events
-                    .send(Event::Data(work.id, bytes.slice(offset..end)))
+                    .send(Event::Data(work.id, chunk))
                     .await
                     .map_err(|_| HttpError::WorkerStopped)?;
-                offset = end;
             }
             if remaining == 0 {
                 return Ok(());
@@ -287,9 +470,10 @@ impl Segmented {
     }
 
     async fn run(
-        mut self,
+        &mut self,
         writer: &mut FileWriter,
-        cancellation: &CancellationToken,
+        options: &DownloadOptions,
+        mut progress: DownloadProgress,
     ) -> Result<(), HttpError> {
         let start = Instant::now();
         let mut sample_time = start;
@@ -310,7 +494,7 @@ impl Segmented {
                 };
             }
             tokio::select! {
-                () = cancellation.cancelled() => return Err(HttpError::Cancelled),
+                () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
                 event = self.incoming.recv() => match event.ok_or(HttpError::WorkerStopped)? {
                     Event::Data(id, bytes) => {
                         self.accept(writer, id, bytes).await?;
@@ -339,6 +523,8 @@ impl Segmented {
                     self.connections.observe(completed - sample_bytes, now - sample_time);
                     sample_time = now;
                     sample_bytes = completed;
+                    progress.completed = completed;
+                    options.report(progress);
                 }
                 _ = checkpoint_tick.tick() => {
                     if self.allocator.completed() > persisted {

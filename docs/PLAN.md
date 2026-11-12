@@ -126,12 +126,12 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
       rename* every ~2 s or every X MiB; guaranteed ordering: **fsync data file first, then update control
       file** (so the control file never claims bytes not yet persisted to disk). On resume: validate with
       `If-Range`; if remote file changed → restart cleanly (with warning) instead of corrupting.
-- [ ] **M1.6 Non-range downloads**: single-connection fallback; if dropped, restart from zero (marked in UI
+- [x] **M1.6 Non-range downloads**: single-connection fallback; if dropped, restart from zero (marked in UI
       as "not resumable").
-- [ ] **M1.7 Retry & reconnection**: exponential backoff with jitter, error classification
+- [x] **M1.7 Retry & reconnection**: exponential backoff with jitter, error classification
       (transient / permanent / auth / expired link → requests re-resolve from plugin), network loss detection
       and waiting for connectivity restoration without burning retry attempts.
-- [ ] **M1.8 Bandwidth limiter**: global + per-download token bucket, hot-reconfigurable at runtime.
+- [x] **M1.8 Bandwidth limiter**: global + per-download token bucket, hot-reconfigurable at runtime.
 - [ ] **M1.9 Mirrors**: multiple URLs for the same file (verified by size/hash) → segments distributed across mirrors.
 - [ ] **M1.10 Integrity verification**: optional hash check (MD5/SHA-1/SHA-256/CRC32) supplied by user or plugin.
 - [ ] **M1.11 FTP/FTPS** (`suppaftp` crate) with resume via `REST` — low priority, may slip to M9.
