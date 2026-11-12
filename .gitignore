@@ -8,6 +8,10 @@
 *.db
 *.db-wal
 *.db-shm
+*.db.bak
+*.db.lock
+ruscello-corrupt-*/
+.ruscello-incoming/
 /downloads/
 
 # Fuzzing
