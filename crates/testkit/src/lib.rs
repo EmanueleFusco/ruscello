@@ -2,4 +2,12 @@
 //!
 //! Test utilities: local HTTP test server with failure scenarios, fake hoster pages, fixtures. Dev-dependency only.
 //!
-//! See `docs/ARCHITECTURE.md` and `docs/PLAN.md` for responsibilities and milestones.
+//! Each server listens on an ephemeral loopback port. Register deterministic file
+//! scenarios with [TestServer::file] and inspect the observed requests through the
+//! returned [TestFile].
+
+mod fixture;
+mod server;
+
+pub use fixture::{FileSpec, Payload, Representation};
+pub use server::{RequestRecord, TestFile, TestServer};

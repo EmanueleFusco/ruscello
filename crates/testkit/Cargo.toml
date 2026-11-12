@@ -9,6 +9,13 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+axum.workspace = true
+futures-util.workspace = true
+percent-encoding.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
 
 [lints]
 workspace = true
