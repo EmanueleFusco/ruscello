@@ -11,6 +11,7 @@ mod limit;
 mod probe;
 mod retry;
 mod segments;
+mod transport;
 mod writer;
 
 pub use checksum::{ChecksumAlgorithm, ChecksumError, ExpectedChecksum};
@@ -22,7 +23,8 @@ pub use retry::{Connectivity, ErrorClass, ExpiredLinkResolver, ResolvedLink, Ret
 pub use segments::{
     ConnectionController, DEFAULT_MIN_SEGMENT_SIZE, SegmentAllocator, SegmentError, Work, WorkId,
 };
+pub use transport::HostConnections;
 pub use writer::{
-    Checkpoint, CheckpointJob, FileWriter, WriterError, persisted_bytes, sanitize_filename,
-    scan_checkpoints,
+    Checkpoint, CheckpointJob, FileWriter, WriterError, filename_candidate, persisted_bytes,
+    sanitize_filename, scan_checkpoints,
 };

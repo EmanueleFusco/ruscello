@@ -9,16 +9,20 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+getrandom.workspace = true
 ruscello-core.workspace = true
 ruscello-http.workspace = true
 ruscello-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 ruscello-testkit.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

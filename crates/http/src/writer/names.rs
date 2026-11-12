@@ -47,7 +47,8 @@ pub fn sanitize_filename(value: &str) -> String {
     name
 }
 
-pub(super) fn candidate(name: &str, index: u32) -> String {
+/// Returns the collision suffix for a sanitized filename. Index zero keeps the name.
+pub fn candidate(name: &str, index: u32) -> String {
     if index == 0 {
         return name.to_owned();
     }

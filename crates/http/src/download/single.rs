@@ -1,16 +1,19 @@
-use reqwest::{Client, StatusCode, header};
+use reqwest::{
+    StatusCode,
+    header::{self, HeaderMap},
+};
 use tokio::time::Instant;
 
 use crate::{
     DownloadOptions, DownloadProgress, FileWriter, HttpError, Probe, probe::require_identity,
-    retry::status_error,
+    retry::status_error, transport::Transport,
 };
 
 use super::{RATE_INTERVAL, TransferLimits};
 
 /// Streams one complete representation. A retry always starts at byte zero.
 pub(super) async fn download(
-    client: &Client,
+    transport: &Transport,
     probe: &Probe,
     limits: &TransferLimits,
     writer: &mut FileWriter,
@@ -18,10 +21,8 @@ pub(super) async fn download(
     mut progress: DownloadProgress,
 ) -> Result<u64, HttpError> {
     let transfer = async {
-        let mut response = client
-            .get(probe.final_url.clone())
-            .header(header::ACCEPT_ENCODING, "identity")
-            .send()
+        let mut response = transport
+            .get(&probe.final_url, HeaderMap::new(), false)
             .await?;
         if response.status() != StatusCode::OK {
             return Err(status_error(&response));

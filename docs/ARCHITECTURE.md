@@ -138,6 +138,11 @@ expect_download = true      # response is the file → direct link
   can reconstruct paused entries from managed checkpoints in the configured recovery folders. Those checkpoints
   include the job ID and destination. URLs containing query strings or user information are excluded from checkpoints.
   Older checkpoints still reconcile against a known queue entry by hashed source identity.
+- The scheduler starts eligible jobs by force-start request, priority, then manual queue order. Force start
+  respects the global download and per-host connection caps. Changes to limits are saved in SQLite.
+- Managed downloads stage completed data in their working directory before publishing to the destination.
+  Publication uses a saved filename and a no-clobber operation. The staging copy is kept until the
+  completed state is committed, so a restart can finish publication without downloading the file again.
 - BitTorrent state and fastresume data are managed by `librqbit` under `<data_dir>/torrent/`.
 - Standard OS directories resolved via the `directories` crate (`%APPDATA%\Ruscello`, `~/.local/share/ruscello`, etc.).
 

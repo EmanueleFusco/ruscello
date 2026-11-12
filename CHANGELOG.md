@@ -23,6 +23,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - M2.1: Shared download, package, source, category, tag, and priority types with a validated download lifecycle.
 - M2.2: SQLite queue persistence with versioned WAL migrations, batched writes, automatic backups, and
   reconciliation with HTTP checkpoints after restart or database corruption.
+- M2.3–M2.4: Persistent queue scheduling with priority, manual ordering, force start, retry and connection limits,
+  automatic startup resume, and an asynchronous engine handle with aggregated progress events.
 
 ### Changed
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.
