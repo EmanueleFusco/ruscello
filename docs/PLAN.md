@@ -154,7 +154,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 
 ## M2 — Queue, Scheduler, Storage, Categories (crates `ruscello-engine`, `ruscello-storage`, `ruscello-core`)
 
-- [ ] **M2.1 Domain model** (`ruscello-core`): `Download`, `Package` (download group as in
+- [x] **M2.1 Domain model** (`ruscello-core`): `Download`, `Package` (download group as in
       JDownloader), `Source` (`Http`/`Torrent`/`Media`/`Hoster`), `Status` (`Queued`, `Resolving`, `WaitingUser`,
       `Downloading`, `Paused`, `Seeding`, `PostProcessing`, `Completed`, `Failed{reason}`), `Category`, `Tag`,
       `Priority`. Explicit state machine with unit-tested transitions.
