@@ -21,6 +21,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - M1.9–M1.10: Mirror scheduling and MD5, SHA-1, SHA-256, and CRC32 verification before publishing a download.
 - M1.12: Bilingual developer CLI with terminal progress, transfer options, and a reproducible aria2 benchmark.
 - M2.1: Shared download, package, source, category, tag, and priority types with a validated download lifecycle.
+- M2.2: SQLite queue persistence with versioned WAL migrations, batched writes, automatic backups, and
+  reconciliation with HTTP checkpoints after restart or database corruption.
 
 ### Changed
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.

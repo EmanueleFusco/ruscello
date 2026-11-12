@@ -9,6 +9,14 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+ruscello-core.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 
 [lints]
 workspace = true
