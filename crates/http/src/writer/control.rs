@@ -9,7 +9,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::Probe;
+use crate::{ExpectedChecksum, Probe};
 
 use super::disk;
 
@@ -27,11 +27,16 @@ pub(crate) struct TransferKey {
 }
 
 impl TransferKey {
-    pub(crate) fn new(source: &Url, probe: &Probe) -> Self {
+    pub(crate) fn new(source: &Url, probe: &Probe, checksum: Option<&ExpectedChecksum>) -> Self {
         let bytes = |value: &reqwest::header::HeaderValue| value.as_bytes().to_vec();
+        let mut final_url = url_identity(&probe.final_url);
+        if let Some(checksum) = checksum {
+            // Checkpoints containing mirror data must retain the same verification requirement.
+            final_url = checksum.bind_identity(final_url);
+        }
         Self {
             source: url_identity(source),
-            final_url: url_identity(&probe.final_url),
+            final_url,
             size: probe.size,
             etag: probe.validators.etag.as_ref().map(bytes),
             last_modified: probe.validators.last_modified.as_ref().map(bytes),

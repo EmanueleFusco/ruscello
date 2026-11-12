@@ -18,3 +18,4 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - M1.5: Versioned, checksummed HTTP download checkpoints and validator-checked resume after process termination.
 - M1.6–M1.8: Single-connection fallback, reconnect and retry handling, an expired-link resolver hook, and runtime
   global and per-download bandwidth limits.
+- M1.9–M1.10: Mirror scheduling and MD5, SHA-1, SHA-256, and CRC32 verification before publishing a download.

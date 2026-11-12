@@ -6,5 +6,6 @@
 
 /// Headless HTTP entry point while the queue and engine handle are being built.
 pub use ruscello_http::{
-    DownloadOptions, DownloadProgress, ErrorClass, HttpDownloader, HttpError, Url,
+    ChecksumAlgorithm, DownloadOptions, DownloadProgress, ErrorClass, ExpectedChecksum,
+    HttpDownloader, HttpError, Url, WriterError,
 };

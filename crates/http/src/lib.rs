@@ -4,6 +4,7 @@
 //!
 //! See `docs/ARCHITECTURE.md` and `docs/PLAN.md` for responsibilities and milestones.
 
+mod checksum;
 mod download;
 mod filename;
 mod limit;
@@ -12,6 +13,7 @@ mod retry;
 mod segments;
 mod writer;
 
+pub use checksum::{ChecksumAlgorithm, ChecksumError, ExpectedChecksum};
 pub use download::{DownloadOptions, DownloadProgress, HttpDownloader};
 pub use limit::BandwidthLimit;
 pub use probe::{HttpError, Probe, Validators, client, probe};

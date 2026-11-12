@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     BandwidthLimit, ConnectionController, Connectivity, DEFAULT_MIN_SEGMENT_SIZE, ErrorClass,
-    ExpiredLinkResolver, FileWriter, HttpError, Probe, RetryPolicy, SegmentAllocator, Work, WorkId,
-    client, probe,
+    ExpectedChecksum, ExpiredLinkResolver, FileWriter, HttpError, Probe, RetryPolicy,
+    SegmentAllocator, Work, WorkId, WriterError, client, probe,
     probe::{content_range, require_identity},
     retry::{self, RetryState, status_error},
     writer::TransferKey,
@@ -46,6 +46,8 @@ pub struct DownloadOptions {
     pub bandwidth: BandwidthLimit,
     pub progress: Option<watch::Sender<DownloadProgress>>,
     pub expired_link_resolver: Option<Arc<dyn ExpiredLinkResolver>>,
+    pub mirrors: Vec<Url>,
+    pub expected_checksum: Option<ExpectedChecksum>,
 }
 
 impl Default for DownloadOptions {
@@ -59,6 +61,8 @@ impl Default for DownloadOptions {
             bandwidth: BandwidthLimit::default(),
             progress: None,
             expired_link_resolver: None,
+            mirrors: Vec::new(),
+            expected_checksum: None,
         }
     }
 }
@@ -126,6 +130,9 @@ impl HttpDownloader {
         url: &Url,
         options: DownloadOptions,
     ) -> Result<PathBuf, HttpError> {
+        if !options.mirrors.is_empty() && options.expected_checksum.is_none() {
+            return Err(HttpError::MirrorChecksumRequired);
+        }
         let mut current = url.clone();
         let mut state = DownloadState {
             cap: options
@@ -201,7 +208,7 @@ impl HttpDownloader {
                 .then(|| RangeSource::new(&self.client, &data, size, limits.clone()))
                 .flatten()
         });
-        let key = TransferKey::new(original, &data);
+        let key = TransferKey::new(original, &data, options.expected_checksum.as_ref());
         let (mut writer, completed, restarted) =
             FileWriter::open_download(&options.directory, &data.filename, key).await?;
         if restarted {
@@ -225,7 +232,8 @@ impl HttpDownloader {
             if allocator.is_complete() {
                 source.check_complete(&options.cancellation).await
             } else {
-                let mut segmented = Segmented::new(source, allocator, state.cap);
+                let mirrors = self.mirrors(&source, &limits, options).await?;
+                let mut segmented = Segmented::new(source, mirrors, allocator, state.cap);
                 let result = segmented.run(&mut writer, options, progress).await;
                 progress.completed = segmented.allocator.completed();
                 state.retry.record_progress(progress.completed);
@@ -254,7 +262,17 @@ impl HttpDownloader {
         };
         match result {
             Ok(()) => {
-                let path = writer.finish().await?;
+                let path = if let Some(checksum) = options.expected_checksum.clone() {
+                    match writer
+                        .finish_verified(checksum, options.cancellation.clone())
+                        .await
+                    {
+                        Err(WriterError::Cancelled) => return Err(HttpError::Cancelled),
+                        result => result?,
+                    }
+                } else {
+                    writer.finish().await?
+                };
                 options.report(progress);
                 Ok(path)
             }
@@ -271,6 +289,40 @@ impl HttpDownloader {
                 Err(error)
             }
         }
+    }
+    async fn mirrors(
+        &self,
+        primary: &RangeSource,
+        limits: &TransferLimits,
+        options: &DownloadOptions,
+    ) -> Result<Vec<RangeSource>, HttpError> {
+        let mut sources = Vec::<RangeSource>::new();
+        for url in &options.mirrors {
+            let metadata = tokio::select! {
+                () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
+                result = probe(&self.client, url) => result,
+            };
+            let Ok(metadata) = metadata else {
+                tracing::warn!("Skipping an unavailable mirror");
+                continue;
+            };
+            if metadata.final_url == primary.url
+                || sources
+                    .iter()
+                    .any(|source| source.url == metadata.final_url)
+            {
+                continue;
+            }
+            if metadata.size == Some(primary.size)
+                && let Some(source) =
+                    RangeSource::new(&self.client, &metadata, primary.size, limits.clone())
+            {
+                sources.push(source);
+            } else {
+                tracing::warn!("Skipping a mirror without matching size or validated byte ranges");
+            }
+        }
+        Ok(sources)
     }
 }
 
@@ -420,11 +472,14 @@ enum Event {
 
 struct Active {
     requested_end: u64,
+    source_index: usize,
     task: AbortHandle,
 }
 
 struct Segmented {
     source: RangeSource,
+    mirrors: Vec<Option<RangeSource>>,
+    next_source: usize,
     allocator: SegmentAllocator,
     connections: ConnectionController,
     tasks: JoinSet<()>,
@@ -434,10 +489,17 @@ struct Segmented {
 }
 
 impl Segmented {
-    fn new(source: RangeSource, allocator: SegmentAllocator, cap: NonZeroUsize) -> Self {
+    fn new(
+        source: RangeSource,
+        mirrors: Vec<RangeSource>,
+        allocator: SegmentAllocator,
+        cap: NonZeroUsize,
+    ) -> Self {
         let (events, incoming) = mpsc::channel(cap.get() * 2);
         Self {
             source,
+            mirrors: mirrors.into_iter().map(Some).collect(),
+            next_source: 0,
             allocator,
             connections: ConnectionController::new(cap),
             tasks: JoinSet::new(),
@@ -447,12 +509,25 @@ impl Segmented {
         }
     }
 
+    fn choose_source(&mut self) -> (usize, RangeSource) {
+        loop {
+            let index = self.next_source;
+            self.next_source = (index + 1) % (self.mirrors.len() + 1);
+            if index == 0 {
+                return (index, self.source.clone());
+            }
+            if let Some(Some(mirror)) = self.mirrors.get(index - 1) {
+                return (index, mirror.clone());
+            }
+        }
+    }
+
     fn schedule(&mut self) {
         while self.active.len() < self.connections.limit() {
             let Some(work) = self.allocator.assign() else {
                 break;
             };
-            let source = self.source.clone();
+            let (source_index, source) = self.choose_source();
             let events = self.events.clone();
             let (id, requested_end) = (work.id, work.range.end);
             let task = self.tasks.spawn(async move {
@@ -463,6 +538,7 @@ impl Segmented {
                 id,
                 Active {
                     requested_end,
+                    source_index,
                     task,
                 },
             );
@@ -504,9 +580,20 @@ impl Segmented {
                         }
                     }
                     Event::End(id, result) => {
-                        if self.active.remove(&id).is_some() {
+                        if let Some(active) = self.active.remove(&id) {
                             self.allocator.release(id)?;
-                            result?;
+                            if let Err(error) = result {
+                                if active.source_index == 0 {
+                                    return Err(error);
+                                }
+                                if let Some(mirror) = self.mirrors.get_mut(active.source_index - 1) {
+                                    *mirror = None;
+                                }
+                                if error.congested() {
+                                    self.connections.congested();
+                                }
+                                tracing::warn!(class = ?error.classification(), "Disabled a failed mirror");
+                            }
                         }
                     }
                 },

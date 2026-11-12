@@ -64,6 +64,8 @@ If a direct link expires mid-download (`403`/`410` or redirect back to an HTML p
 - Writer: performs positional writes (`seek_write`/`write_at`) to `.rscpart`; on every checkpoint:
   `sync_data()` → update completed ranges → atomically write `.rscpart.ctl`.
 - Shared token-bucket rate limiter (global + per-download) applied across workers.
+- Mirror candidates must have the primary file's length and support validated ranges. The writer verifies the
+  supplied file checksum before publishing data assembled from multiple sources.
 - Connection management: shared `reqwest::Client` (connection pool, keep-alive); benchmark whether forcing HTTP/1.1
   for parallel range connections outperforms multiplexed HTTP/2 on throttled servers, and make it configurable.
 
@@ -108,7 +110,7 @@ expect_download = true      # response is the file → direct link
 
 - `<data_dir>/ruscello.db` (SQLite WAL): downloads, packages, categories, rules, settings, history.
 - Alongside each partial download: `filename.ext.rscpart` + `filename.ext.rscpart.ctl` (completed byte ranges,
-  remote validators, source URL, format version, CRC32). SQLite holds the logical queue view while the control
+  remote validators, hashed source identity, format version, CRC32). SQLite holds the logical queue view while the control
   file is the source of truth for persisted bytes; both are reconciled on startup.
 - BitTorrent state and fastresume data are managed by `librqbit` under `<data_dir>/torrent/`.
 - Standard OS directories resolved via the `directories` crate (`%APPDATA%\Ruscello`, `~/.local/share/ruscello`, etc.).

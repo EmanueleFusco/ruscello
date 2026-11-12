@@ -13,11 +13,13 @@ bytes.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
 httpdate.workspace = true
+md-5.workspace = true
 mime_guess.workspace = true
 percent-encoding.workspace = true
 postcard.workspace = true
 reqwest = { workspace = true, features = ["rustls", "http2"] }
 serde.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
