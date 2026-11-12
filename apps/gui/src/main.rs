@@ -2,4 +2,21 @@
 //!
 //! Placeholder created during project bootstrap (M0). See `docs/PLAN.md`.
 
-fn main() {}
+use std::process::ExitCode;
+
+use ruscello_platform::{language::Language, logging};
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => {
+            eprintln!("{}", Language::system().logging_unavailable());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
+    let _log = logging::init("ruscello")?;
+    Ok(())
+}
