@@ -12,3 +12,4 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - M0.1: Shared platform paths, daily rotating application logs, typed startup errors, and an explicit
   workspace build check on all three CI platforms.
 - M1.1: Loopback HTTP testkit with deterministic payloads, configurable server faults, and request recording.
+- M1.2: HTTP metadata probing for file size, byte ranges, filenames, redirects, and validators.
