@@ -22,5 +22,7 @@ pub use retry::{Connectivity, ErrorClass, ExpiredLinkResolver, ResolvedLink, Ret
 pub use segments::{
     ConnectionController, DEFAULT_MIN_SEGMENT_SIZE, SegmentAllocator, SegmentError, Work, WorkId,
 };
-pub use writer::persisted_bytes;
-pub use writer::{FileWriter, WriterError, sanitize_filename};
+pub use writer::{
+    Checkpoint, CheckpointJob, FileWriter, WriterError, persisted_bytes, sanitize_filename,
+    scan_checkpoints,
+};

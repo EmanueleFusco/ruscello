@@ -158,7 +158,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
       JDownloader), `Source` (`Http`/`Torrent`/`Media`/`Hoster`), `Status` (`Queued`, `Resolving`, `WaitingUser`,
       `Downloading`, `Paused`, `Seeding`, `PostProcessing`, `Completed`, `Failed{reason}`), `Category`, `Tag`,
       `Priority`. Explicit state machine with unit-tested transitions.
-- [ ] **M2.2 SQLite storage** with versioned migrations (`rusqlite_migration` or equivalent), WAL mode,
+- [x] **M2.2 SQLite storage** with versioned migrations (`rusqlite_migration` or equivalent), WAL mode,
       batched async writes (dedicated actor), automatic DB backup. Corrupted DB recovery
       (rebuilding state from `.rscpart.ctl` control files).
 - [ ] **M2.3 Scheduler**: max global concurrent downloads, max connections per host, priorities, manual ordering

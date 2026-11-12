@@ -134,6 +134,10 @@ expect_download = true      # response is the file → direct link
 - Alongside each partial download: `filename.ext.rscpart` + `filename.ext.rscpart.ctl` (completed byte ranges,
   remote validators, hashed source identity, format version, CRC32). SQLite holds the logical queue view while the control
   file is the source of truth for persisted bytes; both are reconciled on startup.
+- The storage actor keeps a standalone SQLite backup next to the database. If both copies are corrupt, the engine
+  can reconstruct paused entries from managed checkpoints in the configured recovery folders. Those checkpoints
+  include the job ID and destination. URLs containing query strings or user information are excluded from checkpoints.
+  Older checkpoints still reconcile against a known queue entry by hashed source identity.
 - BitTorrent state and fastresume data are managed by `librqbit` under `<data_dir>/torrent/`.
 - Standard OS directories resolved via the `directories` crate (`%APPDATA%\Ruscello`, `~/.local/share/ruscello`, etc.).
 

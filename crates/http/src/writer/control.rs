@@ -13,7 +13,8 @@ use crate::{ExpectedChecksum, Probe};
 
 use super::disk;
 
-const HEADER: &[u8; 6] = b"RSCT\x01\x00";
+const LEGACY_HEADER: &[u8; 6] = b"RSCT\x01\x00";
+const MANAGED_HEADER: &[u8; 6] = b"RSCT\x02\x00";
 const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,23 +59,62 @@ impl TransferKey {
     }
 }
 
-fn url_identity(url: &Url) -> [u8; 32] {
+pub(super) fn url_identity(url: &Url) -> [u8; 32] {
     let mut url = url.clone();
     url.set_fragment(None);
     Sha256::digest(url.as_str().as_bytes()).into()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Queue identity and destination needed to reconstruct a managed transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointJob {
+    pub id: u64,
+    pub destination: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Recovery {
+    pub job: CheckpointJob,
+    pub source: Option<String>,
+}
+
+impl Recovery {
+    pub(crate) fn new(job: CheckpointJob, url: &Url) -> Self {
+        let mut url = url.clone();
+        url.set_fragment(None);
+        // Signed query strings and user information are never copied into a checkpoint.
+        let source =
+            (url.username().is_empty() && url.password().is_none() && url.query().is_none())
+                .then(|| url.into());
+        Self { job, source }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct Control {
     pub key: TransferKey,
     pub completed: Vec<Range<u64>>,
+    pub recovery: Option<Recovery>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Transfer {
+    key: TransferKey,
+    completed: Vec<Range<u64>>,
+}
+
+#[derive(Serialize)]
+struct TransferRef<'a> {
+    key: &'a TransferKey,
+    completed: &'a [Range<u64>],
 }
 
 impl Control {
-    pub(super) fn empty(key: TransferKey) -> Self {
+    pub(super) fn empty(key: TransferKey, recovery: Option<Recovery>) -> Self {
         Self {
             key,
             completed: Vec::new(),
+            recovery,
         }
     }
 }
@@ -91,14 +131,27 @@ pub(super) fn read(path: &Path) -> io::Result<Control> {
         .take((MAX_CONTROL_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid download checkpoint");
-    if bytes.len() > MAX_CONTROL_BYTES || bytes.len() < HEADER.len() + 4 {
+    if bytes.len() > MAX_CONTROL_BYTES || bytes.len() < LEGACY_HEADER.len() + 4 {
         return Err(invalid());
     }
     let (record, checksum) = bytes.split_at(bytes.len() - 4);
-    if !record.starts_with(HEADER) || crc32fast::hash(record).to_le_bytes().as_slice() != checksum {
+    if crc32fast::hash(record).to_le_bytes().as_slice() != checksum {
         return Err(invalid());
     }
-    let control: Control = postcard::from_bytes(&record[HEADER.len()..]).map_err(|_| invalid())?;
+    let (transfer, recovery): (Transfer, Option<Recovery>) =
+        if let Some(payload) = record.strip_prefix(LEGACY_HEADER) {
+            (postcard::from_bytes(payload).map_err(|_| invalid())?, None)
+        } else if let Some(payload) = record.strip_prefix(MANAGED_HEADER) {
+            let (transfer, recovery) = postcard::from_bytes(payload).map_err(|_| invalid())?;
+            (transfer, Some(recovery))
+        } else {
+            return Err(invalid());
+        };
+    let control = Control {
+        key: transfer.key,
+        completed: transfer.completed,
+        recovery,
+    };
     let mut previous_end = None;
     for range in &control.completed {
         if range.is_empty()
@@ -114,18 +167,26 @@ pub(super) fn read(path: &Path) -> io::Result<Control> {
 
 /// The caller must synchronize the partial data before writing any checkpoint.
 pub(super) fn write(directory: &Path, path: &Path, control: &Control) -> io::Result<()> {
-    let payload = postcard::to_stdvec(control).map_err(io::Error::other)?;
-    if payload.len() > MAX_CONTROL_BYTES - HEADER.len() - 4 {
+    let transfer = TransferRef {
+        key: &control.key,
+        completed: &control.completed,
+    };
+    let (header, payload) = match &control.recovery {
+        Some(recovery) => (MANAGED_HEADER, postcard::to_stdvec(&(transfer, recovery))),
+        None => (LEGACY_HEADER, postcard::to_stdvec(&transfer)),
+    };
+    let payload = payload.map_err(io::Error::other)?;
+    if payload.len() > MAX_CONTROL_BYTES - header.len() - 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "download checkpoint is too large",
         ));
     }
     let mut crc = crc32fast::Hasher::new();
-    crc.update(HEADER);
+    crc.update(header);
     crc.update(&payload);
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(HEADER)?;
+    temporary.write_all(header)?;
     temporary.write_all(&payload)?;
     temporary.write_all(&crc.finalize().to_le_bytes())?;
     temporary.as_file().sync_all()?;

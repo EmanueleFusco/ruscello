@@ -24,7 +24,7 @@ use crate::{
     SegmentAllocator, Work, WorkId, WriterError, client, probe,
     probe::{content_range, require_identity},
     retry::{self, RetryState, status_error},
-    writer::TransferKey,
+    writer::{CheckpointJob, Recovery, TransferKey},
 };
 
 mod single;
@@ -49,6 +49,7 @@ pub struct DownloadOptions {
     pub expired_link_resolver: Option<Arc<dyn ExpiredLinkResolver>>,
     pub mirrors: Vec<Url>,
     pub expected_checksum: Option<ExpectedChecksum>,
+    pub checkpoint_job: Option<CheckpointJob>,
 }
 
 impl Default for DownloadOptions {
@@ -64,6 +65,7 @@ impl Default for DownloadOptions {
             expired_link_resolver: None,
             mirrors: Vec::new(),
             expected_checksum: None,
+            checkpoint_job: None,
         }
     }
 }
@@ -210,8 +212,12 @@ impl HttpDownloader {
                 .flatten()
         });
         let key = TransferKey::new(original, &data, options.expected_checksum.as_ref());
+        let recovery = options
+            .checkpoint_job
+            .clone()
+            .map(|job| Recovery::new(job, original));
         let (mut writer, completed, restarted) =
-            FileWriter::open_download(&options.directory, &data.filename, key).await?;
+            FileWriter::open_download(&options.directory, &data.filename, key, recovery).await?;
         if restarted {
             state.restart();
         }

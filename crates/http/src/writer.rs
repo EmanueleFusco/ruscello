@@ -17,7 +17,8 @@ mod control;
 mod disk;
 mod names;
 
-pub(crate) use control::TransferKey;
+pub use control::CheckpointJob;
+pub(crate) use control::{Recovery, TransferKey};
 pub use names::sanitize_filename;
 
 const BATCH_BYTES: usize = 1024 * 1024;
@@ -60,15 +61,16 @@ impl FileWriter {
         filename: &str,
         size: Option<u64>,
     ) -> Result<Self, WriterError> {
-        Ok(Self::start(directory, filename, size, None).await?.0)
+        Ok(Self::start(directory, filename, size, None, None).await?.0)
     }
 
     pub(crate) async fn open_download(
         directory: &Path,
         filename: &str,
         key: TransferKey,
+        recovery: Option<Recovery>,
     ) -> Result<(Self, Vec<Range<u64>>, bool), WriterError> {
-        Self::start(directory, filename, key.size, Some(key)).await
+        Self::start(directory, filename, key.size, Some(key), recovery).await
     }
 
     async fn start(
@@ -76,13 +78,14 @@ impl FileWriter {
         filename: &str,
         size: Option<u64>,
         key: Option<TransferKey>,
+        recovery: Option<Recovery>,
     ) -> Result<(Self, Vec<Range<u64>>, bool), WriterError> {
         let directory = directory.to_owned();
         let filename = sanitize_filename(filename);
         let (commands, receiver) = mpsc::channel(16);
         let (ready, started) = oneshot::channel();
         let task = tokio::task::spawn_blocking(move || {
-            match Worker::create(&directory, filename, size, key) {
+            match Worker::create(&directory, filename, size, key, recovery) {
                 Ok((worker, restarted)) => {
                     if ready
                         .send(Ok((
@@ -229,6 +232,7 @@ impl Worker {
         name: String,
         size: Option<u64>,
         key: Option<TransferKey>,
+        recovery: Option<Recovery>,
     ) -> Result<(Self, bool), WriterError> {
         let directory = fs::canonicalize(directory)?;
         for index in 0..CANDIDATES {
@@ -236,7 +240,8 @@ impl Worker {
             let partial = directory.join(format!("{filename}.rscpart"));
             let sidecar = control::path(&partial);
             if let Some(key) = &key
-                && let Some(resumed) = Self::reopen(&directory, &name, &partial, key)?
+                && let Some(resumed) =
+                    Self::reopen(&directory, &name, &partial, key, recovery.as_ref())?
             {
                 return Ok(resumed);
             }
@@ -266,7 +271,7 @@ impl Worker {
             let mut worker = Self::new(file, partial, name, directory, size);
             if let Some(key) = key {
                 lock_partial(&worker.file)?;
-                worker.control = Some(control::Control::empty(key));
+                worker.control = Some(control::Control::empty(key, recovery));
                 worker.checkpoint()?;
             }
             return Ok((worker, false));
@@ -299,9 +304,10 @@ impl Worker {
         name: &str,
         partial: &Path,
         key: &TransferKey,
+        recovery: Option<&Recovery>,
     ) -> Result<Option<(Self, bool)>, WriterError> {
         let path = control::path(partial);
-        if matching_checkpoint(&path, key)?.is_none() {
+        if matching_checkpoint(&path, key, recovery)?.is_none() {
             return Ok(None);
         }
         match fs::symlink_metadata(partial) {
@@ -316,7 +322,7 @@ impl Worker {
             Err(error) => return Err(error.into()),
         };
         lock_partial(&file)?;
-        let Some(previous) = matching_checkpoint(&path, key)? else {
+        let Some(previous) = matching_checkpoint(&path, key, recovery)? else {
             return Ok(None);
         };
         let length = file.metadata()?.len();
@@ -328,7 +334,7 @@ impl Worker {
             directory.to_owned(),
             key.size,
         );
-        worker.control = Some(control::Control::empty(key.clone()));
+        worker.control = Some(control::Control::empty(key.clone(), recovery.cloned()));
         if resumable {
             for range in previous.completed {
                 worker.covered.add(range);
@@ -507,9 +513,17 @@ impl Worker {
 fn matching_checkpoint(
     path: &Path,
     key: &TransferKey,
+    recovery: Option<&Recovery>,
 ) -> Result<Option<control::Control>, WriterError> {
     match control::read(path) {
-        Ok(control) => Ok((control.key.source == key.source).then_some(control)),
+        Ok(control) => {
+            let previous = control.recovery.as_ref().map(|recovery| recovery.job.id);
+            let current = recovery.map(|recovery| recovery.job.id);
+            Ok(
+                (control.key.source == key.source && (previous.is_none() || previous == current))
+                    .then_some(control),
+            )
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
             tracing::warn!("Ignoring an invalid download checkpoint");
@@ -535,6 +549,99 @@ pub fn persisted_bytes(partial: &Path) -> Result<u64, WriterError> {
         .iter()
         .map(|range| range.end - range.start)
         .sum())
+}
+
+/// Validated checkpoint metadata for startup reconciliation.
+#[derive(Debug)]
+pub struct Checkpoint {
+    pub partial: PathBuf,
+    pub total_bytes: Option<u64>,
+    pub downloaded_bytes: u64,
+    pub job: Option<CheckpointJob>,
+    source: [u8; 32],
+    recovery_url: Option<reqwest::Url>,
+}
+
+impl Checkpoint {
+    pub fn matches_url(&self, url: &reqwest::Url) -> bool {
+        self.source == control::url_identity(url)
+    }
+
+    pub fn recovery_url(&self) -> Option<&reqwest::Url> {
+        self.recovery_url.as_ref()
+    }
+}
+
+/// Enumerates regular partial files backed by valid checkpoints in one directory.
+pub fn scan_checkpoints(directory: &Path) -> Result<Vec<Checkpoint>, WriterError> {
+    let mut checkpoints = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(filename) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".rscpart.ctl"))
+        else {
+            continue;
+        };
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let partial = directory.join(format!("{filename}.rscpart"));
+        match inspect(&partial, &entry.path()) {
+            Ok(checkpoint) => checkpoints.push(checkpoint),
+            Err(WriterError::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+                ) =>
+            {
+                tracing::debug!(kind = ?error.kind(), "Ignoring an incomplete checkpoint pair");
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    checkpoints.sort_unstable_by(|left, right| left.partial.cmp(&right.partial));
+    Ok(checkpoints)
+}
+
+fn inspect(partial: &Path, sidecar: &Path) -> Result<Checkpoint, WriterError> {
+    let metadata = fs::symlink_metadata(partial)?;
+    let control = control::read(sidecar)?;
+    let length = metadata.len();
+    if !metadata.is_file()
+        || control.key.size.is_some_and(|size| size != length)
+        || control
+            .completed
+            .last()
+            .is_some_and(|range| range.end > length)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid partial file").into());
+    }
+    let recovery_url = control
+        .recovery
+        .as_ref()
+        .and_then(|record| record.source.as_deref())
+        .and_then(|url| reqwest::Url::parse(url).ok())
+        .filter(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && control::url_identity(url) == control.key.source
+        });
+    Ok(Checkpoint {
+        partial: partial.to_owned(),
+        total_bytes: control.key.size,
+        downloaded_bytes: control
+            .completed
+            .iter()
+            .map(|range| range.end - range.start)
+            .sum(),
+        job: control.recovery.map(|record| record.job),
+        source: control.key.source,
+        recovery_url,
+    })
 }
 
 #[derive(Default)]
