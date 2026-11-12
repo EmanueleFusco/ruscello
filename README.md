@@ -4,7 +4,7 @@
 > crash-safe, resumable, and lightweight. Unites the capabilities of qBittorrent and JDownloader in a single,
 > minimal, professional interface.
 
-**Status:** In active development — Bootstrap phase (M0). See the [Work Plan & Roadmap](docs/PLAN.md).
+**Status:** The M1 HTTP engine is available through the developer CLI. See the [Work Plan & Roadmap](docs/PLAN.md).
 
 ## Key Features
 
@@ -30,6 +30,18 @@ cargo run -p ruscello-cli -- --help  # Headless CLI
 
 Developer & agent documentation: [AGENTS.md](AGENTS.md), [Architecture](docs/ARCHITECTURE.md),
 [UI Specs](docs/UI.md), [Testing Strategy](docs/TESTING.md), [ADRs](docs/adr/).
+
+### Download an HTTP file
+
+```bash
+cargo run -p ruscello-cli -- get <url> -o downloads -x 16
+cargo run -p ruscello-cli -- --language it --help
+```
+
+Progress appears on standard error in a terminal. Use `--progress` to display it when redirected or
+`--quiet` to suppress it. Standard output contains the path to the completed file.
+Press Ctrl+C to interrupt a download. Run the same command to resume when the server supports validated byte ranges.
+Use `--checksum sha256:<hex>` to verify the completed file, and repeat `--mirror <url>` to add verified sources.
 
 ## License
 

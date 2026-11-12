@@ -135,8 +135,8 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 - [x] **M1.9 Mirrors**: multiple URLs for the same file → segments distributed across matching-size sources
       with usable range validators. An expected file checksum is required before combining mirror data.
 - [x] **M1.10 Integrity verification**: optional hash check (MD5/SHA-1/SHA-256/CRC32) supplied by user or plugin.
-- [ ] **M1.11 FTP/FTPS** (`suppaftp` crate) with resume via `REST` — low priority, may slip to M9.
-- [ ] **M1.12 Developer CLI** (`apps/cli`): `ruscello-cli get <url> [-o dir] [-x conns]` to test and benchmark
+- **M1.11 FTP/FTPS** is deferred to M9.8.
+- [x] **M1.12 Developer CLI** (`apps/cli`): `ruscello-cli get <url> [-o dir] [-x conns]` to test and benchmark
       the engine without the GUI.
 
 ### Definition of Done — M1
@@ -354,6 +354,7 @@ optional live tests behind feature flag.
 - [ ] **M9.5** Automatic checksum verification when a site/package provides `.sfv`, `.md5`, or `.sha256` files.
 - [ ] **M9.6** Watch folder rules for `.torrent` files and `.txt` link lists.
 - [ ] **M9.7** Optional post-download user command hook.
+- [ ] **M9.8 FTP/FTPS** (`suppaftp` crate) with resume via `REST`, deferred from M1.11.
 
 ---
 

@@ -16,7 +16,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 ruscello-engine.workspace = true
 ruscello-platform.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs", "signal"] }
 tracing.workspace = true
 
 [dev-dependencies]
