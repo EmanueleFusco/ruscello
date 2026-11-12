@@ -1,5 +1,7 @@
 //! Non-blocking daily log files for each executable.
 
+use std::path::Path;
+
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{InitError, RollingFileAppender, Rotation},
@@ -21,12 +23,17 @@ pub enum LoggingError {
 /// Installs the process subscriber. Keep the returned guard until the process exits.
 pub fn init(application: &str) -> Result<WorkerGuard, LoggingError> {
     let paths = AppPaths::discover()?;
+    init_in(application, paths.logs())
+}
+
+/// Installs the subscriber in an explicitly chosen directory.
+pub fn init_in(application: &str, directory: &Path) -> Result<WorkerGuard, LoggingError> {
     let log = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix(application)
         .filename_suffix("log")
         .max_log_files(14)
-        .build(paths.logs())?;
+        .build(directory)?;
     let (writer, guard) = tracing_appender::non_blocking(log);
     let subscriber = fmt()
         .with_ansi(false)

@@ -17,6 +17,20 @@ pub enum HttpError {
     Status(StatusCode),
     #[error("invalid HTTP response: {0}")]
     InvalidResponse(&'static str),
+    #[error("the server did not provide a resumable representation")]
+    NonResumable,
+    #[error("the representation changed")]
+    RepresentationChanged,
+    #[error("download cancelled")]
+    Cancelled,
+    #[error("the response ended before its declared length")]
+    Truncated,
+    #[error("an HTTP download worker stopped")]
+    WorkerStopped,
+    #[error(transparent)]
+    Storage(#[from] crate::WriterError),
+    #[error(transparent)]
+    Segment(#[from] crate::SegmentError),
 }
 
 impl From<reqwest::Error> for HttpError {
