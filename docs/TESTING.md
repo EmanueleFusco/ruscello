@@ -22,18 +22,18 @@
 In-process local HTTP server bound to an ephemeral port with a scenario builder:
 
 ```rust
-// illustrative API
-let srv = TestServer::start().await;
-let url = srv.file(FileSpec::random(seed, 256 * MIB)
+let srv = TestServer::start().await?;
+let file = srv.file(FileSpec::random(seed, 256 * MIB)
     .ranges(true)
-    .etag("v1")
     .drop_after_bytes(10 * MIB)        // simulates dropped connection
     .throttle_per_conn(2 * MIB)        // bytes/sec per connection
-    .max_conns_per_ip(4)               // returns 503 above limit
+    .max_conns_per_ip(4, StatusCode::SERVICE_UNAVAILABLE)
     .latency(Duration::from_millis(50)));
+let url = file.url();
 ```
 
-Also serves mock HTML pages replicating real hoster patterns (fuckingfast-like: `/dl/...` direct link embedded in
+The fixture handle also exposes the seeded payload and records range requests and response statuses.
+Later milestones add mock HTML pages replicating real hoster patterns (fuckingfast-like: `/dl/...` direct link embedded in
 script; XFileSharing-like: `method_free` form → countdown → `downloadbtn`; mock verification challenge page) so
 plugins, TOML recipes, and the browser helper are tested **completely offline**.
 

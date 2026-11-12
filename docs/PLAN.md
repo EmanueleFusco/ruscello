@@ -101,7 +101,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 **Goal**: download an HTTP/HTTPS URL quickly, with pause/resume at any point, without ever corrupting the output file.
 
 ### Tasks
-- [ ] **M1.1 Testkit server** (`ruscello-testkit`): local HTTP server (`axum`/`hyper`) with configurable scenarios:
+- [x] **M1.1 Testkit server** (`ruscello-testkit`): local HTTP server (`axum`/`hyper`) with configurable scenarios:
       range supported/unsupported, missing `Content-Length`, chunked transfer, multi-hop redirects,
       `Content-Disposition` (including RFC 5987 `filename*=`), mid-transfer `ETag`/`Last-Modified` changes,
       connection drop after N bytes, per-connection throttling, max connections per IP limit
