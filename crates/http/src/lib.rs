@@ -6,5 +6,9 @@
 
 mod filename;
 mod probe;
+mod segments;
 
 pub use probe::{HttpError, Probe, Validators, client, probe};
+pub use segments::{
+    ConnectionController, DEFAULT_MIN_SEGMENT_SIZE, SegmentAllocator, SegmentError, Work, WorkId,
+};

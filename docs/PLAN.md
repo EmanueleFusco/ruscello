@@ -110,7 +110,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 - [x] **M1.2 Probe**: initial request (`GET` with `Range: bytes=0-` preferred over `HEAD`, as many servers
       mishandle `HEAD`) → size, range support, filename (`Content-Disposition` > final URL >
       MIME → extension), validators (`ETag`, `Last-Modified`), final URL after redirects.
-- [ ] **M1.3 Segment allocator** (pure, no I/O, tested with `proptest`):
+- [x] **M1.3 Segment allocator** (pure, no I/O, tested with `proptest`):
   - initial split into N segments respecting `min_segment_size` (default 1 MiB, adaptive);
   - **work stealing**: when a connection finishes, split the largest remaining segment in half
     (or the one with the highest estimated completion time) if the remaining bytes exceed the threshold;
