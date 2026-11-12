@@ -92,6 +92,7 @@ pub struct Probe {
     pub size: Option<u64>,
     pub supports_ranges: bool,
     pub filename: String,
+    pub content_type: Option<String>,
     pub validators: Validators,
 }
 
@@ -137,6 +138,13 @@ pub(crate) fn parse_probe(response: &Response) -> Result<Probe, HttpError> {
     let headers = response.headers();
     let final_url = response.url().clone();
     let filename = suggest_filename(headers, &final_url);
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 255)
+        .map(str::to_ascii_lowercase);
     let validators = Validators::read(headers);
     tracing::debug!(
         ?size,
@@ -149,6 +157,7 @@ pub(crate) fn parse_probe(response: &Response) -> Result<Probe, HttpError> {
         size,
         supports_ranges,
         filename,
+        content_type,
         validators,
     })
 }

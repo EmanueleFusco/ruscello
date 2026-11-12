@@ -9,7 +9,12 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+fs4.workspace = true
 getrandom.workspace = true
+infer.workspace = true
+mime_guess.workspace = true
+percent-encoding.workspace = true
+regex.workspace = true
 ruscello-core.workspace = true
 ruscello-http.workspace = true
 ruscello-storage.workspace = true

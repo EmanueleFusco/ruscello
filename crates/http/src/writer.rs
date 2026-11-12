@@ -4,6 +4,7 @@ use std::{
     io::{self, Seek},
     ops::Range,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use bytes::Bytes;
@@ -53,6 +54,7 @@ pub struct FileWriter {
     commands: mpsc::Sender<Command>,
     partial: PathBuf,
     task: tokio::task::JoinHandle<()>,
+    failure: Arc<Mutex<Option<WriterError>>>,
 }
 
 impl FileWriter {
@@ -85,6 +87,8 @@ impl FileWriter {
         let filename = sanitize_filename(filename);
         let (commands, receiver) = mpsc::channel(16);
         let (ready, started) = oneshot::channel();
+        let failure = Arc::new(Mutex::new(None));
+        let worker_failure = Arc::clone(&failure);
         let task = tokio::task::spawn_blocking(move || {
             match Worker::create(&directory, filename, size, key, recovery) {
                 Ok((worker, restarted)) => {
@@ -96,7 +100,7 @@ impl FileWriter {
                         )))
                         .is_ok()
                     {
-                        worker.run(receiver);
+                        worker.run(receiver, &worker_failure);
                     }
                 }
                 Err(error) => {
@@ -110,6 +114,7 @@ impl FileWriter {
                 commands,
                 partial,
                 task,
+                failure,
             },
             ranges,
             restarted,
@@ -139,7 +144,7 @@ impl FileWriter {
                 reply: None,
             })
             .await
-            .map_err(|_| WriterError::Stopped)
+            .map_err(|_| self.stopped())
     }
 
     pub async fn sync_data(&mut self) -> Result<(), WriterError> {
@@ -198,8 +203,16 @@ impl FileWriter {
         self.commands
             .send(command(reply))
             .await
-            .map_err(|_| WriterError::Stopped)?;
-        response.await.map_err(|_| WriterError::Stopped)?
+            .map_err(|_| self.stopped())?;
+        response.await.map_err(|_| self.stopped())?
+    }
+
+    fn stopped(&self) -> WriterError {
+        self.failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or(WriterError::Stopped)
     }
 }
 
@@ -363,7 +376,7 @@ impl Worker {
         Ok(Some((worker, !resumable)))
     }
 
-    fn run(mut self, mut commands: mpsc::Receiver<Command>) {
+    fn run(mut self, mut commands: mpsc::Receiver<Command>, failure: &Mutex<Option<WriterError>>) {
         while let Some(command) = commands.blocking_recv() {
             let (result, reply) = match command {
                 Command::Write {
@@ -388,6 +401,9 @@ impl Worker {
                 let _ = reply.send(result);
             } else if let Err(error) = result {
                 tracing::debug!(%error, "Queued download write failed");
+                *failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
             }
             if failed {
                 return;

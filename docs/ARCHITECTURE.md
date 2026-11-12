@@ -143,6 +143,15 @@ expect_download = true      # response is the file → direct link
 - Managed downloads stage completed data in their working directory before publishing to the destination.
   Publication uses a saved filename and a no-clobber operation. The staging copy is kept until the
   completed state is committed, so a restart can finish publication without downloading the file again.
+- Category assignment evaluates rules in order when a job is added. Rules can match the host, a filename
+  from the source URL or add request, a regular expression, or the source type. An explicit category or
+  destination takes precedence. A category can share a bandwidth cap and concurrent-download limit.
+- File type is recorded at completion using a bounded magic-byte read, the probed MIME type, and the
+  filename extension. The inferred type is independent of user categories.
+- An optional temporary directory holds working files for new jobs. Before opening the writer, the
+  engine checks space for known remaining bytes plus a configurable reserve. It checks the reserve
+  periodically during the transfer and pauses with a warning if space runs low. Cross-volume publication
+  checks space for a copy before publishing it atomically.
 - BitTorrent state and fastresume data are managed by `librqbit` under `<data_dir>/torrent/`.
 - Standard OS directories resolved via the `directories` crate (`%APPDATA%\Ruscello`, `~/.local/share/ruscello`, etc.).
 

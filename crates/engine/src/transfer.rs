@@ -3,23 +3,35 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use ruscello_core::{DownloadId, FailureReason, Source};
+use ruscello_core::{DownloadId, FailureReason, FileType, Source};
 use ruscello_http::{
-    CheckpointJob, DownloadOptions, DownloadProgress, ErrorClass, HttpDownloader, HttpError,
-    RetryPolicy, Url, WriterError, filename_candidate, scan_checkpoints,
+    BandwidthLimit, CheckpointJob, DownloadOptions, DownloadProgress, ErrorClass, HttpDownloader,
+    HttpError, RetryPolicy, Url, WriterError, filename_candidate, scan_checkpoints,
 };
 use ruscello_storage::QueueEntry;
-use tokio::sync::watch;
+use tokio::{
+    sync::watch,
+    time::{self, Instant, MissedTickBehavior},
+};
 use tokio_util::sync::CancellationToken;
 
-use crate::{EngineError, Limits, RECOVERY_FOLDER};
+use crate::{DiskPolicy, EngineError, Limits, RECOVERY_FOLDER, disk::Preparation, file_types};
 
 #[derive(Debug)]
 pub(super) struct Published {
     pub path: PathBuf,
     pub bytes: u64,
+    pub file_type: FileType,
+}
+
+pub(super) struct Context {
+    pub http: HttpDownloader,
+    pub limits: Limits,
+    pub bandwidth: BandwidthLimit,
+    pub disk: DiskPolicy,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +47,11 @@ pub(super) enum TransferError {
 impl TransferError {
     pub(super) fn cancelled(&self) -> bool {
         matches!(self, Self::Http(HttpError::Cancelled))
+    }
+
+    pub(super) fn low_disk(&self) -> bool {
+        matches!(self, Self::File(error) | Self::Http(HttpError::Storage(WriterError::Io(error)))
+            if matches!(error.kind(), io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded))
     }
 
     pub(super) fn reason(&self) -> FailureReason {
@@ -76,18 +93,22 @@ pub(super) fn working_directory(root: &Path, id: DownloadId) -> PathBuf {
 }
 
 pub(super) async fn run(
-    http: HttpDownloader,
+    context: Context,
     entry: QueueEntry,
     url: Url,
-    limits: Limits,
     cancellation: CancellationToken,
     progress: watch::Sender<DownloadProgress>,
 ) -> Result<Published, TransferError> {
     let (ready, existing) = tokio::task::spawn_blocking({
         let ready = ready_directory(&entry);
+        let working = entry.working_directory.clone();
+        let disk = context.disk.clone();
         move || {
             fs::create_dir_all(&ready)?;
             let existing = ready_file(&ready)?;
+            if existing.is_none() {
+                disk.check(&working, 0)?;
+            }
             Ok::<_, io::Error>((ready, existing))
         }
     })
@@ -95,32 +116,83 @@ pub(super) async fn run(
     let staged = match existing {
         Some(staged) => staged,
         None => {
+            let transfer_cancellation = cancellation.child_token();
             let options = DownloadOptions {
                 directory: entry.working_directory.clone(),
-                connections: limits
+                connections: context
+                    .limits
                     .connections_per_download
-                    .min(limits.connections_per_host),
-                cancellation: cancellation.clone(),
+                    .min(context.limits.connections_per_host),
+                cancellation: transfer_cancellation.clone(),
                 retry: RetryPolicy {
-                    max_retries: limits.retries,
+                    max_retries: context.limits.retries,
                     ..RetryPolicy::default()
                 },
+                bandwidth: context.bandwidth,
                 progress: Some(progress),
                 checkpoint_job: Some(CheckpointJob {
                     id: entry.download.id.0,
                     destination: entry.download.destination.clone(),
                 }),
                 completion_directory: Some(ready),
+                preparation: Some(Arc::new(Preparation {
+                    policy: context.disk.clone(),
+                    directory: entry.working_directory.clone(),
+                    mime_path: mime_path(&entry),
+                    id: entry.download.id.0,
+                    url: url.clone(),
+                })),
                 ..DownloadOptions::default()
             };
-            Box::pin(http.download(&url, options)).await?
+            monitored_download(
+                &context.http,
+                &url,
+                options,
+                &context.disk,
+                transfer_cancellation,
+            )
+            .await?
         }
     };
     if cancellation.is_cancelled() {
         return Err(HttpError::Cancelled.into());
     }
-    let published = tokio::task::spawn_blocking(move || publish(&entry, &staged)).await??;
+    let published =
+        tokio::task::spawn_blocking(move || publish(&entry, &staged, &context.disk)).await??;
     Ok(published)
+}
+
+async fn monitored_download(
+    http: &HttpDownloader,
+    url: &Url,
+    options: DownloadOptions,
+    disk: &DiskPolicy,
+    cancellation: CancellationToken,
+) -> Result<PathBuf, TransferError> {
+    let working = options.directory.clone();
+    let mut transfer = Box::pin(http.download(url, options));
+    let period = disk.interval();
+    let mut checks = time::interval_at(Instant::now() + period, period);
+    checks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            result = &mut transfer => return Ok(result?),
+            _ = checks.tick() => {}
+        }
+        let working = working.clone();
+        let disk = disk.clone();
+        let check = tokio::task::spawn_blocking(move || disk.check(&working, 0));
+        let result = tokio::select! {
+            result = &mut transfer => return Ok(result?),
+            result = check => result.map_err(TransferError::from)
+                .and_then(|check| check.map_err(TransferError::from)),
+        };
+        if let Err(error) = result {
+            cancellation.cancel();
+            let _ = transfer.await;
+            return Err(error);
+        }
+    }
 }
 
 fn ready_directory(entry: &QueueEntry) -> PathBuf {
@@ -133,6 +205,12 @@ fn intent_path(entry: &QueueEntry) -> PathBuf {
     entry
         .working_directory
         .join(format!(".publish-{}", entry.download.id.0))
+}
+
+fn mime_path(entry: &QueueEntry) -> PathBuf {
+    entry
+        .working_directory
+        .join(format!(".mime-{}", entry.download.id.0))
 }
 
 fn ready_file(directory: &Path) -> io::Result<Option<PathBuf>> {
@@ -150,15 +228,27 @@ fn ready_file(directory: &Path) -> io::Result<Option<PathBuf>> {
     Ok(result)
 }
 
-fn publish(entry: &QueueEntry, staged: &Path) -> io::Result<Published> {
+fn publish(entry: &QueueEntry, staged: &Path, disk: &DiskPolicy) -> io::Result<Published> {
     let directory = &entry.download.destination;
     fs::create_dir_all(directory)?;
     let bytes = staged.metadata()?.len();
+    let mut mime = String::new();
+    let content_type = File::open(mime_path(entry))
+        .and_then(|file| file.take(255).read_to_string(&mut mime))
+        .ok()
+        .map(|_| mime.as_str());
+    let file_type = file_types::detect(staged, content_type, entry.download.source.kind());
     let intent = intent_path(entry);
     if let Some(path) = published_target(&intent, directory, staged, bytes)? {
         sync_directory(directory)?;
-        return Ok(Published { path, bytes });
+        return Ok(Published {
+            path,
+            bytes,
+            file_type,
+        });
     }
+    ignore_missing(fs::remove_file(copy_path(directory, entry.download.id)))?;
+    disk.check(directory, 0)?;
     let name = staged
         .file_name()
         .and_then(OsStr::to_str)
@@ -169,11 +259,15 @@ fn publish(entry: &QueueEntry, staged: &Path) -> io::Result<Published> {
         if path.try_exists()? {
             continue;
         }
-        save_intent(&intent, &name, &entry.working_directory)?;
-        match publish_file(staged, &path, directory) {
+        write_marker(&intent, &name, &entry.working_directory)?;
+        match publish_file(staged, &path, directory, disk, bytes, entry.download.id) {
             Ok(()) => {
                 sync_directory(directory)?;
-                return Ok(Published { path, bytes });
+                return Ok(Published {
+                    path,
+                    bytes,
+                    file_type,
+                });
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
@@ -235,7 +329,7 @@ fn same_content(first: &Path, second: &Path) -> io::Result<bool> {
     }
 }
 
-fn save_intent(intent: &Path, name: &str, directory: &Path) -> io::Result<()> {
+pub(super) fn write_marker(intent: &Path, name: &str, directory: &Path) -> io::Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
     temporary.write_all(name.as_bytes())?;
     temporary.as_file().sync_all()?;
@@ -243,16 +337,49 @@ fn save_intent(intent: &Path, name: &str, directory: &Path) -> io::Result<()> {
     sync_directory(directory)
 }
 
-fn publish_file(staged: &Path, path: &Path, directory: &Path) -> io::Result<()> {
+fn publish_file(
+    staged: &Path,
+    path: &Path,
+    directory: &Path,
+    disk: &DiskPolicy,
+    bytes: u64,
+    id: DownloadId,
+) -> io::Result<()> {
     match fs::hard_link(staged, path) {
         Ok(()) => return Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(error),
         Err(_) => {}
     }
-    let mut output = tempfile::NamedTempFile::new_in(directory)?;
-    io::copy(&mut File::open(staged)?, output.as_file_mut())?;
-    output.as_file().sync_all()?;
-    output
+    copy_staged(staged, path, directory, disk, bytes, id)
+}
+
+fn copy_path(directory: &Path, id: DownloadId) -> PathBuf {
+    directory
+        .join(RECOVERY_FOLDER)
+        .join(format!(".publish-{}.rscpart", id.0))
+}
+
+fn copy_staged(
+    staged: &Path,
+    path: &Path,
+    directory: &Path,
+    disk: &DiskPolicy,
+    bytes: u64,
+    id: DownloadId,
+) -> io::Result<()> {
+    let scratch = copy_path(directory, id);
+    fs::create_dir_all(directory.join(RECOVERY_FOLDER))?;
+    // The completed staging file remains available if a previous copy was interrupted.
+    ignore_missing(fs::remove_file(&scratch))?;
+    disk.check(directory, bytes)?;
+    let output = File::create_new(&scratch)?;
+    let scratch = tempfile::TempPath::try_from_path(scratch)?;
+    {
+        let mut output = output;
+        io::copy(&mut File::open(staged)?, &mut output)?;
+        output.sync_all()?;
+    }
+    scratch
         .persist_noclobber(path)
         .map_err(|error| error.error)?;
     Ok(())
@@ -269,6 +396,10 @@ fn sync_directory(_directory: &Path) -> io::Result<()> {
 }
 
 pub(super) fn discard_work(entry: &QueueEntry) -> io::Result<()> {
+    ignore_missing(fs::remove_file(copy_path(
+        &entry.download.destination,
+        entry.download.id,
+    )))?;
     let directory = &entry.working_directory;
     let id = entry.download.id.0.to_string();
     if directory.file_name() == Some(OsStr::new(&id))
@@ -280,6 +411,7 @@ pub(super) fn discard_work(entry: &QueueEntry) -> io::Result<()> {
     }
     ignore_missing(fs::remove_dir_all(ready_directory(entry)))?;
     ignore_missing(fs::remove_file(intent_path(entry)))?;
+    ignore_missing(fs::remove_file(mime_path(entry)))?;
     // Legacy jobs can share the working folder with files owned by other downloads.
     if let Ok(url) = source_url(&entry.download.source)
         && directory.try_exists()?
@@ -316,6 +448,15 @@ mod tests {
     use super::*;
     use ruscello_core::Download;
 
+    #[derive(Debug)]
+    struct FixedSpace(u64);
+
+    impl crate::DiskSpaceProbe for FixedSpace {
+        fn available_bytes(&self, _directory: &Path) -> io::Result<u64> {
+            Ok(self.0)
+        }
+    }
+
     #[test]
     fn restarts_publication_without_creating_a_duplicate_or_overwriting_a_file() -> io::Result<()> {
         let temp = tempfile::tempdir()?;
@@ -337,13 +478,44 @@ mod tests {
         let stage = ready.join("file.bin");
         fs::write(&stage, b"completed data")?;
         fs::write(destination.join("file.bin"), b"existing file")?;
-        let first = publish(&entry, &stage)?;
-        let restarted = publish(&entry, &stage)?;
+        let disk = DiskPolicy::default().with_probe(Arc::new(FixedSpace(u64::MAX)));
+        let first = publish(&entry, &stage, &disk)?;
+        let restarted = publish(&entry, &stage, &disk)?;
         assert_eq!(first.path, destination.join("file (1).bin"));
         assert_eq!(restarted.path, first.path);
         assert_eq!(fs::read(destination.join("file.bin"))?, b"existing file");
         assert!(!destination.join("file (2).bin").exists());
         assert_eq!(fs::read(first.path)?, b"completed data");
+        Ok(())
+    }
+
+    #[test]
+    fn retries_an_interrupted_copy_after_space_is_available() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("output");
+        let stage = temp.path().join("ready");
+        let output = destination.join("file.bin");
+        let id = DownloadId(1);
+        let contents = b"completed data";
+        fs::write(&stage, contents)?;
+        let scratch = copy_path(&destination, id);
+        fs::create_dir_all(destination.join(RECOVERY_FOLDER))?;
+        fs::write(&scratch, b"unfinished copy")?;
+        let mut disk = DiskPolicy::default().with_probe(Arc::new(FixedSpace(8)));
+        disk.minimum_free_bytes = 0;
+        let bytes = contents.len() as u64;
+        assert!(matches!(
+            copy_staged(&stage, &output, &destination, &disk, bytes, id),
+            Err(error) if error.kind() == io::ErrorKind::StorageFull
+        ));
+        assert!(!scratch.exists());
+        assert!(!output.exists());
+        assert_eq!(fs::read(&stage)?, contents);
+        let disk = disk.with_probe(Arc::new(FixedSpace(bytes)));
+        copy_staged(&stage, &output, &destination, &disk, bytes, id)?;
+        assert_eq!(fs::read(&output)?, contents);
+        assert_eq!(fs::read(&stage)?, contents);
+        assert!(!scratch.exists());
         Ok(())
     }
 }

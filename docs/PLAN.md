@@ -166,12 +166,12 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 - [x] **M2.4 Engine API**: `EngineHandle` with commands (`add`, `pause`, `resume`, `cancel{delete_files}`,
       `set_priority`, `move`, `set_limits`…) and events (`Added`, aggregated/throttled `Progress`,
       `StatusChanged`, `Log`). All `Send + Clone`; no locks exposed to the GUI.
-- [ ] **M2.5 Automatic categorization**:
+- [x] **M2.5 Automatic categorization**:
   - *File Type* (automatic, read-only): Video, Audio, Images, Documents, Archives, Programs,
     Torrents, Other — inferred from extension + MIME + magic bytes (`infer`) upon completion;
   - *Categories* (user-defined): rules matching domain / extension / regex / source → destination folder and
     limits; default categories: Games, Movies & TV, Music, Software, Work.
-- [ ] **M2.6 Disk management**: free-space check before and during download (automatic pause with warning if disk space
+- [x] **M2.6 Disk management**: free-space check before and during download (automatic pause with warning if disk space
       runs low), optional separate temporary directory for in-progress downloads.
 
 ### Definition of Done — M2
