@@ -14,3 +14,4 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - M1.1: Loopback HTTP testkit with deterministic payloads, configurable server faults, and request recording.
 - M1.2: HTTP metadata probing for file size, byte ranges, filenames, redirects, and validators.
 - M1.3: Pure byte-range allocation with work stealing and adaptive connection limits.
+- M1.4: Buffered positional file writer with preallocation and collision-safe publication.

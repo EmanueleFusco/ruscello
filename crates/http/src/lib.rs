@@ -7,8 +7,10 @@
 mod filename;
 mod probe;
 mod segments;
+mod writer;
 
 pub use probe::{HttpError, Probe, Validators, client, probe};
 pub use segments::{
     ConnectionController, DEFAULT_MIN_SEGMENT_SIZE, SegmentAllocator, SegmentError, Work, WorkId,
 };
+pub use writer::{FileWriter, WriterError, sanitize_filename};
