@@ -1,30 +1,31 @@
-# ADR-0004 — Verifiche anti-bot: human-in-the-loop nel browser helper
+# ADR-0004 — Anti-Bot Challenges: Human-in-the-Loop Browser Helper & Session Reuse
 
-- Stato: Accettato (2026-11-12)
+- Status: Accepted (2026-11-12)
 
-## Contesto
-Alcune pagine (hoster, siti dietro Cloudflare) mostrano verifiche anti-bot, captcha o login. Il committente
-vuole che i download vadano a buon fine anche in questi casi, con la massima automazione possibile.
+## Context
+Several file hosters and websites sit behind anti-bot challenges (full-page Cloudflare checks, hoster CAPTCHAs, login
+walls). The project owner wants downloads from these sites to succeed reliably with minimal manual effort.
 
-## Decisione
-- **Non** implementiamo risoluzione automatica di captcha, click automatici su widget di verifica, servizi
-  di solving, spoofing di fingerprint/TLS o browser "stealth/undetected". Motivi: affidabilità (corsa agli
-  armamenti che si rompe di continuo), rischio di ban di IP/account, termini di servizio, e posizione del
-  progetto come software affidabile e pubblicabile.
-- Approccio adottato (lo stesso di JDownloader in modalità manuale e di yt-dlp con i cookie):
-  1. il resolver rileva la pagina di verifica e mette il download in stato `WaitingUser` (gli altri download
-     continuano);
-  2. l'utente apre la finestra del **browser helper** (`ruscello-webview`, wry: WebView2/WebKitGTK/WKWebView)
-     e completa lui la verifica;
-  3. cookie (inclusi HttpOnly) e User-Agent vengono riutilizzati dal client HTTP per quel dominio; una
-     verifica sblocca tutti i download del dominio finché la sessione è valida;
-  4. se la sessione non è utilizzabile fuori dal browser, la ricetta viene eseguita dentro il webview e il
-     download avviato dalla pagina viene intercettato e passato al nostro motore;
-  5. alternative a zero interazione: estensione browser che passa i download con i cookie della sessione
-     reale dell'utente (M8), import cookie su richiesta, account premium degli hoster.
-- Il browser helper è un **processo separato** avviato on demand (event loop di tao incompatibile con
-  quello di iced nello stesso processo; risparmio RAM quando non serve).
+## Decision
+- We **do not** implement automated CAPTCHA solvers, automated clicks on verification widgets, third-party solving
+  services, TLS/fingerprint spoofing (JA3), or "stealth/undetected" browser patches. Reasons: extreme fragility
+  (constant cat-and-mouse breakage), IP/account ban risks, Terms of Service, and keeping the project clean and publishable.
+- Adopted architecture (matching JDownloader 2's browser solver and `yt-dlp` cookie workflows):
+  1. When the resolver detects a verification challenge, the download transitions to `WaitingUser` while unrelated
+     downloads continue uninterrupted.
+  2. The user opens the **browser helper** window (`ruscello-webview`, built on `wry`: WebView2 on Windows, WebKitGTK
+     on Linux, WKWebView on macOS) and completes the check themselves.
+  3. Cookies (including `HttpOnly` clearance cookies such as `cf_clearance`) and the exact `User-Agent` are extracted
+     and reused by the engine's HTTP client for that domain; **a single user check unlocks all queued downloads for
+     that domain** while the session remains valid.
+  4. If a hoster binds the session to the browser context, recipe steps execute inside the webview DOM (with ad popups
+     blocked natively via `new_window_req_handler`) and the resulting file download is intercepted
+     (`download_started_handler`) and handed off to our segmented Rust HTTP engine.
+  5. Zero-click alternatives: the browser extension (M8) forwards links together with cookies from the user's already-verified
+     daily browser session; optional cookie import; hoster premium accounts.
+- `ruscello-webview` runs as a **separate child process** spawned on demand (`tao`'s event loop cannot share the main
+  thread with `iced`'s `winit` loop, and terminating the helper when idle saves RAM).
 
-## Conseguenze
-- Per i batch dietro verifica serve in genere una sola interazione per sessione; tutto il resto è automatico.
-- Alcuni siti potrebbero comunque non funzionare fuori dal browser: la modalità 4 copre la maggior parte dei casi.
+## Consequences
+- For batch downloads behind a challenge, the user typically performs at most one check per session; the rest of the
+  batch proceeds automatically without popups or ChromeDriver breakage.

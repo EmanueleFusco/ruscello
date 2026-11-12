@@ -1,129 +1,123 @@
-# AGENTS.md — Istruzioni per gli agenti che lavorano su Ruscello
+# AGENTS.md — Instructions for Agents Working on Ruscello
 
-Ruscello è un download manager desktop scritto **interamente in Rust** che unisce un client BitTorrent
-(stile qBittorrent) e un download manager HTTP/hoster (stile JDownloader/IDM).
+Ruscello is a desktop download manager written **entirely in Rust** that combines a BitTorrent client
+(qBittorrent-style) and an HTTP/hoster download manager (JDownloader/IDM-style).
 
-Prima di scrivere codice leggi, in quest'ordine:
-1. `docs/PLAN.md` — roadmap, milestone, task con checkbox, Definition of Done (**fonte di verità**).
-2. `docs/ARCHITECTURE.md` — crate, responsabilità, flussi, crate esterni consigliati.
-3. `docs/adr/` — decisioni già prese (non ribaltarle senza un nuovo ADR).
-4. `docs/UI.md` — specifiche dell'interfaccia.
-5. `docs/TESTING.md` — strategia di test e gate obbligatori.
-6. `docs/reference/legacy-scripts/README.md` — casi d'uso reali del committente da supportare.
+Before writing any code, read these documents in order:
+1. `docs/PLAN.md` — roadmap, milestones, tasks with checkboxes, Definition of Done (**single source of truth**).
+2. `docs/ARCHITECTURE.md` — crates, responsibilities, data flows, recommended external crates.
+3. `docs/adr/` — Architecture Decision Records already agreed upon (do not overturn them without a new ADR).
+4. `docs/UI.md` — user interface specifications.
+5. `docs/TESTING.md` — testing strategy and mandatory CI gates.
+6. `docs/reference/legacy-scripts/README.md` — real-world owner use cases that must be supported.
 
-Lingua: documentazione di progetto in **italiano**; codice, identificatori, commenti nel codice, messaggi di
-commit, titoli di PR in **inglese**. Stringhe UI tramite i18n (`it` + `en`).
+**Language Policy (Mandatory):**
+- **Development & Repository:** All repository files, documentation, ADRs, code, identifiers, code comments, commit messages, issue descriptions, and PR titles/descriptions **must be written in English**.
+- **Application UI (i18n):** The application itself **must be available in both English (`en`) and Italian (`it`)**, with a user-selectable language setting in the Preferences (defaulting to the system locale when supported, with runtime switching).
 
 ---
 
-## 1. Regole non negoziabili
+## 1. Non-Negotiable Rules
 
-1. **Tutto Rust.** GUI (iced) e backend in Rust. Eccezioni ammesse e già decise:
-   - estensione browser (`extensions/browser`): JS/TS minimo richiesto dalle API delle estensioni;
-   - **sidecar opzionali** esterni scaricati dall'app con consenso dell'utente: `yt-dlp`, `ffmpeg`,
-     eventualmente `7z`/`unrar`. L'app deve funzionare senza di essi.
-   Nessun Electron/Tauri-con-frontend-web, nessun Python, nessun Node lato app.
-2. **Niente aggiramento automatico di verifiche anti-bot.** Non implementare risolutori di captcha,
-   click automatici su Turnstile/reCAPTCHA/hCaptcha, servizi di solving a pagamento, spoofing di
-   fingerprint/TLS (JA3) o browser "undetected/stealth". Le verifiche vengono **mostrate all'utente** nel
-   browser helper e la sessione risultante viene riutilizzata (ADR-0004). Le attese obbligatorie degli
-   hoster (countdown) vanno rispettate.
-3. **Mai corrompere o perdere download.** Qualsiasi modifica a `ruscello-http`, writer, control file o
-   storage deve mantenere verdi i test di crash/resume (kill del processo) e l'invariante
-   *dati fsync → poi control file*.
-4. **CI verde obbligatoria** prima del merge: `cargo fmt --check`, `cargo clippy --workspace --all-targets
-   -- -D warnings`, `cargo test --workspace` (o `cargo nextest run`) su Windows, Linux, macOS, `cargo deny check`.
-5. **Nessun test che dipende dalla rete reale** nella suite di default. I test live stanno dietro la feature
-   `live-tests` e/o `#[ignore]`.
-6. **Licenza GPL-3.0-or-later.** Dipendenze con licenze compatibili (cargo-deny lo verifica). Codice preso da
-   altri progetti va attribuito nel file/commento e deve avere licenza compatibile.
-7. **Niente segreti nel repository** (token, cookie, account). Credenziali utente solo nel keyring di sistema.
-8. **Nessun `unwrap()`/`expect()` su percorsi di runtime** (ammessi nei test e per invarianti dimostrabili con
-   commento `// INVARIANT:`). `unsafe` vietato salvo FFI di sistema documentata con `// SAFETY:` e motivata
-   nella PR.
+1. **All Rust.** Both the GUI (`iced`) and the backend must be written in Rust. Permitted exceptions already agreed upon:
+   - browser extension (`extensions/browser`): minimal JS/TS required by WebExtension APIs;
+   - **optional external sidecars** downloaded by the app with user consent: `yt-dlp`, `ffmpeg`,
+     and optionally `7z`/`unrar`. The application must work without them.
+   No Electron/Tauri-with-web-frontend, no Python, no Node.js in the desktop application.
+2. **No automated bypassing of anti-bot challenges.** Do not implement CAPTCHA solvers, automated clicks on Turnstile/reCAPTCHA/hCaptcha widgets, paid solving services, TLS/fingerprint spoofing (JA3), or "undetected/stealth" browsers. Challenges are **presented to the user** in the browser helper and the resulting session is reused (ADR-0004). Mandatory hoster countdowns must be respected.
+3. **Never corrupt or lose downloads.** Any change to `ruscello-http`, the writer, the control file, or storage must keep crash/resume tests (process kill) green and preserve the invariant:
+   *fsync data first → update control file second*.
+4. **Green CI is mandatory** before merging: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (or `cargo nextest run`) on Windows, Linux, and macOS, and `cargo deny check`.
+5. **No default test may depend on the live network.** Live tests must be gated behind the `live-tests` feature and/or `#[ignore]`.
+6. **License: GPL-3.0-or-later.** All dependencies must have compatible licenses (enforced by `cargo-deny`). Code adapted from other projects must be attributed in the file/comment and carry a compatible license.
+7. **No secrets in the repository** (tokens, cookies, accounts). User credentials must be stored exclusively in the OS keyring.
+8. **No `unwrap()`/`expect()` on runtime code paths** (allowed in tests and for provable invariants documented with an `// INVARIANT:` comment). `unsafe` is forbidden except for documented OS FFI with a `// SAFETY:` comment and justification in the PR.
+9. **English for all development artifacts; English + Italian for the user-facing application.** Every new user-facing string in the GUI/CLI must go through the localization system (`en` and `it` bundles kept in sync), and the user must be able to switch the application language in Settings.
 
-## 2. Comandi
+## 2. Commands
 
 ```powershell
 cargo check --workspace
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                 # oppure: cargo nextest run --workspace
-cargo deny check                       # licenze, advisories, duplicati
+cargo test --workspace                 # or: cargo nextest run --workspace
+cargo deny check                       # licenses, advisories, duplicates
 cargo run -p ruscello-gui              # GUI
-cargo run -p ruscello-cli -- get <url> # motore senza GUI
-./scripts/check.ps1                    # tutti i controlli locali (Windows) — ./scripts/check.sh su Linux/macOS
+cargo run -p ruscello-cli -- get <url> # headless engine CLI
+./scripts/check.ps1                    # all local checks (Windows) — ./scripts/check.sh on Linux/macOS
 ```
 
-Requisiti Linux per compilare il browser helper (quando verrà aggiunto `wry`):
-`libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libxdo-dev` (+ `libayatana-appindicator3-dev` per la tray).
+Linux system packages required to build the browser helper (once `wry` is added):
+`libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libxdo-dev` (+ `libayatana-appindicator3-dev` for the system tray).
 
-## 3. Struttura del repository
+## 3. Repository Structure
 
 ```
 apps/
-  gui/        ruscello-gui      binario principale (iced)
-  cli/        ruscello-cli      CLI/headless, usata anche nei test di crash
-  webview/    ruscello-webview  processo helper browser (wry/tao), avviato on demand
+  gui/        ruscello-gui      main desktop binary (iced)
+  cli/        ruscello-cli      CLI/headless runner, also used in crash-resume tests
+  webview/    ruscello-webview  browser helper process (wry/tao), spawned on demand
 crates/
-  core/       ruscello-core     tipi di dominio, state machine, eventi, errori comuni (niente I/O)
-  http/       ruscello-http     motore HTTP/FTP segmentato, writer, control file, rate limit
-  torrent/    ruscello-torrent  wrapper su librqbit
-  media/      ruscello-media    HLS/DASH, gestione sidecar yt-dlp/ffmpeg
-  resolver/   ruscello-resolver plugin hoster/crawler, ricette TOML, LinkGrabber e punteggio
-  browser/    ruscello-browser  protocollo + client del processo webview
-  storage/    ruscello-storage  SQLite, migrazioni, impostazioni
-  engine/     ruscello-engine   orchestratore: coda, scheduler, EngineHandle, post-processing
-  api/        ruscello-api      API locale per estensione/CLI, IPC istanza singola
-  testkit/    ruscello-testkit  server di test e utilità (solo dev-dependency)
-extensions/browser/             estensione MV3 Chrome/Firefox (M8)
-docs/                           piano, architettura, ADR, UI, test, riferimenti
+  core/       ruscello-core     domain types, state machine, events, shared errors (no I/O)
+  http/       ruscello-http     segmented HTTP/FTP engine, writer, control file, rate limiter
+  torrent/    ruscello-torrent  wrapper around librqbit
+  media/      ruscello-media    HLS/DASH, optional yt-dlp/ffmpeg sidecar management
+  resolver/   ruscello-resolver hoster/crawler plugins, TOML recipes, LinkGrabber & scoring
+  browser/    ruscello-browser  protocol + client for the webview helper process
+  storage/    ruscello-storage  SQLite, migrations, settings
+  engine/     ruscello-engine   orchestrator: queue, scheduler, EngineHandle, post-processing
+  api/        ruscello-api      local API for browser extension/CLI, single-instance IPC
+  testkit/    ruscello-testkit  local test server and utilities (dev-dependency only)
+extensions/browser/             MV3 Chrome/Firefox extension (M8)
+docs/                           plan, architecture, ADRs, UI, testing, references
 ```
 
-Direzione delle dipendenze (niente cicli): `core` ← `http`/`torrent`/`media`/`resolver`/`browser`/`storage`
-← `engine` ← `api` ← `apps/*`. La GUI dipende solo da `engine` (+ `core`), mai direttamente da `http`/`torrent`.
+Dependency direction (no cycles): `core` ← `http`/`torrent`/`media`/`resolver`/`browser`/`storage`
+← `engine` ← `api` ← `apps/*`. The GUI depends only on `engine` (+ `core`), never directly on `http`/`torrent`.
 
-## 4. Modo di lavorare
+## 4. Workflow
 
-- **Una milestone alla volta**, nell'ordine di `docs/PLAN.md` (M4/M5/M7 parallelizzabili dopo M3).
-- Per ogni task: issue GitHub → branch `feat/mX-breve-descrizione` → commit piccoli (Conventional Commits) →
-  PR con descrizione, checklist DoD, come è stato testato → CI verde → squash merge su `main`.
-  Usa `gh` (`gh issue list --milestone "M1 ..."`, `gh pr create`, `gh pr merge --squash`).
-- Aggiorna le checkbox in `docs/PLAN.md` nella stessa PR che completa il task; aggiorna `CHANGELOG.md`
-  (sezione *Unreleased*).
-- Decisioni architetturali nuove o cambi di quelle esistenti → nuovo file `docs/adr/NNNN-titolo.md`
-  (formato: Contesto, Decisione, Alternative, Conseguenze).
-- Se un requisito è ambiguo o una decisione ha impatto per l'utente (UX, licenze, privacy, dipendenze
-  pesanti) **chiedi al committente** invece di indovinare; per dettagli implementativi hai libertà.
+- **One milestone at a time**, following the order in `docs/PLAN.md` (M4/M5/M7 can be parallelized after M3).
+- For each task: GitHub Issue → branch `feat/mX-short-description` → small commits (Conventional Commits in English) →
+  PR with description, DoD checklist, and test summary → green CI → squash merge into `main`.
+  Use `gh` (`gh issue list --milestone "M1 ..."`, `gh pr create`, `gh pr merge --squash`).
+- Update checkboxes in `docs/PLAN.md` in the same PR that completes a task; update `CHANGELOG.md`
+  (under *Unreleased*).
+- New architectural decisions or changes to existing ones → new file `docs/adr/NNNN-title.md`
+  (sections: Context, Decision, Alternatives, Consequences) written in English.
+- If a requirement is ambiguous or a decision impacts the user (UX, licensing, privacy, heavy dependencies),
+  **ask the project owner** instead of guessing; you have freedom over internal implementation details.
 
-### Dove hai libertà
-Scelta di crate specifici (oltre a quelli fissati negli ADR), struttura interna dei moduli, algoritmi interni
-(purché rispettino invarianti e test), dettagli grafici entro `docs/UI.md`, formato interno dei file di
-controllo, organizzazione dei test. I crate consigliati in `docs/ARCHITECTURE.md` sono suggerimenti:
-verifica sempre la versione più recente su crates.io e lo stato di manutenzione.
+### Where You Have Freedom
+Choice of specific crates (beyond those fixed in ADRs), internal module layout, internal algorithms
+(as long as invariants and tests hold), visual details within `docs/UI.md`, internal binary format of
+control files, and test organization. Crates listed in `docs/ARCHITECTURE.md` are recommendations:
+always verify the latest version on crates.io and maintenance status.
 
-### Cosa non fare
-- Non introdurre lavoro "di cortesia" non richiesto (refactor massivi, rinomini) mescolato a feature.
-- Non disattivare lint o test per far passare la CI; non usare `#[allow(...)]` senza commento.
-- Non aggiungere dipendenze pesanti senza motivarlo nella PR (dimensione binario, tempo di build).
-- Non fare chiamate di rete nei test di default; non committare file binari grandi (generare le fixture).
+### What Not to Do
+- Do not introduce unrequested "drive-by" work (massive refactors, renames) mixed into feature PRs.
+- Do not disable lints or tests to make CI pass; do not use `#[allow(...)]` without an explanatory comment.
+- Do not add heavy dependencies without justifying them in the PR (binary size, build time).
+- Do not make live network calls in default tests; do not commit large binary files (generate fixtures programmatically).
+- Do not write documentation, comments, commit messages, or PRs in languages other than English.
 
-## 5. Definition of Done (vale per ogni PR)
+## 5. Definition of Done (Applies to Every PR)
 
-- [ ] Compila senza warning su Windows/Linux/macOS (CI).
-- [ ] Test nuovi per il comportamento nuovo (unit + integrazione dove ha senso); i test esistenti passano.
-- [ ] Nessuna regressione del budget risorse (`docs/PLAN.md` §2) per le parti toccate.
-- [ ] Errori gestiti e mostrati all'utente in modo comprensibile (niente panic, niente messaggi grezzi).
-- [ ] Log `tracing` utili (livello `debug` per i dettagli, niente dati sensibili: cookie/token mascherati).
-- [ ] `docs/PLAN.md` e `CHANGELOG.md` aggiornati; ADR se è stata presa una decisione.
+- [ ] Compiles without warnings on Windows/Linux/macOS (CI).
+- [ ] New tests for new behavior (unit + integration where appropriate); existing tests pass.
+- [ ] No regression against the resource budget (`docs/PLAN.md` §2) for touched components.
+- [ ] Errors handled and presented to the user clearly (no panics, no raw internal error dumps).
+- [ ] Useful `tracing` logs (`debug` level for details, no sensitive data: cookies/tokens masked).
+- [ ] User-facing strings localized in both English (`en`) and Italian (`it`).
+- [ ] `docs/PLAN.md` and `CHANGELOG.md` updated; ADR added if an architectural decision was made.
 
-## 6. Convenzioni di codice
+## 6. Coding Conventions
 
-- Edition 2024, toolchain stable (`rust-toolchain.toml`). Lint di workspace in `Cargo.toml`.
-- Errori: `thiserror` nelle librerie (enum di errori per crate), `anyhow` solo nei binari.
-- Async: tokio. Nessun blocco del runtime: I/O su file pesante tramite task dedicati o `spawn_blocking`.
-- Concorrenza: preferire attori (task + canali) a `Mutex` condivisi; mai tenere un lock attraverso un `.await`.
-- Cancellazione: `tokio_util::sync::CancellationToken` propagato in tutti i task di download.
-- Tempo e rete astratti dove serve per testare (es. clock iniettabile per scheduler e rate limiter).
-- Nomi file/percorsi: gestire Unicode, percorsi lunghi su Windows (`\\?\`), caratteri vietati.
-- La GUI non fa I/O: invia comandi all'`EngineHandle` e reagisce agli eventi.
+- Edition 2024, stable toolchain (`rust-toolchain.toml`). Workspace lints configured in `Cargo.toml`.
+- Errors: `thiserror` in library crates (per-crate error enums), `anyhow` in binary crates only.
+- Async: `tokio`. Never block the async runtime: heavy file I/O must use dedicated tasks or `spawn_blocking`.
+- Concurrency: prefer actors (tasks + channels) over shared `Mutex`; never hold a lock across an `.await`.
+- Cancellation: propagate `tokio_util::sync::CancellationToken` across all download tasks.
+- Abstract time and network where needed for deterministic testing (e.g., injectable clock for scheduler and rate limiter).
+- Filenames/paths: handle Unicode, Windows long paths (`\\?\`), and OS-forbidden characters.
+- The GUI performs no I/O: it sends commands to `EngineHandle` and reacts to events.

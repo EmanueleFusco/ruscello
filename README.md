@@ -1,34 +1,36 @@
 # Ruscello
 
-> Download manager desktop **tutto in Rust**: torrent + HTTP/hoster + streaming, veloce, riprendibile e
-> leggero. Unisce ciò che fanno qBittorrent e JDownloader in un'unica interfaccia minimale.
+> Desktop download manager written **entirely in Rust**: BitTorrent + HTTP/hoster + media streaming — fast,
+> crash-safe, resumable, and lightweight. Unites the capabilities of qBittorrent and JDownloader in a single,
+> minimal, professional interface.
 
-**Stato:** in sviluppo — fase di bootstrap (M0). Vedi la [roadmap](docs/PLAN.md).
+**Status:** In active development — Bootstrap phase (M0). See the [Work Plan & Roadmap](docs/PLAN.md).
 
-## Obiettivi
+## Key Features
 
-- 🧲 **Torrent**: magnet, .torrent, selezione file, seeding con limiti (librqbit).
-- ⚡ **HTTP veloce**: segmentazione dinamica multi-connessione con work stealing, mirror, limiti di banda.
-- 🛡️ **Mai perdere un download**: ripresa dopo spegnimento, crash o caduta della rete; file mai corrotti.
-- 🔗 **Molti siti**: plugin per hoster, ricette configurabili, HLS/DASH, yt-dlp opzionale.
-- 🔎 **LinkGrabber**: analizza una pagina ed evidenzia i file che probabilmente vuoi scaricare.
-- 🤖 **Automatico**: code, retry, verifica hash, estrazione archivi, azioni a fine coda.
-- 🧑‍💻 **Interfaccia** minimale e professionale, download divisi per tipologia e categoria.
-- 🪶 **Leggero**: pochi MB di RAM a riposo, CPU ~0 quando non scarica.
+- 🧲 **BitTorrent**: magnet links, `.torrent` files, selective file downloading, seeding limits (`librqbit`).
+- ⚡ **High-Speed HTTP**: dynamic multi-connection segmentation with work stealing, mirror support, bandwidth limiting.
+- 🛡️ **Zero Lost Downloads**: crash-safe resume after PC power-off, process crash, or network drop; strict data integrity.
+- 🔗 **Broad Site Support**: native hoster plugins, declarative TOML recipes, native HLS/DASH, optional `yt-dlp` sidecar.
+- 🔎 **LinkGrabber**: analyzes web pages and highlights the files you most likely want to download with explainable scoring.
+- 🤖 **Hands-Off Automation**: queues, retries, checksum verification, multi-part archive extraction, post-queue actions.
+- 🧑‍💻 **Clean Professional UI**: built with `iced`, organizing downloads by automatic File Types and user Categories.
+- 🌐 **Bilingual Interface**: available in **English** and **Italian** (user-selectable in Settings).
+- 🪶 **Lightweight**: low idle RAM footprint, ~0% CPU when idle.
 
-Piattaforme: Windows e Linux (priorità), macOS.
+Target platforms: Windows and Linux (first-class priority), macOS.
 
-## Sviluppo
+## Development
 
 ```bash
-cargo run -p ruscello-gui            # GUI
-cargo run -p ruscello-cli -- --help  # CLI
-./scripts/check.sh                   # (o scripts/check.ps1 su Windows) stessi controlli della CI
+cargo run -p ruscello-gui            # GUI application
+cargo run -p ruscello-cli -- --help  # Headless CLI
+./scripts/check.sh                   # (or scripts/check.ps1 on Windows) run all CI checks locally
 ```
 
-Documentazione per chi sviluppa (persone e agenti): [AGENTS.md](AGENTS.md), [Architettura](docs/ARCHITECTURE.md),
-[UI](docs/UI.md), [Test](docs/TESTING.md), [ADR](docs/adr/).
+Developer & agent documentation: [AGENTS.md](AGENTS.md), [Architecture](docs/ARCHITECTURE.md),
+[UI Specs](docs/UI.md), [Testing Strategy](docs/TESTING.md), [ADRs](docs/adr/).
 
-## Licenza
+## License
 
 [GPL-3.0-or-later](LICENSE)

@@ -1,13 +1,16 @@
-# ADR-0007 — Licenza GPL-3.0-or-later e piattaforme
+# ADR-0007 — License (GPL-3.0-or-later) & Target Platforms
 
-- Stato: Accettato (2026-11-12)
+- Status: Accepted (2026-11-12)
 
-## Decisione
-- Licenza **GPL-3.0-or-later**: permette di studiare e riusare codice da progetti GPL (qBittorrent,
-  JDownloader) con attribuzione. Dipendenze verificate con `cargo-deny` (`deny.toml`).
-- Piattaforme: **Windows e Linux con priorità pari**, macOS supportato (CI su tutti e tre, test su tutti e
-  tre). Funzioni specifiche di piattaforma isolate dietro trait/moduli `cfg`.
-- Repository GitHub inizialmente privato, poi pubblico (vedi PLAN M10.7).
+## Decision
+- License: **GPL-3.0-or-later**. This allows studying and adapting algorithms/patterns from GPL-licensed reference
+  projects (such as qBittorrent and JDownloader) with proper attribution. Dependency license compatibility is enforced
+  in CI via `cargo-deny` (`deny.toml`).
+- Target platforms: **Windows and Linux as equal first-class targets**, with **macOS** supported and tested in the
+  3-OS CI matrix. Platform-specific OS integrations (system tray, sleep inhibition, file associations) are isolated
+  behind traits and `cfg` modules.
+- Repository visibility: initially private during early development, designed to become public (see `PLAN.md` M10.7).
 
-## Conseguenze
-- Niente linking statico di librerie con licenze incompatibili (es. UnRAR): usare binari esterni opzionali.
+## Consequences
+- Libraries with GPL-incompatible licenses (such as proprietary UnRAR source) must never be statically or dynamically
+  linked; external tools (`7z`/`unrar`) may only be invoked as optional separate processes.

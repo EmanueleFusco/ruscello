@@ -1,12 +1,12 @@
-# Estensione browser (M8)
+# Browser Extension (M8)
 
-Estensione Manifest V3 per Chrome/Chromium e Firefox. Codice volutamente minimo (JS/TS è obbligatorio per le
-API delle estensioni); tutta la logica sta nell'app Rust.
+Manifest V3 browser extension for Chrome/Chromium and Firefox. Kept intentionally minimal (JS/TS is required by
+WebExtension APIs); all core logic lives in the Rust desktop application.
 
-Funzioni previste (vedi `docs/PLAN.md` M8):
-- menu contestuale "Scarica con Ruscello" (link, selezione, pagina → LinkGrabber);
-- intercettazione opzionale dei download del browser (per tipo/dimensione);
-- invio di cookie/referer/User-Agent della sessione per download autenticati;
-- pairing con l'app (API locale con token o native messaging — da decidere con un ADR).
+Planned features (see `docs/PLAN.md` M8):
+- context menu "Download with Ruscello" (links, selection, full page → LinkGrabber);
+- optional interception of browser downloads (filtered by file type / minimum size);
+- forwarding of domain cookies, referer, and User-Agent from the user's active browser session for authenticated or verified downloads;
+- simple pairing with the desktop app (local token-authenticated API or Native Messaging — to be finalized in an ADR).
 
-Da non implementare prima della M8.
+Not scheduled for implementation prior to M8.

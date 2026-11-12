@@ -1,89 +1,101 @@
-# Specifiche UI
+# UI Specifications
 
-Obiettivo: aspetto **professionale, calmo e affidabile** (riferimenti: qBittorrent per la densità
-informativa, app moderne come Motrix/AB Download Manager/Linear per la pulizia). Minimale non vuol dire
-vuota: tutte le informazioni utili ci sono, ma i comandi rari stanno nei menu contestuali o nelle
-impostazioni, non in barre di pulsanti.
+Goal: a **professional, calm, and reliable** appearance (inspirations: qBittorrent for information density,
+modern apps like Motrix / AB Download Manager / Linear for visual cleanliness). Minimal does not mean empty:
+all essential information is visible at a glance, while infrequent actions live in context menus or Settings
+rather than cluttering toolbars.
 
-## Layout finestra principale
+## Localization (i18n) Requirement
+
+- The entire user interface **must support both English (`en`) and Italian (`it`)**.
+- On first launch, the application defaults to the OS locale (`it` if the system is in Italian, `en` otherwise).
+- Users can manually choose **English**, **Italiano**, or **System Default** in *Settings → General*, and the UI
+  updates immediately without requiring a restart.
+
+## Main Window Layout
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  [+ Aggiungi]   🔍 Cerca download…                       ⏸ Tutti  🐢  ⚙        │  ← toolbar (unica riga)
+│  [+ Add]   🔍 Search downloads…                           ⏸ All   🐢   ⚙     │  ← single-row toolbar
 ├───────────────┬──────────────────────────────────────────────────────────────┤
-│ STATO         │ Nome                     Dimensione  Progresso   Velocità ETA │
-│  Tutti     42 │ ▸ Pacchetto: Gioco X (12)   48.2 GB  ███████░ 71%  38 MB/s 9m │
-│  Attivi     3 │   ubuntu-24.04.iso           5.7 GB  ████████ 100%    —     — │
-│  In coda    5 │   film.mkv (torrent)        12.1 GB  ███░░░░░ 34%  11 MB/s 30m│
-│  Completati30 │   report.pdf                 2.1 MB  ⚠ Verifica richiesta     │
-│  Errori     1 │                                                              │
+│ STATUS        │ Name                        Size     Progress     Speed  ETA │
+│  All       42 │ ▸ Package: Game X (12)      48.2 GB  ███████░ 71% 38 MB/s 9m │
+│  Active     3 │   ubuntu-24.04.iso           5.7 GB  ████████ 100%   —     — │
+│  Queued     5 │   movie.mkv (torrent)       12.1 GB  ███░░░░░ 34% 11 MB/s 30m│
+│  Completed 30 │   report.pdf                 2.1 MB  ⚠ Verification required │
+│  Failed     1 │                                                              │
 │  Seeding    3 │                                                              │
-│ TIPOLOGIE     │                                                              │
+│ FILE TYPES    │                                                              │
 │  Video        │                                                              │
 │  Audio        │                                                              │
-│  Archivi      │                                                              │
-│  Programmi    │                                                              │
-│  Documenti    │                                                              │
-│  Immagini     │                                                              │
-│  Torrent      │                                                              │
-│ CATEGORIE     ├──────────────────────────────────────────────────────────────┤
-│  Giochi       │ Dettagli: Generale · Segmenti · File · Peer · Tracker · Log   │ ← pannello richiudibile
-│  Film & Serie │ (contenuto contestuale al download selezionato)             │
-│  + Nuova      │                                                              │
+│  Archives     │                                                              │
+│  Programs     │                                                              │
+│  Documents    │                                                              │
+│  Images       │                                                              │
+│  Torrents     │                                                              │
+│ CATEGORIES    ├──────────────────────────────────────────────────────────────┤
+│  Games        │ Details: General · Segments · Files · Peers · Trackers · Log │ ← collapsible panel
+│  Movies & TV  │ (contextual to the selected download)                        │
+│  + New        │                                                              │
 ├───────────────┴──────────────────────────────────────────────────────────────┤
-│ ↓ 49.3 MB/s  ↑ 1.2 MB/s   Limite: off   Disco D: 412 GB liberi   DHT: 312 nodi │ ← status bar
+│ ↓ 49.3 MB/s  ↑ 1.2 MB/s   Limit: off   Disk D: 412 GB free   DHT: 312 nodes  │ ← status bar
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Sidebar** con tre sezioni (Stato, Tipologie, Categorie) e contatori; le sezioni sono filtri combinabili
-  (es. Attivi + Video). Tag opzionali in una quarta sezione solo se l'utente li usa.
-- **Lista** virtualizzata (migliaia di righe senza lag); colonne configurabili con menu sul header;
-  Package espandibili; icona di tipologia a sinistra del nome; progress bar sottile e colorata per stato
-  (accento = attivo, grigio = in pausa, verde = completato, ambra = attende utente, rosso = errore).
-- **Azioni sulla riga**: hover mostra 2–3 icone discrete (pausa/riprendi, apri cartella, ⋯); tutto il resto
-  nel menu contestuale (tasto destro / ⋯).
-- **Toolbar**: solo Aggiungi, ricerca, pausa/riprendi tutti, modalità velocità ridotta (🐢, come
-  qBittorrent "alternative speed limits"), impostazioni.
-- **Pannello dettagli** richiudibile (stato ricordato): Generale (URL, cartella, hash, date), Segmenti
-  (visualizzazione grafica dei segmenti/pezzi e connessioni), File/Peer/Tracker solo per torrent, Log del
-  download.
+- **Sidebar** with three sections (*Status*, *File Types*, *Categories*) and item counters; sections act as
+  combinable filters (e.g., *Active* + *Video*). Optional fourth *Tags* section shown only if the user creates tags.
+- **Virtualized list** (handles thousands of rows smoothly); configurable columns via header right-click;
+  expandable Packages; file-type icon next to the name; slim progress bar colored by state
+  (accent = active, gray = paused, green = completed, amber = waiting for user, red = failed).
+- **Row hover actions**: reveals 2–3 subtle icons (pause/resume, open folder, `⋯`); all other operations live
+  in the right-click / `⋯` context menu.
+- **Toolbar**: only Add, Search, Pause/Resume All, Alternative Speed Mode (`🐢`, qBittorrent-style), and Settings.
+- **Collapsible details panel** (remembers open/closed state): *General* (URL, folder, hashes, timestamps),
+  *Segments* (visual map of segments/pieces and active connections), *Files / Peers / Trackers* (shown for torrents),
+  and per-download *Log*.
 
-## Dialog "Aggiungi" (unico punto di ingresso)
+## Unified "Add Download" Dialog
 
-1. Campo multilinea: incolla link, magnet, testo libero con link, o trascina file `.torrent`/`.txt`.
-   Precompilato dagli appunti se contengono link (senza aggiungere nulla in automatico).
-2. Analisi immediata (spinner per riga): ogni input diventa una riga con tipo rilevato (Diretto, Hoster
-   «nome», Torrent, Video, Pagina web → LinkGrabber).
-3. Per pagine web: vista **LinkGrabber** (vedi PLAN M5.5) con gruppi *Probabili ⭐* (pre-selezionati),
-   *Altri file*, *Media*, *Pagine collegate*; ogni riga mostra nome, dimensione, host, motivo del punteggio.
-4. Sotto: Categoria (auto-suggerita dalle regole), Cartella, "Avvia subito" (default on), opzioni avanzate
-   collassate (connessioni, limite velocità, checksum, password archivio).
+1. Multi-line input box: paste URLs, magnet links, free-form text containing links, or drag & drop `.torrent`/`.txt`
+   files. Pre-populated from clipboard if valid URLs are detected (never auto-started without confirmation unless an
+   auto-accept rule matches).
+2. Immediate background probing (per-row spinner): each entry resolves into a detected type (*Direct File*,
+   *Hoster «name»*, *Torrent*, *Media Stream*, or *Web Page → LinkGrabber*).
+3. For web pages: switches to the **LinkGrabber** view (see `PLAN.md` M5.5) with collapsible groups:
+   *Likely Targets ⭐* (pre-selected), *Other Files*, *Media*, *Linked Pages*; each row displays filename, size,
+   host, and explainable score badge.
+4. Bottom bar: Category (auto-suggested by rules), Destination Folder, "Start Immediately" toggle (on by default),
+   and collapsed Advanced Options (max connections, speed limit, expected checksum, archive password).
 
-## Verifiche e interazioni richieste
+## User Verifications & Prompts
 
-- Mai finestre modali improvvise. Un download che richiede l'utente passa a "⚠ Verifica richiesta"; una
-  notifica di sistema e un badge nella sidebar lo segnalano; click → si apre la finestra del browser helper
-  già sulla pagina giusta. Completata la verifica la finestra si chiude e il batch riparte.
+- Never pop up unexpected modal windows over the user's work. When a download requires user interaction, its status
+  changes to *"⚠ Verification required"*, accompanied by a system notification and a sidebar badge. Clicking the row
+  action opens the browser helper window directly on the challenge page; once completed, the window closes
+  automatically and the queued batch resumes.
 
-## Stile visivo
+## Visual Style
 
-- Tema chiaro/scuro che segue il sistema (override in impostazioni). Palette neutra (grigi caldi), un solo
-  colore di accento (blu/teal), colori semantici per stato. Niente gradienti vistosi, ombre leggere,
-  angoli 6–8 px, animazioni brevi (≤ 150 ms) solo per feedback (hover, espansione).
-- Tipografia: Inter (inclusa), 13–14 px corpo, numeri tabulari per velocità/dimensioni.
-- Icone: Lucide (ISC) come icon font, monocromatiche.
-- Densità: righe 32–36 px; modalità compatta opzionale.
-- Accessibilità: contrasto AA, navigazione da tastiera completa, tooltip su icone.
+- Light and dark themes (follows OS by default, overridable in Settings). Neutral warm-gray palette, single accent
+  color (blue/teal), semantic status colors. No flashy gradients, subtle elevation borders, 6–8 px corner radius,
+  short feedback transitions (≤ 150 ms) for hover/expand only.
+- Typography: bundled Inter font, 13–14 px body text, tabular numerals (`tnum`) for speeds, sizes, and ETAs.
+- Icons: monochrome Lucide icon font (ISC license).
+- Density: 32–36 px row height; optional compact density mode.
+- Accessibility: WCAG AA contrast, full keyboard navigation, tooltips on all icon-only buttons.
 
-## Scorciatoie
+## Keyboard Shortcuts
 
-`Ctrl+N` aggiungi · `Ctrl+V` (finestra principale) incolla e aggiungi · `Spazio` pausa/riprendi ·
-`Canc` annulla/rimuovi · `Ctrl+F` cerca · `Invio` apri file · `Ctrl+Invio` apri cartella · `Ctrl+,` impostazioni.
+`Ctrl+N` Add · `Ctrl+V` (in main window) Paste & Add · `Space` Pause/Resume ·
+`Del` Cancel/Remove · `Ctrl+F` Search · `Enter` Open File · `Ctrl+Enter` Open Folder · `Ctrl+,` Settings.
 
-## Impostazioni (poche pagine)
+## Settings Pages
 
-Generale (lingua, tema, avvio con il sistema, tray, azione a fine coda) · Download (cartella default,
-download simultanei, connessioni per file/host, temp dir) · Velocità (limiti, modalità ridotta, pianificatore) ·
-Torrent (porta, DHT/PEX, UPnP, seeding ratio/tempo, interfaccia di rete) · Categorie & regole ·
-Integrazioni (estensione browser, yt-dlp/ffmpeg con aggiornamento automatico, monitor appunti) ·
-Account hoster · Avanzate (log, proxy, user agent, DNS, reset).
+- **General**: Language (*System Default / English / Italiano*), Theme, Launch at startup, System tray behavior, Queue completion action.
+- **Downloads**: Default folder, max concurrent downloads, max connections per file/host, temporary folder.
+- **Speed**: Global limits, Alternative speed limits (`🐢`), Time-of-day scheduler.
+- **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.
+- **Categories & Rules**: User categories, default folders, auto-assignment rules.
+- **Integrations**: Browser extension pairing, `yt-dlp`/`ffmpeg` sidecar manager & auto-update, clipboard monitor.
+- **Hoster Accounts**: Credentials stored in OS keyring.
+- **Advanced**: Logs, proxy, custom User-Agent, DNS, reset.

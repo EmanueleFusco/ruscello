@@ -1,18 +1,20 @@
-# ADR-0005 — Torrent con librqbit
+# ADR-0005 — BitTorrent Engine: librqbit
 
-- Stato: Accettato (2026-11-12)
+- Status: Accepted (2026-11-12)
 
-## Contesto
-Serve un motore BitTorrent completo (magnet, DHT, PEX, trackers, UPnP, selezione file, seeding) in Rust.
+## Context
+Ruscello requires full BitTorrent support (magnet links, DHT, PEX, HTTP/UDP trackers, UPnP/NAT-PMP, selective file
+downloading, piece priorities, seeding limits) in pure Rust.
 
-## Decisione
-Usare **`librqbit`** (progetto rqbit, Apache-2.0, ≥ 9.x, edition 2024), incapsulato in `ruscello-torrent`
-dietro un'interfaccia nostra (così l'engine non dipende dai tipi di librqbit e un cambio futuro resta locale).
+## Decision
+Use **`librqbit`** (the engine behind `rqbit`, Apache-2.0 license, ≥ 9.x, Rust 2024 edition), encapsulated inside
+`ruscello-torrent` behind our own domain trait/types so `ruscello-engine` does not leak `librqbit` internals.
 
-## Alternative
-- `libtorrent-rasterbar` via FFI (C++, quello di qBittorrent): più maturo ma non Rust, build complessa.
-- `cratetorrent` e altri: meno completi/mantenuti.
+## Alternatives Considered
+- `libtorrent-rasterbar` via C++ FFI (used by qBittorrent): very mature, but introduces a heavy C++/Boost build chain
+  and violates the pure-Rust goal.
+- Older Rust torrent crates (`cratetorrent`, `bip_bencode`, etc.): unmaintained or incomplete.
 
-## Conseguenze
-- Funzionalità mancanti in librqbit (es. filtri IP, alcuni limiti) vanno verificate in M4; se necessario
-  contribuire upstream o implementare nel wrapper.
+## Consequences
+- Any torrent features not yet exposed by `librqbit` (e.g., specific IP blocklist formats or fine-grained seeding quotas)
+  will be evaluated in M4 and either implemented in the `ruscello-torrent` wrapper or contributed upstream.

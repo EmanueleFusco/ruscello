@@ -1,39 +1,40 @@
-# Script legacy del committente (casi d'uso da supportare)
+# Owner's Legacy Scripts (Reference Use Cases)
 
-Questi due script Python sono ciò che il committente usa oggi. **Non vanno portati così come sono**: vanno
-resi possibili dentro Ruscello in modo più robusto. Sono qui solo come riferimento del comportamento atteso.
+These two Python scripts represent workflows the project owner currently runs manually. **They must not be ported
+verbatim**: instead, Ruscello must support these workflows natively in a much faster, crash-safe, and reliable way.
+They are preserved here strictly as behavioral references.
 
-| File | Cosa fa |
-|------|---------|
-| `fuckingfast_autodownloader.py` | Legge `links.txt` (una pagina fuckingfast per riga), apre ogni pagina in Chrome (SeleniumBase UC), se c'è un challenge Cloudflare a pagina intera tenta di superarlo, clicca il pulsante `DOWNLOAD` (il primo click apre spesso un popup pubblicitario → chiude i popup e riclicca), lascia scaricare a Chrome, attende che spariscano i `.crdownload`. |
-| `xfilesharing_autodownloader.py` | Stesso schema per un hoster in stile **XFileSharing**: click su `#method_free` → attesa → chiusura popup → click su `#downloadbtn` → verifica che sia comparso un `.crdownload`. Pause randomizzate tra i link. |
+| File | Behavior |
+|------|----------|
+| `fuckingfast_autodownloader.py` | Reads `links.txt` (one fuckingfast URL per line), opens each page in Chrome (`SeleniumBase` UC Mode), attempts to pass full-page Cloudflare challenges if present, clicks the `DOWNLOAD` button (the first click often opens an ad popup window → closes popup windows and clicks a second time), lets Chrome download the file, and polls the folder until `.crdownload`/`.part` files disappear. |
+| `xfilesharing_autodownloader.py` | Follows the same pattern for an **XFileSharing**-based hoster: clicks `#method_free` → waits → closes ad popups → clicks `#downloadbtn` → polls the download folder to verify a new `.crdownload` file appeared. Uses randomized delays between links. |
 
-## Problemi degli script che Ruscello deve risolvere
+## Pain Points of the Legacy Scripts That Ruscello Solves
 
-1. Il download lo fa Chrome → se cade la connessione o si spegne il PC il file è perso, nessuna
-   segmentazione, nessun controllo.
-2. Popup pubblicitari gestiti a posteriori chiudendo finestre.
-3. Fine download rilevata guardando la cartella.
-4. Fragilità: selettori fissi, versione di ChromeDriver, attese fisse.
+1. Downloads are handled by Chrome's built-in downloader → if the connection drops or the PC turns off, the download
+   is lost; single connection (slow); no bandwidth or queue control.
+2. Ad popups are handled reactively by switching and closing browser windows after they open.
+3. Completion detection relies on polling directory filenames.
+4. Fragile setup: hardcoded selectors, Chrome/ChromeDriver version mismatches, fixed sleep timers.
 
-## Come Ruscello copre questi casi
+## How Ruscello Covers These Workflows
 
-| Esigenza | Soluzione in Ruscello | Milestone |
-|----------|-----------------------|-----------|
-| Lista di link da file/appunti | Dialog Aggiungi multilinea, import `.txt`, watch folder, deduplicazione; tutti i link di un batch in un **Package** | M3, M5.6, M9.6 |
-| fuckingfast | Plugin nativo: legge la pagina via HTTP ed estrae il link diretto `/dl/…` dallo script (da verificare sulla pagina reale e coprire con fixture) → download col motore segmentato e riprendibile. Nessun browser, nessun popup | M5.4 |
-| Hoster XFileSharing | Plugin generico XFS (form `op=download1`/`method_free` → countdown rispettato → `op=download2`/`downloadbtn`) via HTTP; ricetta TOML per varianti | M5.3, M5.4 |
-| Popup e nuove finestre | In HTTP puro non esistono; in modalità browser vengono bloccati a livello nativo nel webview | M6.4 |
-| Pagina di verifica Cloudflare / captcha | Il download passa a "Verifica richiesta"; l'utente completa la verifica nella finestra del browser helper (normalmente **una volta per tutto il batch**, finché la sessione è valida); poi tutto riparte da solo. Niente click automatici sui captcha (vedi ADR-0004) | M6.2, M6.3 |
-| Download avviato dalla pagina | Intercettato dal webview e passato al motore (segmentato, riprendibile, verificato) | M6.4 |
-| Sapere quando ha finito | Stati espliciti, notifiche, azione a fine coda (spegni/sospendi) | M2, M9.2 |
-| Archivi multi-parte (tipico di questi batch) | Estrazione automatica quando tutte le parti del Package sono complete; verifica hash se presenti file `.md5`/`.sfv` | M9.4, M9.5 |
+| Need | Solution in Ruscello | Milestone |
+|------|----------------------|-----------|
+| Batch link list from file or clipboard | Multi-line Add dialog, `.txt` file import, watch folder, deduplication; all links in a batch grouped into a **Package** | M3, M5.6, M9.6 |
+| `fuckingfast` | Native Rust plugin: fetches the page over HTTP and extracts the direct `/dl/…` link from the page script (verified against real pages and covered by offline fixtures) → downloads via the segmented, resumable HTTP engine. Zero browser overhead, zero popups | M5.4 |
+| XFileSharing hosters | Generic XFS plugin (`op=download1`/`method_free` form → respects countdown → `op=download2`/`downloadbtn`) over HTTP; TOML recipes for site variants | M5.3, M5.4 |
+| Ad popups and new windows | Non-existent in plain HTTP mode; blocked natively (`new_window_req_handler`) before opening when running in browser helper mode | M6.4 |
+| Cloudflare / hoster verification pages | Download enters `WaitingUser` ("Verification required"); the user completes the check in the `ruscello-webview` helper window (typically **once per batch** while the session cookie remains valid), and all queued links for that domain resume automatically (see ADR-0004) | M6.2, M6.3 |
+| Browser-initiated downloads | Intercepted by `ruscello-webview` (`download_started_handler`) and handed off to the segmented, crash-safe Rust engine | M6.4 |
+| Knowing when the batch finishes | Explicit state machine, desktop notifications, and queue-completion actions (sleep/shutdown) | M2, M9.2 |
+| Multi-part archives (typical of these batches) | Automatic extraction once all parts of the Package finish downloading; automatic checksum verification if `.md5`/`.sfv` files are present | M9.4, M9.5 |
 
-## Test di accettazione (da automatizzare con il testkit)
+## Automated Acceptance Tests (Powered by `ruscello-testkit`)
 
-- 20 pagine "fuckingfast-like" servite localmente → import da `.txt` → tutti i file scaricati con SHA-256
-  corretto, anche con kill dell'app a metà e caduta di rete simulata.
-- 10 pagine "XFS-like" con countdown e popup `window.open` → nessun popup aperto, countdown rispettati,
-  download completati.
-- Pagina di verifica finta davanti a 5 link dello stesso dominio → una sola interazione utente (simulata nel
-  test) sblocca tutti e 5.
+- 20 local "fuckingfast-like" pages → imported from `.txt` → all files downloaded with matching SHA-256,
+  surviving mid-batch process kills and simulated network drops.
+- 10 local "XFS-like" pages with countdowns and `window.open` ad popups → zero popups opened, countdowns respected,
+  all downloads completed.
+- Mock verification challenge in front of 5 links on the same domain → a single simulated user verification unlocks
+  all 5 downloads automatically.

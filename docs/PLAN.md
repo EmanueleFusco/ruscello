@@ -1,396 +1,391 @@
-# Ruscello — Piano di lavoro
+# Ruscello — Work Plan
 
-> Download manager desktop **tutto in Rust** che unisce un client BitTorrent (stile qBittorrent) e un
-> download manager HTTP/hoster (stile JDownloader / IDM), con interfaccia minimale e professionale.
+> Desktop download manager written **entirely in Rust** that combines a BitTorrent client (qBittorrent-style)
+> and an HTTP/hoster download manager (JDownloader / IDM-style), featuring a minimal, professional user interface.
 >
-> Questo documento è la **fonte di verità** per l'avanzamento. Ogni milestone ha obiettivi, task,
-> criteri di accettazione ("Definition of Done") e test richiesti. Le milestone corrispondono alle
-> *GitHub Milestones* del repository; i task principali corrispondono a *GitHub Issues*.
-> Aggiornare le checkbox man mano (vedi `AGENTS.md`).
+> This document is the **single source of truth** for project progress. Each milestone defines goals, tasks,
+> acceptance criteria ("Definition of Done"), and required tests. Milestones map to *GitHub Milestones*;
+> major tasks map to *GitHub Issues*. Update checkboxes as tasks are completed (see `AGENTS.md`).
+>
+> **Language Rule:** All development documentation, code, comments, commits, issues, and pull requests must be
+> in **English**. The application itself must support **both English (`en`) and Italian (`it`)**, with a setting
+> allowing the user to choose their preferred language at any time.
 
 ---
 
-## 0. Requisiti (dal committente)
+## 0. Requirements (from Project Owner)
 
-| # | Requisito | Dove viene soddisfatto |
-|---|-----------|------------------------|
-| R1 | Torrent (magnet, .torrent, selezione file, seeding) | M4 |
-| R2 | Download HTTP/HTTPS/FTP da "quanti più siti possibile" | M1, M5, M6, M7 |
-| R3 | Pausa, ripresa, annullamento | M1, M2 |
-| R4 | Nessuna perdita se si spegne il PC o cade la connessione (crash-safe resume) | M1 (cuore del progetto) |
-| R5 | Massima velocità: segmentazione dinamica, multi-connessione, mirror, riuso connessioni | M1, M10 |
-| R6 | Massima automazione (code, retry, riconnessione, post-processing, regole) | M2, M9 |
-| R7 | Analisi pagina → elenco contenuti con evidenziati i file probabili (LinkGrabber) | M5 |
-| R8 | Pagine protette da verifiche anti-bot (Cloudflare ecc.) | M6 — **approccio human-in-the-loop**, vedi ADR-0004 |
-| R9 | UI gradevole, minimale, professionale; download divisi per tipologia e categoria | M3 + `docs/UI.md` |
-| R10 | Efficiente con le risorse | Budget in §2, verificato in M10 |
-| R11 | Stabile e testato | `docs/TESTING.md`, gate CI su ogni PR |
-| R12 | Tutto in Rust (UI + backend) | ADR-0001, ADR-0002 (eccezioni: estensione browser JS minima, sidecar opzionali yt-dlp/ffmpeg) |
-| R13 | Windows e Linux priorità pari; macOS compatibile | CI matrix su 3 OS, ADR-0007 |
-| R14 | Casi d'uso degli script personali (batch da hoster tipo fuckingfast / XFileSharing) | M5 + M6, vedi `docs/reference/legacy-scripts/README.md` |
-
----
-
-## 1. Decisioni architetturali (riassunto — dettagli in `docs/adr/`)
-
-- **GUI**: [iced](https://github.com/iced-rs/iced) ≥ 0.14 (Elm architecture, reactive rendering, MIT). ADR-0001.
-- **Runtime async**: tokio. Engine come libreria in-process; la GUI parla con l'engine tramite `EngineHandle`
-  (comandi via `mpsc`, eventi via `broadcast`). ADR-0003.
-- **HTTP**: `reqwest` (hyper + rustls) con motore di segmentazione proprio (algoritmo stile aria2/IDM con
-  *work stealing* dinamico). ADR-0003.
-- **Torrent**: [`librqbit`](https://github.com/ikatson/rqbit) (Apache-2.0, ≥ 9.x). ADR-0005.
-- **Persistenza**: SQLite (`rusqlite`, bundled, WAL) per stato/coda/impostazioni + file di controllo
-  per-download per la bitmap dei segmenti. ADR-0006.
-- **Siti video/streaming**: estrattori nativi Rust per HLS/DASH + **yt-dlp come sidecar opzionale** gestito
-  automaticamente dall'app (download/aggiornamento). ffmpeg opzionale per merge/remux. ADR-0002.
-- **Pagine con verifica anti-bot / login**: processo helper `ruscello-webview` (wry) in cui **l'utente**
-  completa la verifica; cookie/sessione vengono poi riutilizzati automaticamente. Niente risoluzione
-  automatica di captcha, niente stealth/fingerprint spoofing. ADR-0004.
-- **Licenza**: GPL-3.0-or-later. ADR-0007.
+| # | Requirement | Where Satisfied |
+|---|-------------|-----------------|
+| R1 | BitTorrent support (magnet links, `.torrent` files, file selection, seeding) | M4 |
+| R2 | HTTP/HTTPS/FTP downloads from "as many sites as possible" | M1, M5, M6, M7 |
+| R3 | Pause, resume, and cancel downloads | M1, M2 |
+| R4 | Zero lost downloads on PC power-off or connection drop (crash-safe resume) | M1 (core invariant) |
+| R5 | Maximum speed: dynamic segmentation, multi-connection, mirrors, connection reuse | M1, M10 |
+| R6 | Maximum automation (queues, retries, reconnection, post-processing, rules) | M2, M9 |
+| R7 | Page analysis → list of discovered content highlighting likely target files (LinkGrabber) | M5 |
+| R8 | Pages protected by anti-bot checks (Cloudflare, etc.) | M6 — **human-in-the-loop session reuse**, see ADR-0004 |
+| R9 | Pleasant, minimal, professional UI; downloads organized by file type and category | M3 + `docs/UI.md` |
+| R10 | Resource-efficient | Resource budget in §2, verified in M10 |
+| R11 | Stable and thoroughly tested | `docs/TESTING.md`, mandatory CI gates on every PR |
+| R12 | All Rust (UI + backend) | ADR-0001, ADR-0002 (exceptions: minimal JS browser extension, optional `yt-dlp`/`ffmpeg` sidecars) |
+| R13 | Windows and Linux as equal first-class targets; macOS supported | 3-OS CI matrix, ADR-0007 |
+| R14 | Owner's legacy script workflows (batch downloads from hosters like fuckingfast / XFileSharing) | M5 + M6, see `docs/reference/legacy-scripts/README.md` |
+| R15 | Bilingual UI: English (`en`) and Italian (`it`) with user-selectable language in Settings | M3.7 + `AGENTS.md` |
 
 ---
 
-## 2. Budget di risorse e prestazioni (obiettivi misurabili, verificati in M10)
+## 1. Architectural Decisions (Summary — Details in `docs/adr/`)
 
-| Metrica | Obiettivo |
-|---------|-----------|
-| RAM a riposo (GUI aperta, 0 download attivi, webview chiuso) | < 80 MB |
-| RAM con 10 download HTTP attivi | < 150 MB |
-| CPU a riposo | ~0% (nessun redraw/poll senza eventi) |
-| CPU a 1 Gbit/s su singolo file | < 15% di un core (escluso I/O kernel) |
-| Avvio a freddo fino a finestra utilizzabile | < 1 s |
-| Aggiornamenti UI progress | max 4 Hz per riga visibile, aggregati |
-| Perdita dati dopo kill -9 / spegnimento | ≤ ultimi ~2 s di dati scaricati (riscaricati), mai corruzione |
-| Throughput segmentato vs aria2 (`-x16 -s16`) su server locale con latenza simulata | ≥ 95% |
+- **GUI**: [iced](https://github.com/iced-rs/iced) ≥ 0.14 (Elm architecture, reactive rendering, MIT license). ADR-0001.
+- **Async runtime**: `tokio`. Engine as an in-process library; the GUI communicates with the engine via `EngineHandle`
+  (commands over `mpsc`, events over `broadcast`). ADR-0003.
+- **HTTP**: `reqwest` (`hyper` + `rustls`) with a custom segmentation engine (aria2/IDM-style algorithm with
+  dynamic *work stealing*). ADR-0003.
+- **BitTorrent**: [`librqbit`](https://github.com/ikatson/rqbit) (Apache-2.0, ≥ 9.x). ADR-0005.
+- **Persistence**: SQLite (`rusqlite`, bundled, WAL mode) for state/queue/settings + per-download control file
+  for segment bitmaps. ADR-0006.
+- **Video/streaming sites**: native Rust extractors for HLS/DASH + **yt-dlp as an optional sidecar** automatically
+  managed by the app (download/update). Optional `ffmpeg` sidecar for merge/remux. ADR-0002.
+- **Pages with anti-bot challenges / login**: out-of-process `ruscello-webview` helper (`wry`) where **the user**
+  completes the verification; cookies/session are then automatically reused across the batch. No automated
+  CAPTCHA solving, no stealth/fingerprint spoofing. ADR-0004.
+- **License**: `GPL-3.0-or-later`. ADR-0007.
+
+---
+
+## 2. Resource & Performance Budget (Measurable Targets, Verified in M10)
+
+| Metric | Target |
+|--------|--------|
+| Idle RAM (GUI open, 0 active downloads, webview closed) | < 80 MB |
+| RAM with 10 active HTTP downloads | < 150 MB |
+| Idle CPU | ~0% (no redraws/polling without events) |
+| CPU at 1 Gbit/s on a single file | < 15% of one core (excluding kernel I/O) |
+| Cold start to usable window | < 1 s |
+| UI progress updates | max 4 Hz per visible row, aggregated |
+| Data loss after `kill -9` / power loss | ≤ last ~2 s of downloaded data (re-fetched), never file corruption |
+| Segmented throughput vs `aria2` (`-x16 -s16`) on local server with simulated latency | ≥ 95% |
 
 ---
 
 ## 3. Roadmap
 
 ```
-M0 Bootstrap ─► M1 Motore HTTP ─► M2 Coda & Storage ─► M3 GUI v1 ─┬─► M4 Torrent
-                                                                   ├─► M5 Resolver & LinkGrabber ─► M6 Browser helper
-                                                                   └─► M7 Media (HLS/DASH/yt-dlp)
-                                 M8 Estensione browser + API locale (dopo M5)
-                                 M9 Automazione & post-processing
-                                 M10 Hardening, performance, packaging, release 1.0
+M0 Bootstrap ─► M1 HTTP Engine ─► M2 Queue & Storage ─► M3 GUI v1 ─┬─► M4 Torrent
+                                                                    ├─► M5 Resolver & LinkGrabber ─► M6 Browser Helper
+                                                                    └─► M7 Media (HLS/DASH/yt-dlp)
+                                  M8 Browser Extension + Local API (after M5)
+                                  M9 Automation & Post-Processing
+                                  M10 Hardening, Performance, Packaging, 1.0 Release
 ```
 
-M4, M5, M7 possono procedere in parallelo dopo M3 (anche con più agenti su branch diversi).
+M4, M5, and M7 can proceed in parallel after M3 (including across multiple agents on separate branches).
 
 ---
 
-## M0 — Bootstrap del progetto ✅ (impostato dall'agente di planning)
+## M0 — Project Bootstrap ✅ (set up by planning agent)
 
-- [x] Workspace Cargo multi-crate, edition 2024, lint di workspace
-- [x] `AGENTS.md`, piano, ADR, documenti UI/test/architettura
-- [x] CI GitHub Actions (fmt, clippy, test su Windows/Linux/macOS, cargo-deny)
-- [x] Repository GitHub, milestone e issue
-- [ ] (M0.1, primo task del prossimo agente) Verificare `cargo check --workspace` verde in CI; aggiungere
-      `tracing` + `tracing-subscriber` con log su file a rotazione in `%LOCALAPPDATA%`/`$XDG_STATE_HOME`
-      (crate `directories`); struttura errori (`thiserror` nelle librerie, `anyhow` solo nei binari).
-
----
-
-## M1 — Motore HTTP segmentato e crash-safe (crate `ruscello-http`, `ruscello-testkit`)
-
-**Obiettivo**: scaricare un URL HTTP/HTTPS in modo veloce, interrompibile e ripristinabile in qualunque
-momento, senza mai corrompere il file.
-
-### Task
-- [ ] **M1.1 Testkit server** (`ruscello-testkit`): server HTTP locale (axum/hyper) con scenari configurabili:
-      range supportato/non supportato, `Content-Length` assente, chunked, redirect multipli,
-      `Content-Disposition` (anche RFC 5987 `filename*=`), ETag/Last-Modified che cambiano a metà,
-      connessione che cade dopo N byte, throttling per-connessione, limite max connessioni per IP
-      (risponde 429/503), latenza artificiale, risposte 5xx intermittenti. File deterministici generati
-      da seed (nessun file binario nel repo).
-- [ ] **M1.2 Probe**: richiesta iniziale (GET con `Range: bytes=0-` preferito a HEAD, perché molti server
-      gestiscono male HEAD) → dimensione, supporto range, nome file (Content-Disposition > URL finale >
-      MIME → estensione), validatori (ETag, Last-Modified), URL finale dopo redirect.
-- [ ] **M1.3 Allocatore segmenti** (puro, senza I/O, testato con `proptest`):
-  - split iniziale in N segmenti con `min_segment_size` (default 1 MiB, adattivo);
-  - **work stealing**: quando una connessione finisce, divide a metà il segmento rimanente più grande
-    (o quello col tempo di completamento stimato più alto) se il residuo > soglia;
-  - **slow start delle connessioni**: aggiunge connessioni finché il throughput aggregato cresce
-    (> +10%) e fino al limite per-host; le riduce se il server risponde 429/503 o resetta;
-  - invarianti: nessuna sovrapposizione, copertura totale, byte completati monotoni.
-- [ ] **M1.4 Writer**: file `*.rscpart` preallocato (`set_len`; sparse su NTFS quando possibile), scritture
-      posizionali (`FileExt::seek_write`/`write_at`) da un task writer dedicato con buffer coalescenti
-      (es. 1–4 MiB per segmento) per evitare micro-scritture; rename atomico al nome finale a fine download;
-      gestione collisioni nome (`file (1).ext`) e caratteri illegali per OS.
-- [ ] **M1.5 Stato persistente / resume**: file di controllo `*.rscpart.ctl` (bincode/postcard +
-      checksum CRC32 + versione formato) con bitmap/ranges completati, scritto con *write-temp + fsync +
-      rename* ogni ~2 s o ogni X MiB; ordine garantito: **prima fsync dei dati, poi aggiornamento del
-      control file** (così il control file non dichiara mai byte non persistiti). Al resume: verifica
-      validatori con `If-Range`; se il file remoto è cambiato → ricomincia (con avviso) invece di
-      corrompere.
-- [ ] **M1.6 Download senza range**: fallback a connessione singola; se cade, ricomincia da zero (segnalato
-      in UI come "non riprendibile").
-- [ ] **M1.7 Retry & riconnessione**: backoff esponenziale con jitter, classificazione errori
-      (transitorio / permanente / auth / link scaduto → richiede re-resolve dal plugin), rilevamento
-      perdita rete e attesa del ritorno della connettività senza consumare tentativi.
-- [ ] **M1.8 Limitatore di banda**: token bucket globale + per-download, modificabile a caldo.
-- [ ] **M1.9 Mirror**: più URL per lo stesso file (stessa dimensione/hash) → segmenti distribuiti tra mirror.
-- [ ] **M1.10 Verifica integrità**: hash opzionale (MD5/SHA-1/SHA-256/CRC32) fornito dall'utente o dal plugin.
-- [ ] **M1.11 FTP/FTPS** (crate `suppaftp`) con resume via `REST` — priorità bassa, può slittare a M9.
-- [ ] **M1.12 CLI di sviluppo** (`apps/cli`): `ruscello-cli get <url> [-o dir] [-x conns]` per testare il
-      motore senza GUI.
-
-### Definition of Done M1
-- Test di integrazione su tutti gli scenari del testkit, inclusi:
-  - **kill del processo durante il download → riavvio → file finale con SHA-256 corretto** (test che lancia
-    `ruscello-cli` come sottoprocesso e lo termina brutalmente);
-  - caduta di rete simulata a metà → ripresa automatica;
-  - ETag cambiato → nessun file corrotto.
-- Benchmark `criterion`/script vs aria2 sul testkit con latenza 50 ms: throughput ≥ 95%.
+- [x] Multi-crate Cargo workspace, Edition 2024, workspace lints
+- [x] `AGENTS.md`, work plan, ADRs, UI/testing/architecture docs
+- [x] GitHub Actions CI (`fmt`, `clippy`, tests on Windows/Linux/macOS, `cargo-deny`)
+- [x] GitHub repository, milestones, and issues
+- [ ] **(M0.1, first task for the next agent)** Verify `cargo check --workspace` is green in CI; add
+      `tracing` + `tracing-subscriber` with rotating file logs in `%LOCALAPPDATA%`/`$XDG_STATE_HOME`
+      (`directories` crate); error handling structure (`thiserror` in libraries, `anyhow` in binaries only).
 
 ---
 
-## M2 — Coda, scheduler, storage, categorie (crate `ruscello-engine`, `ruscello-storage`, `ruscello-core`)
+## M1 — Segmented, Crash-Safe HTTP Engine (crates `ruscello-http`, `ruscello-testkit`)
 
-- [ ] **M2.1 Modello di dominio** (`ruscello-core`): `Download`, `Package` (gruppo di download come in
-      JDownloader), `Source` (Http/Torrent/Media/Hoster), `Status` (Queued, Resolving, WaitingUser,
-      Downloading, Paused, Seeding, PostProcessing, Completed, Failed{reason}), `Category`, `Tag`,
-      `Priority`. Macchina a stati esplicita con transizioni testate.
-- [ ] **M2.2 Storage SQLite** con migrazioni versionate (`rusqlite_migration` o equivalente), WAL,
-      scrittura asincrona batch (attore dedicato), backup automatico del DB. Recupero da DB corrotto
-      (ricostruzione dai control file).
-- [ ] **M2.3 Scheduler**: max download simultanei globali, max connessioni per host, priorità, ordine
-      manuale (drag), "forza avvio", retry automatici con limite, ripresa automatica all'avvio dei
-      download che erano attivi.
-- [ ] **M2.4 API dell'engine**: `EngineHandle` con comandi (`add`, `pause`, `resume`, `cancel{delete_files}`,
-      `set_priority`, `move`, `set_limits`…) ed eventi (`Added`, `Progress` aggregati e throttled,
-      `StatusChanged`, `Log`). Tutto `Send + Clone`; nessun lock esposto alla GUI.
-- [ ] **M2.5 Categorizzazione automatica**:
-  - *Tipologia* (automatica, non modificabile): Video, Audio, Immagini, Documenti, Archivi, Programmi,
-    Torrent, Altro — da estensione + MIME + magic bytes (`infer`) a fine download;
-  - *Categorie* (utente): regole su dominio / estensione / regex / sorgente → cartella di destinazione e
-    limiti; categorie predefinite: Giochi, Film & Serie, Musica, Software, Lavoro.
-- [ ] **M2.6 Gestione disco**: controllo spazio libero prima e durante il download (pausa automatica con
-      avviso se lo spazio sta per finire), cartella temporanea opzionale separata.
+**Goal**: download an HTTP/HTTPS URL quickly, with pause/resume at any point, without ever corrupting the output file.
 
-### DoD M2
-Test unitari della state machine; test di integrazione engine con testkit (coda di 50 download,
-limite 3 simultanei, riavvio engine a metà → tutti ripresi). Nessun `unwrap()` su percorsi di runtime.
+### Tasks
+- [ ] **M1.1 Testkit server** (`ruscello-testkit`): local HTTP server (`axum`/`hyper`) with configurable scenarios:
+      range supported/unsupported, missing `Content-Length`, chunked transfer, multi-hop redirects,
+      `Content-Disposition` (including RFC 5987 `filename*=`), mid-transfer `ETag`/`Last-Modified` changes,
+      connection drop after N bytes, per-connection throttling, max connections per IP limit
+      (returning 429/503), artificial latency, intermittent 5xx responses. Deterministic seed-generated
+      payloads (no binary blobs committed to git).
+- [ ] **M1.2 Probe**: initial request (`GET` with `Range: bytes=0-` preferred over `HEAD`, as many servers
+      mishandle `HEAD`) → size, range support, filename (`Content-Disposition` > final URL >
+      MIME → extension), validators (`ETag`, `Last-Modified`), final URL after redirects.
+- [ ] **M1.3 Segment allocator** (pure, no I/O, tested with `proptest`):
+  - initial split into N segments respecting `min_segment_size` (default 1 MiB, adaptive);
+  - **work stealing**: when a connection finishes, split the largest remaining segment in half
+    (or the one with the highest estimated completion time) if the remaining bytes exceed the threshold;
+  - **connection slow start**: add connections while aggregate throughput grows (> +10%) up to the per-host limit;
+    scale back on 429/503 or connection resets;
+  - invariants: no overlap, complete coverage, monotonically increasing completed bytes.
+- [ ] **M1.4 Writer**: preallocated `*.rscpart` file (`set_len`; sparse on NTFS when applicable), positional writes
+      (`FileExt::seek_write`/`write_at`) from a dedicated writer task with coalescing buffers
+      (e.g., 1–4 MiB per segment) to avoid micro-writes; atomic rename to final filename upon completion;
+      collision handling (`file (1).ext`) and OS-illegal character sanitization.
+- [ ] **M1.5 Persistent state / resume**: control file `*.rscpart.ctl` (`bincode`/`postcard` +
+      CRC32 checksum + format version) storing completed bitmap/ranges, written via *write-temp + fsync +
+      rename* every ~2 s or every X MiB; guaranteed ordering: **fsync data file first, then update control
+      file** (so the control file never claims bytes not yet persisted to disk). On resume: validate with
+      `If-Range`; if remote file changed → restart cleanly (with warning) instead of corrupting.
+- [ ] **M1.6 Non-range downloads**: single-connection fallback; if dropped, restart from zero (marked in UI
+      as "not resumable").
+- [ ] **M1.7 Retry & reconnection**: exponential backoff with jitter, error classification
+      (transient / permanent / auth / expired link → requests re-resolve from plugin), network loss detection
+      and waiting for connectivity restoration without burning retry attempts.
+- [ ] **M1.8 Bandwidth limiter**: global + per-download token bucket, hot-reconfigurable at runtime.
+- [ ] **M1.9 Mirrors**: multiple URLs for the same file (verified by size/hash) → segments distributed across mirrors.
+- [ ] **M1.10 Integrity verification**: optional hash check (MD5/SHA-1/SHA-256/CRC32) supplied by user or plugin.
+- [ ] **M1.11 FTP/FTPS** (`suppaftp` crate) with resume via `REST` — low priority, may slip to M9.
+- [ ] **M1.12 Developer CLI** (`apps/cli`): `ruscello-cli get <url> [-o dir] [-x conns]` to test and benchmark
+      the engine without the GUI.
 
----
-
-## M3 — GUI v1 (`apps/gui`, iced) — vedi `docs/UI.md`
-
-- [ ] **M3.1** Shell finestra: sidebar (Stato / Tipologie / Categorie), lista download virtualizzata,
-      pannello dettagli richiudibile, barra di stato (velocità totale ↓↑, limite attivo, spazio libero).
-- [ ] **M3.2** Dialog "Aggiungi" unico e intelligente: incolla uno o più link / magnet / percorso .torrent;
-      rilevamento automatico del tipo; scelta categoria e cartella; drag & drop di file e link.
-- [ ] **M3.3** Azioni: pausa/riprendi/annulla (con conferma ed opzione "elimina file"), apri file/cartella,
-      copia link, priorità, riordino; selezione multipla; scorciatoie tastiera.
-- [ ] **M3.4** Impostazioni (poche pagine chiare): Generale, Download, Connessione/Limiti, Torrent,
-      Categorie & regole, Integrazioni (browser, yt-dlp/ffmpeg), Avanzate.
-- [ ] **M3.5** Tray icon (`tray-icon`), chiusura in tray, notifiche di sistema (`notify-rust`), avvio con il
-      sistema, **istanza singola** (seconda istanza inoltra link/magnet alla prima via IPC locale).
-- [ ] **M3.6** Associazioni: `magnet:` e `.torrent` (Windows registry / `.desktop` + `xdg-mime` su Linux).
-- [ ] **M3.7** Tema chiaro/scuro (segue il sistema), font Inter incluso, icone Lucide (ISC) come font;
-      i18n con `fluent` (italiano + inglese fin da subito).
-- [ ] **M3.8** Test GUI con `iced_test` (simulatore headless) sui flussi principali + snapshot delle viste.
-
-### DoD M3
-L'utente può aggiungere, monitorare, mettere in pausa, riprendere e annullare download HTTP dalla GUI;
-CPU a riposo ~0%; nessun blocco del thread UI (tutte le operazioni lunghe passano dall'engine).
-
----
-
-## M4 — Torrent (crate `ruscello-torrent`)
-
-- [ ] **M4.1** Integrazione `librqbit` come sessione unica gestita dall'engine (DHT, PEX, trackers,
-      UPnP/NAT-PMP, porta configurabile, persistenza fastresume di librqbit nella data dir).
-- [ ] **M4.2** Aggiunta da magnet / file / URL di .torrent; finestra pre-aggiunta con albero file,
-      selezione file, dimensione, cartella; recupero metadati per magnet con stato "Recupero metadati".
-- [ ] **M4.3** Limiti: velocità up/down, ratio e tempo di seeding (poi stop automatico), max connessioni.
-- [ ] **M4.4** Dettagli: file con priorità, peer, tracker, pezzi (barra), velocità; "Ricontrolla dati".
-- [ ] **M4.5** Mappatura stati librqbit → `Status` comune; i torrent appaiono nella stessa lista degli
-      altri download (tipologia "Torrent", ma categorizzabili come gli altri).
-- [ ] **M4.6** Opzionale: interfaccia di rete vincolata (bind a VPN), filtro IP (formato eMule/P2P).
-
-### DoD M4
-Test con tracker+seeder locali (librqbit può creare e servire torrent) che scaricano un torrent multi-file,
-interrompono, riprendono e verificano gli hash. Test magnet senza tracker via DHT locale se fattibile,
-altrimenti marcato `#[ignore]` e documentato.
+### Definition of Done — M1
+- Integration tests covering all testkit scenarios, including:
+  - **process kill during download → restart → final file matches expected SHA-256** (test spawns
+    `ruscello-cli` as a child process and terminates it forcefully);
+  - simulated mid-download network drop → automatic resume;
+  - changed `ETag` → no corrupted file.
+- `criterion` / script benchmark vs `aria2` against the testkit with 50 ms latency: throughput ≥ 95%.
 
 ---
 
-## M5 — Resolver, plugin hoster e LinkGrabber (crate `ruscello-resolver`)
+## M2 — Queue, Scheduler, Storage, Categories (crates `ruscello-engine`, `ruscello-storage`, `ruscello-core`)
 
-**Obiettivo**: dato un qualsiasi URL (pagina web, hoster, link diretto, lista di link), capire cosa
-scaricare. Ispirato a JDownloader (plugin host/decrypter, LinkGrabber).
+- [ ] **M2.1 Domain model** (`ruscello-core`): `Download`, `Package` (download group as in
+      JDownloader), `Source` (`Http`/`Torrent`/`Media`/`Hoster`), `Status` (`Queued`, `Resolving`, `WaitingUser`,
+      `Downloading`, `Paused`, `Seeding`, `PostProcessing`, `Completed`, `Failed{reason}`), `Category`, `Tag`,
+      `Priority`. Explicit state machine with unit-tested transitions.
+- [ ] **M2.2 SQLite storage** with versioned migrations (`rusqlite_migration` or equivalent), WAL mode,
+      batched async writes (dedicated actor), automatic DB backup. Corrupted DB recovery
+      (rebuilding state from `.rscpart.ctl` control files).
+- [ ] **M2.3 Scheduler**: max global concurrent downloads, max connections per host, priorities, manual ordering
+      (drag), "force start", automatic retries with cap, automatic resume on startup for downloads that were active.
+- [ ] **M2.4 Engine API**: `EngineHandle` with commands (`add`, `pause`, `resume`, `cancel{delete_files}`,
+      `set_priority`, `move`, `set_limits`…) and events (`Added`, aggregated/throttled `Progress`,
+      `StatusChanged`, `Log`). All `Send + Clone`; no locks exposed to the GUI.
+- [ ] **M2.5 Automatic categorization**:
+  - *File Type* (automatic, read-only): Video, Audio, Images, Documents, Archives, Programs,
+    Torrents, Other — inferred from extension + MIME + magic bytes (`infer`) upon completion;
+  - *Categories* (user-defined): rules matching domain / extension / regex / source → destination folder and
+    limits; default categories: Games, Movies & TV, Music, Software, Work.
+- [ ] **M2.6 Disk management**: free-space check before and during download (automatic pause with warning if disk space
+      runs low), optional separate temporary directory for in-progress downloads.
 
-- [ ] **M5.1 Pipeline di risoluzione**: `URL → [Decrypter/crawler] → candidati → [Host plugin] →
-      link diretto(i) + header/cookie richiesti + max connessioni consentite + scadenza`.
-      Il link diretto viene sempre scaricato dal **nostro motore** (segmentato, riprendibile). Se il link
-      scade durante il download, l'engine chiede al plugin un nuovo link e riprende dagli stessi byte.
-- [ ] **M5.2 Trait `HostPlugin` / `CrawlerPlugin`** in Rust (plugin compilati, registrati staticamente) con:
-      `matches(url)`, `resolve(ctx) -> Resolution`, `requires_browser() -> bool`, limiti (connessioni,
-      download paralleli per hoster, attese obbligatorie). Contesto con client HTTP condiviso,
-      cookie jar per dominio, accesso all'helper browser (M6) e richiesta di interazione utente.
-- [ ] **M5.3 "Ricette" dichiarative** (TOML, ricaricabili, aggiungibili dall'utente senza ricompilare) per
-      siti semplici: passi tipo `get`, `submit_form{selector|fields}`, `wait{seconds}`, `extract{css|regex}`,
-      `follow`, e in modalità browser `click{selector}`, `wait_for{selector}`. Questo rende gli script
-      personali (vedi legacy-scripts) delle ricette di poche righe.
-- [ ] **M5.4 Plugin integrati iniziali** (ognuno con fixture HTML registrate e test offline):
-  - generico "link diretto" (riconosce risposte non-HTML);
-  - **fuckingfast** (estrazione del link `/dl/...` dallo script della pagina via HTTP, senza browser;
-    fallback browser se necessario) — caso d'uso prioritario del committente;
-  - **XFileSharing generico** (`op=download1`/`method_free` → countdown → `op=download2`/`downloadbtn`),
-    pattern usato da molti hoster — caso d'uso prioritario del committente;
-  - pixeldrain, gofile, mediafire, Google Drive (file pubblici, conferma file grandi), Dropbox/OneDrive link
-    pubblici, GitHub releases, SourceForge, archive.org;
-  - crawler di pagine "indice" (es. pagine con elenchi di link a hoster): estrae tutti i link supportati e
-    crea un **Package**.
-- [ ] **M5.5 LinkGrabber con punteggio** (requisito R7). Analisi della pagina (HTML con `scraper`, script
-      inline con regex, JSON-LD/OpenGraph, `<video>/<source>`, iframe di player, URL di hoster noti, URL
-      m3u8/mpd, risorse caricate se la pagina è stata aperta nel browser helper). Ogni candidato riceve un
-      punteggio spiegabile, es.:
-  - + estensione di file "scaricabile" (archivi, video, iso, exe, pdf…), + dimensione grande (HEAD/probe
-    in parallelo, limitato), + testo/ARIA del link contiene "download/scarica/get", + nome simile al
-    titolo della pagina, + match di un plugin hoster, + `Content-Disposition: attachment`;
-  - − domini pubblicitari/tracker (lista tipo EasyList/hosts, aggiornabile), − file minuscoli, immagini di
-    UI, CSS/JS, − link a social/login.
-  
-  UI: lista raggruppata (Probabili ⭐ / Altri file / Media / Pagine collegate), i "probabili" pre-selezionati,
-  motivo del punteggio visibile in tooltip ("archivio 4.2 GB · nome simile al titolo"). Filtri per tipo,
-  ricerca, selezione multipla, "aggiungi selezionati". Regole di **auto-accettazione** configurabili
-  (es. "se un plugin hoster riconosce il link, avvia subito senza chiedere").
-- [ ] **M5.6 Import in blocco**: incolla testo libero (estrazione di tutti gli URL), file `.txt`, monitor
-      degli appunti (opzionale, off di default), container `.torrent`/`.metalink`/`.m3u`. Deduplicazione.
-- [ ] **M5.7 Account hoster** (premium/login) salvati nel keyring di sistema (`keyring` crate), mai in chiaro
-      nel DB.
-
-### DoD M5
-Test offline con fixture per ogni plugin; test del punteggio su un corpus di ≥ 30 pagine salvate con
-risultato atteso (il file giusto nei primi 3 candidati in ≥ 90% dei casi); test end-to-end: lista di 20
-link fuckingfast-like serviti dal testkit (pagine finte con lo stesso pattern) → tutti scaricati.
-Test "live" (rete reale) separati sotto feature `live-tests`, mai in CI obbligatoria.
+### Definition of Done — M2
+State machine unit tests; engine integration tests with testkit (queue of 50 downloads, max 3 concurrent,
+engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtime paths.
 
 ---
 
-## M6 — Browser helper e pagine con verifiche (app `apps/webview`, crate `ruscello-browser`)
+## M3 — GUI v1 (`apps/gui`, iced) — see `docs/UI.md`
 
-Vedi ADR-0004. Il browser helper è un **processo separato** (wry + tao, WebView2 su Windows, WebKitGTK su
-Linux, WKWebView su macOS) avviato solo quando serve e chiuso dopo inattività (risparmio RAM). Comunicazione
-JSON-lines su stdin/stdout definita in `ruscello-browser::protocol`.
+- [ ] **M3.1** Main window shell: sidebar (Status / File Types / Categories), virtualized download list,
+      collapsible details panel, status bar (total speed ↓↑, active limit, free disk space).
+- [ ] **M3.2** Unified smart "Add Download" dialog: paste one or more URLs / magnets / `.torrent` paths;
+      automatic type detection; category and destination folder picker; drag & drop of files and links.
+- [ ] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
+      copy link, priority, reorder; multi-selection; keyboard shortcuts.
+- [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano**),
+      Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations (browser, `yt-dlp`/`ffmpeg`), Advanced.
+- [ ] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
+      launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets to the running instance).
+- [ ] **M3.6** File/protocol associations: `magnet:` and `.torrent` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
+- [ ] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
+      **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
+- [ ] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
 
-- [ ] **M6.1 Protocollo e ciclo di vita** del processo helper (spawn on demand, timeout, crash → restart).
-- [ ] **M6.2 Finestra "Verifica richiesta"**: quando un plugin/ricetta rileva una pagina di verifica
-      (challenge Cloudflare a pagina intera, captcha dell'hoster, login), l'engine mette il download in stato
-      `WaitingUser`, mostra una notifica non invasiva; l'utente apre la finestra, **completa lui la
-      verifica**, l'helper rileva il ritorno alla pagina attesa e si chiude da solo. I download dello stesso
-      dominio in coda attendono la stessa verifica (una verifica sblocca tutto il batch finché la sessione
-      è valida).
-- [ ] **M6.3 Riuso della sessione**: cookie (`cookies_for_url`, inclusi HttpOnly) e User-Agent del webview
-      vengono passati al client HTTP dell'engine per il dominio. Se il server non accetta la sessione fuori
-      dal browser, si usa la modalità M6.4.
-- [ ] **M6.4 Risoluzione assistita dal browser**: la ricetta viene eseguita *dentro* il webview (DOM: click,
-      wait_for, extract), con **popup e nuove finestre bloccati** a livello nativo
-      (`new_window_req_handler`), e il download avviato dalla pagina viene **intercettato**
-      (`download_started_handler`): si annulla il download del browser e si passa URL + cookie + referer
-      al nostro motore (segmentato, riprendibile). Il webview può restare nascosto quando non serve
-      interazione.
-- [ ] **M6.5 Cattura risorse**: script iniettato che raccoglie `performance.getEntriesByType('resource')`,
-      `<video>` src, richieste fetch/XHR → candidati per il LinkGrabber (utile per player video).
-- [ ] **M6.6 Import cookie da browser installati** (best effort: Firefox semplice; Chromium su Windows con
-      cifratura app-bound potrebbe non essere fattibile → preferire l'estensione M8). Solo su azione
-      esplicita dell'utente.
-
-### DoD M6
-Test di integrazione con pagina locale che simula "pagina di verifica → click utente simulato da test →
-pagina download": l'engine riprende da solo. Test di intercettazione download e blocco popup su pagina
-locale con `window.open` multipli (replica del comportamento degli hoster degli script legacy).
+### Definition of Done — M3
+Users can add, monitor, pause, resume, and cancel HTTP downloads from the GUI, switch UI language between
+English and Italian, and experience ~0% idle CPU with zero UI thread blocking.
 
 ---
 
-## M7 — Media: HLS/DASH nativi + yt-dlp sidecar (crate `ruscello-media`)
+## M4 — BitTorrent (crate `ruscello-torrent`)
 
-- [ ] **M7.1** HLS (`m3u8-rs`): playlist master → scelta qualità, segmenti scaricati in parallelo dal
-      nostro motore, AES-128 supportato, resume a livello di segmento, concatenazione `.ts`.
-- [ ] **M7.2** DASH (MPD) base: segment template/list, tracce audio+video separate.
-- [ ] **M7.3** Gestore sidecar: download di yt-dlp (release ufficiali GitHub, verifica checksum),
-      aggiornamento automatico periodico, stesso per ffmpeg (build statiche) — **solo con consenso
-      dell'utente** nelle impostazioni; percorso custom supportato.
-- [ ] **M7.4** Integrazione yt-dlp: `yt-dlp -J` per ottenere titolo/formati/playlist → finestra di scelta
-      formato semplice ("Migliore", "1080p", "Solo audio MP3"…); download preferibilmente con il nostro
-      motore usando gli URL dei formati (header inclusi) e fallback a yt-dlp stesso come esecutore con
-      parsing del progresso (`--progress-template`, `--newline`). Cookie della sessione passati con
-      `--cookies` (file Netscape temporaneo).
-- [ ] **M7.5** Merge/remux audio+video con ffmpeg sidecar se presente; altrimenti scelta di formati
-      progressivi.
-- [ ] **M7.6** Playlist/canali → Package con tutti gli elementi, selezionabili.
+- [ ] **M4.1** Integrate `librqbit` as a single session managed by the engine (DHT, PEX, trackers,
+      UPnP/NAT-PMP, configurable listening port, `librqbit` fastresume persistence in data dir).
+- [ ] **M4.2** Add from magnet / `.torrent` file / `.torrent` URL; pre-add dialog with file tree,
+      file selection, total size, destination folder; metadata fetching state ("Fetching metadata") for magnets.
+- [ ] **M4.3** Limits: upload/download speed, seed ratio and seeding time limits (with automatic stop), max peers.
+- [ ] **M4.4** Details tabs: files with priorities, peers, trackers, piece map bar, speeds; "Force recheck".
+- [ ] **M4.5** Map `librqbit` states → common `Status`; torrents appear in the unified list alongside other
+      downloads (File Type "Torrents", assignable to user Categories like any other download).
+- [ ] **M4.6** Optional: network interface binding (VPN kill-switch binding), IP filter list (eMule/P2P format).
 
-### DoD M7
-Test HLS/DASH su stream generati localmente (fixture), test parser output yt-dlp con JSON registrati;
-test live opzionali.
+### Definition of Done — M4
+Tests using local tracker + seeder (`librqbit` can create and serve torrents locally) downloading a multi-file
+torrent, interrupting, resuming, and verifying piece hashes. Local DHT magnet test if deterministic, otherwise
+marked `#[ignore]` and documented.
 
 ---
 
-## M8 — API locale ed estensione browser (crate `ruscello-api`, `extensions/browser`)
+## M5 — Resolver, Hoster Plugins & LinkGrabber (crate `ruscello-resolver`)
 
-- [ ] **M8.1** API locale HTTP su `127.0.0.1` (axum) con token generato all'installazione, CORS ristretto
-      all'ID dell'estensione; endpoint: aggiungi link (con cookie/referer/UA), stato, versione.
-      In alternativa/aggiunta *native messaging host* (più sicuro, niente porta aperta) — scegliere e
-      motivare con un ADR.
-- [ ] **M8.2** Estensione Manifest V3 (Chrome + Firefox), codice minimo (TS/JS obbligatorio per le
-      estensioni): intercettazione download del browser (opzionale, per tipi/dimensioni configurabili),
-      menu contestuale "Scarica con Ruscello" su link/selezione/pagina ("analizza pagina" → LinkGrabber),
-      invio cookie del dominio per download autenticati.
-- [ ] **M8.3** Pairing semplice estensione ↔ app dalla pagina impostazioni.
+**Goal**: given any URL (web page, file hoster, direct link, list of links), determine what to download.
+Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
+
+- [ ] **M5.1 Resolution pipeline**: `URL → [Decrypter/Crawler] → candidates → [Host Plugin] →
+      direct URL(s) + required headers/cookies + max allowed connections + expiration`.
+      The final direct link is always downloaded by **our HTTP engine** (segmented, resumable). If a direct link
+      expires mid-download, the engine requests a fresh link from the plugin and resumes from the exact byte offset.
+- [ ] **M5.2 `HostPlugin` / `CrawlerPlugin` traits** in Rust (compiled plugins, statically registered) with:
+      `matches(url)`, `resolve(ctx) -> Resolution`, `requires_browser() -> bool`, hoster constraints (max connections,
+      max parallel downloads per hoster, mandatory countdown waits). Execution context provides shared HTTP client,
+      per-domain cookie jar, access to the browser helper (M6), and user-interaction requests.
+- [ ] **M5.3 Declarative "Recipes"** (TOML, hot-reloadable, user-extensible without recompiling) for
+      simpler sites: steps like `get`, `submit_form{selector|fields}`, `wait{seconds}`, `extract{css|regex}`,
+      `follow`, and in browser mode `click{selector}`, `wait_for{selector}`. This turns custom scripts
+      (see legacy-scripts) into concise recipes.
+- [ ] **M5.4 Initial built-in plugins** (each backed by recorded HTML fixtures and offline tests):
+  - generic "direct link" detector (identifies non-HTML responses);
+  - **fuckingfast** (extracts the `/dl/...` direct link from page scripts via plain HTTP without a browser;
+    browser fallback if needed) — high-priority owner use case;
+  - **generic XFileSharing** (`op=download1`/`method_free` → countdown → `op=download2`/`downloadbtn`),
+    pattern shared by many file hosters — high-priority owner use case;
+  - pixeldrain, gofile, mediafire, Google Drive (public files including large-file confirmation), public
+    Dropbox/OneDrive links, GitHub Releases, SourceForge, archive.org;
+  - generic "index page" crawler (extracts all supported hoster links from a page and groups them into a **Package**).
+- [ ] **M5.5 LinkGrabber with explainable scoring** (requirement R7). Page analysis (HTML via `scraper`, inline
+      scripts via regex, JSON-LD/OpenGraph, `<video>/<source>`, player iframes, known hoster URLs,
+      `.m3u8`/`.mpd` URLs, and network resources captured if opened in the browser helper). Each candidate
+      receives an explainable score:
+  - `+` downloadable file extension (archives, video, ISO, executables, PDF…), `+` large file size (bounded
+    parallel probe), `+` link text/ARIA contains "download/get", `+` filename matches page title,
+    `+` matches a known hoster plugin, `+` `Content-Disposition: attachment`;
+  - `−` ad/tracker domains (updatable EasyList/hosts filter), `−` tiny files, UI icons/sprites, CSS/JS,
+    `−` social/login links.
+
+  UI: grouped candidate list (*Likely Targets ⭐* / *Other Files* / *Media* / *Linked Pages*), with *Likely Targets*
+  pre-selected and score reasons shown in tooltips (e.g., *"4.2 GB archive · name matches page title"*).
+  Type filters, search box, multi-select, "Download Selected". Configurable **auto-accept rules**
+  (e.g., "if a known hoster plugin matches, start immediately without prompting").
+- [ ] **M5.6 Bulk import**: paste free-form text (extracts all URLs), `.txt` link lists, optional clipboard monitor
+      (off by default), `.torrent`/`.metalink`/`.m3u` containers. Automatic deduplication.
+- [ ] **M5.7 Hoster accounts** (premium/login credentials) stored in the OS keyring (`keyring` crate), never in
+      plaintext in SQLite.
+
+### Definition of Done — M5
+Offline fixture tests for every plugin; LinkGrabber scoring benchmark across a corpus of ≥ 30 saved pages with
+expected targets (true target ranked in top 3 in ≥ 90% of cases); end-to-end test: batch of 20
+fuckingfast-like pages served by `ruscello-testkit` → all files downloaded and verified.
+Live network tests isolated behind the `live-tests` feature flag, never required in default CI.
 
 ---
 
-## M9 — Automazione e post-processing
+## M6 — Browser Helper & User-Completed Verifications (app `apps/webview`, crate `ruscello-browser`)
 
-- [ ] **M9.1** Pianificatore: fasce orarie per velocità/limiti, avvio/stop coda a orario.
-- [ ] **M9.2** Azioni a fine coda: niente / notifica / sospensione / spegnimento (con countdown annullabile).
-- [ ] **M9.3** Prevenzione sospensione del sistema mentre ci sono download attivi (Windows
-      `SetThreadExecutionState`, Linux `org.freedesktop.login1` inhibit via `zbus`, macOS IOPMAssertion).
-- [ ] **M9.4** Estrazione automatica archivi: zip, 7z (crate Rust), tar.*; RAR tramite 7-Zip/unrar
-      esterni se presenti (la licenza UnRAR non è compatibile GPL → niente binding statico; decidere in ADR).
-      Archivi multi-parte (`.part1.rar`, `.7z.001`) estratti quando tutte le parti del Package sono
-      complete; lista password; eliminazione archivi dopo estrazione (opzionale).
-- [ ] **M9.5** Verifica hash automatica se il sito/pacchetto fornisce checksum (file `.sfv`, `.md5`,
-      `.sha256` nello stesso Package).
-- [ ] **M9.6** Regole "watch folder" per `.torrent` e `.txt` di link.
-- [ ] **M9.7** Hook post-download (comando utente) — opzionale.
+See ADR-0004. The browser helper is a **separate process** (`wry` + `tao`: WebView2 on Windows, WebKitGTK on
+Linux, WKWebView on macOS) spawned on demand and shut down after inactivity (saving RAM). It communicates with
+the engine over stdin/stdout JSON-lines defined in `ruscello-browser::protocol`.
+
+- [ ] **M6.1 Process lifecycle & IPC protocol** (spawn on demand, timeouts, crash recovery/restart).
+- [ ] **M6.2 "Verification Required" window**: when a plugin/recipe detects an anti-bot challenge page
+      (full-page Cloudflare challenge, hoster CAPTCHA, login wall), the engine puts the download into
+      `WaitingUser`, shows a non-intrusive notification; the user opens the helper window, **completes the
+      check themselves**, and the helper detects navigation to the expected target page and closes automatically.
+      Queued downloads for the same domain wait on the same verification (one check unlocks the entire batch
+      for as long as the session remains valid).
+- [ ] **M6.3 Session reuse**: cookies (`cookies_for_url`, including `HttpOnly`) and the exact `User-Agent` from
+      the webview are exported to the engine's HTTP client for that domain. If a site rejects requests outside
+      the browser context, fallback to M6.4.
+- [ ] **M6.4 Browser-assisted resolution**: execute recipe steps *inside* the webview DOM (`click`,
+      `wait_for`, `extract`), with **popups and new windows blocked natively** (`new_window_req_handler`),
+      and any browser-initiated download **intercepted** (`download_started_handler`): cancel the webview's
+      built-in download and hand off the final URL + cookies + referer to our segmented Rust HTTP engine.
+      The webview can run hidden when no user interaction is needed.
+- [ ] **M6.5 Resource capture**: injected script collecting `performance.getEntriesByType('resource')`,
+      `<video>` sources, and `fetch`/`XHR` URLs → fed into LinkGrabber candidates (useful for embedded video players).
+- [ ] **M6.6 Cookie import from installed browsers** (best-effort: Firefox SQLite import; Chromium on Windows
+      with App-Bound Encryption may not be accessible → recommend the M8 browser extension). Triggered only by
+      explicit user action.
+
+### Definition of Done — M6
+Integration test with a local testkit page simulating "challenge page → simulated user click in test →
+download page": engine automatically resumes and completes the batch. Download interception and popup blocking
+tested against a local page firing multiple `window.open` popups (replicating the exact behavior of the hosters
+in the legacy scripts).
 
 ---
 
-## M10 — Hardening, performance, packaging, release
+## M7 — Media: Native HLS/DASH + Optional yt-dlp Sidecar (crate `ruscello-media`)
 
-- [ ] **M10.1** Fuzzing (`cargo-fuzz`) dei parser: Content-Disposition, m3u8/MPD, ricette, control file.
-- [ ] **M10.2** Soak test: 24 h con 200 download misti, interruzioni di rete casuali, kill casuali → nessuna
-      corruzione, nessuna crescita di memoria.
-- [ ] **M10.3** Verifica budget §2 con script ripetibili; profiling (`tracy`/`perf`/`samply`).
-- [ ] **M10.4** Packaging: Windows (MSI o NSIS via `cargo-packager`/`cargo-dist`, firma opzionale),
-      Linux (AppImage + .deb + Flatpak opzionale), macOS (.dmg). Release automatiche su tag `v*` con GitHub
-      Actions.
-- [ ] **M10.5** Aggiornamento automatico dell'app (verifica su GitHub Releases, opt-in).
-- [ ] **M10.6** Documentazione utente (README, guida rapida, FAQ), screenshot.
-- [ ] **M10.7** Repository pubblico: rimozione di eventuali riferimenti personali, controllo licenze dipendenze
-      (`cargo-deny`), `SECURITY.md`.
+- [ ] **M7.1** HLS (`m3u8-rs`): master playlist parsing → quality selection, parallel segment downloads via our
+      engine, AES-128 decryption support, segment-level resume, `.ts` concatenation.
+- [ ] **M7.2** Basic DASH (MPD): segment template/list, separate video + audio track downloading.
+- [ ] **M7.3** Sidecar manager: download official `yt-dlp` releases from GitHub (with SHA-256 verification),
+      periodic auto-update, and static `ffmpeg` builds — **only with explicit user consent** in Settings;
+      custom binary paths also supported.
+- [ ] **M7.4** `yt-dlp` integration: invoke `yt-dlp -J` to extract title/formats/playlists → clean format picker
+      ("Best", "1080p", "Audio Only MP3"…); download via our native engine whenever direct format URLs + headers
+      allow, falling back to `yt-dlp` execution with progress parsing (`--progress-template`, `--newline`).
+      Pass domain cookies via temporary Netscape cookie file (`--cookies`).
+- [ ] **M7.5** Audio + video merge/remux via `ffmpeg` sidecar when available; otherwise default to progressive formats.
+- [ ] **M7.6** Playlists/channels → grouped into a selectable **Package**.
+
+### Definition of Done — M7
+HLS/DASH tests against locally generated stream fixtures; `yt-dlp` JSON parser tests using recorded fixtures;
+optional live tests behind feature flag.
 
 ---
 
-## 4. Rischi principali e mitigazioni
+## M8 — Local API & Browser Extension (crate `ruscello-api`, `extensions/browser`)
 
-| Rischio | Mitigazione |
-|---------|-------------|
-| Hoster cambiano HTML spesso | Ricette dichiarative aggiornabili senza ricompilare; fixture + test che falliscono in modo chiaro; fallback modalità browser. |
-| Sessione da verifica anti-bot non accettata dal client HTTP | Modalità di risoluzione assistita nel webview (M6.4): il file finale viene comunque scaricato dal nostro motore. |
-| Due event loop (iced/winit e wry/tao) nello stesso processo | Helper webview in processo separato (ADR-0004). |
-| Dimensione/peso di WebView2/WebKitGTK | Helper avviato solo on demand e chiuso dopo inattività. |
-| yt-dlp/ffmpeg non sono Rust | Sidecar opzionali, l'app funziona senza; ADR-0002. |
-| Licenze (GPL vs UnRAR, ffmpeg) | cargo-deny in CI; binari esterni non linkati. |
-| Corruzione file su spegnimento | Ordine fsync dati → control file; test kill -9 obbligatori in CI. |
+- [ ] **M8.1** Local HTTP API bound to `127.0.0.1` (`axum`) with per-install auth token and CORS restricted to
+      the extension origin; endpoints: add links (with cookies/referer/UA), query status, version.
+      Alternatively or additionally support a *Native Messaging host* (more secure, no TCP port) — decide and
+      document in an ADR.
+- [ ] **M8.2** Manifest V3 browser extension (Chrome + Firefox) with minimal TS/JS code: optional browser download
+      interception (filtered by MIME/file size), context menu "Download with Ruscello" on links/selection/page
+      ("Analyze page with LinkGrabber"), automatic forwarding of domain cookies for authenticated downloads.
+- [ ] **M8.3** Simple one-click pairing between extension and desktop app in Settings.
 
-## 5. Flusso di lavoro con GitHub
+---
 
-- Ogni task `Mx.y` = una issue (o checklist in un'issue epic per i task piccoli). Branch
-  `feat/m1-segment-allocator`, `fix/...`; PR verso `main` con CI verde; squash merge.
-- Conventional Commits (`feat(http): ...`, `fix(gui): ...`, `test(...)`, `docs(...)`).
-- A fine milestone: aggiornare questo file, `CHANGELOG.md`, chiudere la milestone, tag `v0.<M>.0`.
+## M9 — Automation & Post-Processing
+
+- [ ] **M9.1** Scheduler: time-of-day speed limit profiles and automatic queue start/stop schedule.
+- [ ] **M9.2** Queue completion actions: do nothing / notify / sleep / shut down PC (with cancellable countdown).
+- [ ] **M9.3** Prevent OS sleep while downloads are active (Windows `SetThreadExecutionState`, Linux
+      `org.freedesktop.login1` inhibit via `zbus`, macOS `IOPMAssertion`).
+- [ ] **M9.4** Automatic archive extraction: `.zip`, `.7z` (pure Rust crates), `.tar.*`; `.rar` via external
+      `7z`/`unrar` binary if available (UnRAR license is incompatible with static GPL linking — document in ADR).
+      Multi-part archives (`.part1.rar`, `.7z.001`) extracted only once all parts in the Package complete;
+      password list support; optional archive deletion after successful extraction.
+- [ ] **M9.5** Automatic checksum verification when a site/package provides `.sfv`, `.md5`, or `.sha256` files.
+- [ ] **M9.6** Watch folder rules for `.torrent` files and `.txt` link lists.
+- [ ] **M9.7** Optional post-download user command hook.
+
+---
+
+## M10 — Hardening, Performance, Packaging & 1.0 Release
+
+- [ ] **M10.1** Fuzzing (`cargo-fuzz`) for untrusted inputs: `Content-Disposition`, `m3u8`/MPD, TOML recipes, control files.
+- [ ] **M10.2** 24-hour soak test: 200 mixed downloads, random network drops, random process kills → zero file
+      corruption, zero unbounded memory growth.
+- [ ] **M10.3** Verify resource budget (§2) with repeatable benchmark scripts; profile with `tracy`/`perf`/`samply`.
+- [ ] **M10.4** Packaging: Windows (MSI or NSIS via `cargo-packager`/`cargo-dist`, optional code signing),
+      Linux (AppImage + `.deb` + optional Flatpak), macOS (`.dmg`). Automated GitHub Releases on `v*` tags.
+- [ ] **M10.5** Opt-in application update checker against GitHub Releases.
+- [ ] **M10.6** User documentation (`README.md`, quickstart guide, FAQ) and screenshots.
+- [ ] **M10.7** Public repository readiness: scrub any personal path references, audit dependency licenses
+      (`cargo-deny`), add `SECURITY.md`.
+
+---
+
+## 4. Key Risks & Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| Hosters frequently change HTML structure | Declarative TOML recipes updatable without recompiling; fixture tests that fail clearly; browser-assisted fallback mode. |
+| Anti-bot session cookies rejected outside browser TLS stack | Browser-assisted resolution mode (M6.4) executes clicks in webview and intercepts the final download URL for our engine. |
+| Dual event loops (`iced`/`winit` and `wry`/`tao`) in one process | Run `ruscello-webview` as a separate on-demand child process (ADR-0004). |
+| Memory footprint of WebView2 / WebKitGTK | Spawn helper process only when needed and terminate after idle timeout. |
+| `yt-dlp` / `ffmpeg` are not written in Rust | Optional external sidecars; the app works standalone without them (ADR-0002). |
+| License compatibility (GPL vs UnRAR, ffmpeg) | Enforced by `cargo-deny` in CI; external binaries invoked as subprocesses, never linked. |
+| File corruption on sudden power-off | Strict *fsync data → fsync control file* ordering; mandatory `kill -9` tests in CI. |
+
+## 5. GitHub Workflow
+
+- Every `Mx.y` task maps to a GitHub Issue (or checklist item inside a milestone Epic issue). Branches follow
+  `feat/m1-segment-allocator`, `fix/...`; PRs target `main` with green CI and squash merge.
+- All commits, PRs, issues, code comments, and docs must use **English** (Conventional Commits: `feat(http): ...`, `fix(gui): ...`).
+- At the end of each milestone: update checkboxes in `docs/PLAN.md`, update `CHANGELOG.md`, close the GitHub Milestone, and tag `v0.<M>.0`.
