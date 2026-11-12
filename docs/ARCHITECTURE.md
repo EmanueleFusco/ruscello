@@ -150,7 +150,7 @@ expect_download = true      # response is the file → direct link
 | Storage | `rusqlite` (`bundled`), `rusqlite_migration`, `postcard`/`bincode` + `crc32fast` (control file) |
 | Config / Serde | `serde`, `toml` |
 | Webview | `wry`, `tao` (isolated to `apps/webview`) |
-| OS Integration | `directories`, `keyring`, `single-instance` (or custom named pipe / Unix socket), `sysinfo` (disk space), `zbus` (Linux), `windows` (Win32) |
+| OS Integration & Updater | `directories`, `keyring`, `single-instance` (or custom named pipe / Unix socket), `sysinfo` (disk space), `zbus` (Linux), `windows` (Win32), `semver`, `self-replace` (in-app GitHub Release self-updater) |
 | Files / Archives / Crypto | `infer` (magic bytes), `zip`, `sevenz-rust2`, `tar`, `flate2`, `sha2`, `md-5`, `sha1`, `crc32fast`, `aes`, `cbc`, `base64` (`.dlc` container decryption & HLS AES-128) |
 | Logging | `tracing`, `tracing-subscriber`, `tracing-appender` |
 | Localization (i18n) | `fluent`, `fluent-langneg`, `sys-locale` (`en` + `it` bundles, runtime switchable) |

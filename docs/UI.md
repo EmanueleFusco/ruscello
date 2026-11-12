@@ -49,7 +49,7 @@ rather than cluttering toolbars.
   (accent = active, gray = paused, green = completed, amber = waiting for user, red = failed).
 - **Row hover actions**: reveals 2–3 subtle icons (pause/resume, open folder, `⋯`); all other operations live
   in the right-click / `⋯` context menu.
-- **Toolbar**: only Add, Search, Pause/Resume All, Alternative Speed Mode (`🐢`, qBittorrent-style), and Settings.
+- **Toolbar**: only Add, Search, Pause/Resume All, Alternative Speed Mode (`🐢`, qBittorrent-style), Settings, and (when a new GitHub Release is detected) a subtle **"⬆ Update available (`vX.Y.Z`)"** pill that opens the in-app updater dialog with release notes, download progress bar, and *Update & Restart* button.
 - **Collapsible details panel** (remembers open/closed state): *General* (URL, folder, hashes, timestamps),
   *Segments* (visual map of segments/pieces and active connections), *Files / Peers / Trackers* (shown for torrents),
   and per-download *Log*.
@@ -101,4 +101,4 @@ rather than cluttering toolbars.
   - **Browser Extension**: pairing token and instructions.
   - **Sidecars & Clipboard**: `yt-dlp`/`ffmpeg` sidecar manager & auto-update, optional clipboard monitor.
 - **Hoster Accounts**: Credentials stored in OS keyring.
-- **Advanced**: Logs, proxy, custom User-Agent, DNS, reset.
+- **Advanced & About**: Logs (open log file / copy diagnostics report without secrets, as in `Scaricatore-di-Porto-rust`), proxy, custom User-Agent, DNS, reset, and **In-App Updates** (current version, *Check for updates automatically on startup* toggle, *Check Now* button, release notes viewer, and one-click *Download & Install Update* with progress bar).

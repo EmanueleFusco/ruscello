@@ -34,6 +34,7 @@
 | R15 | Bilingual UI: English (`en`) and Italian (`it`) with user-selectable language in Settings | M3.7 + `AGENTS.md` |
 | R16 | JDownloader `.dlc` (Download Link Container) compatibility | M5.6, M3.2, M3.6, M9.6 |
 | R17 | LAN Remote Web UI (qBittorrent-style): monitor and control downloads from a phone/browser on the local network (with or without password) | M8.1, M8.2, M3.4 |
+| R18 | In-app GitHub Release auto-updater (like `Scaricatore-di-Porto-rust`): detect new GitHub releases, notify in-app with release notes, download with progress bar, verify checksum/signature, install & restart directly from the app | M10.5, M3.4 |
 
 ---
 
@@ -388,7 +389,11 @@ optional live tests behind feature flag.
 - [ ] **M10.3** Verify resource budget (§2) with repeatable benchmark scripts; profile with `tracy`/`perf`/`samply`.
 - [ ] **M10.4** Packaging: Windows (MSI or NSIS via `cargo-packager`/`cargo-dist`, optional code signing),
       Linux (AppImage + `.deb` + optional Flatpak), macOS (`.dmg`). Automated GitHub Releases on `v*` tags.
-- [ ] **M10.5** Opt-in application update checker against GitHub Releases.
+- [ ] **M10.5** **In-app GitHub Release auto-updater** (modeled after `EmanueleFusco/Scaricatore-di-Porto-rust`, requirement R18):
+  - Check GitHub Releases (`api.github.com/repos/EmanueleFusco/ruscello/releases/latest` or release manifest JSON) automatically on startup (configurable toggle, enabled by default) and on demand via *Settings → About / Updates*;
+  - Compare `semver` against current build version and return `UpdateCheck { available, current_version, version, notes, date }`;
+  - Display a non-intrusive in-app update pill/banner in the main window when a newer build is available, showing version & release notes;
+  - **One-click in-app update (`download_and_install`)**: if downloads are active, cleanly pause and flush all checkpoints (`.rscpart.ctl`) first (or prompt to pause queue before updating, just like `Scaricatore-di-Porto-rust`); download the platform release asset with a live progress bar (`UpdateProgress { downloaded, total, percent }`), verify SHA-256 checksum / Ed25519 signature, apply the update in-place (`self-replace` crate for standalone binaries / silent installer handoff for packaged installs), and relaunch the app.
 - [ ] **M10.6** User documentation (`README.md`, quickstart guide, FAQ) and screenshots.
 - [ ] **M10.7** Public repository readiness: scrub any personal path references, audit dependency licenses
       (`cargo-deny`), add `SECURITY.md`.
