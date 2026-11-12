@@ -30,8 +30,10 @@
 | R11 | Stable and thoroughly tested | `docs/TESTING.md`, mandatory CI gates on every PR |
 | R12 | All Rust (UI + backend) | ADR-0001, ADR-0002 (exceptions: minimal JS browser extension, optional `yt-dlp`/`ffmpeg` sidecars) |
 | R13 | Windows and Linux as equal first-class targets; macOS supported | 3-OS CI matrix, ADR-0007 |
-| R14 | Owner's legacy script workflows (batch downloads from hosters like fuckingfast / XFileSharing) | M5 + M6, see `docs/reference/legacy-scripts/README.md` |
+| R14 | Owner's legacy script workflows (batch downloads from hosters like fuckingfast / XFileSharing / datanodes) | M5 + M6, see `docs/reference/legacy-scripts/README.md` |
 | R15 | Bilingual UI: English (`en`) and Italian (`it`) with user-selectable language in Settings | M3.7 + `AGENTS.md` |
+| R16 | JDownloader `.dlc` (Download Link Container) compatibility | M5.6, M3.2, M3.6, M9.6 |
+| R17 | LAN Remote Web UI (qBittorrent-style): monitor and control downloads from a phone/browser on the local network (with or without password) | M8.1, M8.2, M3.4 |
 
 ---
 
@@ -181,16 +183,16 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 
 - [ ] **M3.1** Main window shell: sidebar (Status / File Types / Categories), virtualized download list,
       collapsible details panel, status bar (total speed ↓↑, active limit, free disk space).
-- [ ] **M3.2** Unified smart "Add Download" dialog: paste one or more URLs / magnets / `.torrent` paths;
-      automatic type detection; category and destination folder picker; drag & drop of files and links.
+- [ ] **M3.2** Unified smart "Add Download" dialog: paste one or more URLs / magnets / `.torrent` / `.dlc` paths;
+      automatic type detection; category and destination folder picker; drag & drop of files (`.torrent`, `.dlc`, `.txt`) and links.
 - [ ] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
       copy link, priority, reorder; multi-selection; keyboard shortcuts.
 - [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
       **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),
-      Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations (browser, `yt-dlp`/`ffmpeg`), Advanced.
+      Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations & Remote Control (LAN Web UI toggle, port, optional password, QR code; browser extension; `yt-dlp`/`ffmpeg`), Advanced.
 - [ ] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
-      launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets to the running instance).
-- [ ] **M3.6** File/protocol associations: `magnet:` and `.torrent` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
+      launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets/`.torrent`/`.dlc` files to the running instance).
+- [ ] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
 - [ ] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
       **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
 - [ ] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
@@ -244,8 +246,8 @@ Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
     `hx-redirect` response over HTTP without opening ad popups; enforces a safe per-host concurrency limit to avoid
     `429 Too Many Requests`; automatically re-resolves expired `/dl/...` links on resume; falls back seamlessly to the
     persistent-profile browser helper M6.4 if Cloudflare blocks plain HTTP) — high-priority owner use case;
-  - **generic XFileSharing** (`op=download1`/`method_free` → countdown → `op=download2`/`downloadbtn`),
-    pattern shared by many file hosters — high-priority owner use case;
+  - **generic XFileSharing & `datanodes.to`** (`op=download1`/`method_free` → countdown → `op=download2`/`downloadbtn`),
+    pattern shared by many file hosters including `datanodes.to` (commonly distributed inside `.dlc` containers) — high-priority owner use case;
   - pixeldrain, gofile, mediafire, Google Drive (public files including large-file confirmation), public
     Dropbox/OneDrive links, GitHub Releases, SourceForge, archive.org;
   - generic "index page" crawler (extracts all supported hoster links from a page and groups them into a **Package**).
@@ -263,8 +265,13 @@ Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
   pre-selected and score reasons shown in tooltips (e.g., *"4.2 GB archive · name matches page title"*).
   Type filters, search box, multi-select, "Download Selected". Configurable **auto-accept rules**
   (e.g., "if a known hoster plugin matches, start immediately without prompting").
-- [ ] **M5.6 Bulk import**: paste free-form text (extracts all URLs), `.txt` link lists, optional clipboard monitor
-      (off by default), `.torrent`/`.metalink`/`.m3u` containers. Automatic deduplication.
+- [ ] **M5.6 Bulk import & `.dlc` container decryption**:
+  - **`.dlc` (Download Link Container) support** (requirement R16): decrypt JDownloader `.dlc` files natively in Rust
+    (extract 88-char key tail + Base64 payload, exchange key via `service.jdownloader.org/dlcrypt/service.php` with
+    `dcrypt.it` fallback, AES-128-CBC decrypt `<rc>` and XML body — see exact specification in `docs/ARCHITECTURE.md`)
+    to extract package name, file URLs, filenames, and sizes into a **Package**;
+  - paste free-form text (extracts all URLs), `.txt` link lists, optional clipboard monitor (off by default),
+    `.torrent`/`.metalink`/`.m3u` containers; automatic deduplication.
 - [ ] **M5.7 Hoster accounts** (premium/login credentials) stored in the OS keyring (`keyring` crate), never in
       plaintext in SQLite.
 
@@ -334,16 +341,25 @@ optional live tests behind feature flag.
 
 ---
 
-## M8 — Local API & Browser Extension (crate `ruscello-api`, `extensions/browser`)
+## M8 — Local API, LAN Remote Web UI & Browser Extension (crate `ruscello-api`, `extensions/browser`)
 
-- [ ] **M8.1** Local HTTP API bound to `127.0.0.1` (`axum`) with per-install auth token and CORS restricted to
-      the extension origin; endpoints: add links (with cookies/referer/UA), query status, version.
-      Alternatively or additionally support a *Native Messaging host* (more secure, no TCP port) — decide and
-      document in an ADR.
-- [ ] **M8.2** Manifest V3 browser extension (Chrome + Firefox) with minimal TS/JS code: optional browser download
+- [ ] **M8.1** HTTP/WebSocket API server (`axum` in `ruscello-api`):
+  - **Loopback mode (`127.0.0.1`)** for the browser extension and CLI (token-authenticated, strict CORS);
+  - **LAN Remote Control mode (`0.0.0.0:<port>`)** when enabled by the user in Settings (requirement R17, qBittorrent Web UI style);
+  - **Optional authentication**: user can choose **no password** (instant access on a trusted home LAN) or **password protection**
+    (username/password or PIN → session cookie / token, with brute-force rate limiting).
+  - Endpoints: real-time queue & package status, speed telemetry (SSE/WebSocket), pause/resume/cancel (single or all),
+    add URLs / `.torrent` / `.dlc` containers, toggle alternative speed limit (`🐢`).
+- [ ] **M8.2** **Embedded Mobile-Friendly LAN Web UI**:
+  - Clean, lightweight, responsive HTML/CSS/JS web interface bundled directly into the Rust binary (zero external runtime dependencies)
+    so opening `http://<pc-lan-ip>:<port>` from a smartphone, tablet, or another PC browser shows live download progress, speeds, ETAs,
+    and packages, and allows pausing/resuming/adding downloads remotely;
+  - Settings page in the desktop app displays the LAN URL (`http://192.168.x.x:<port>`) and a scannable **QR Code** for instant phone access;
+  - Localization in both **English (`en`)** and **Italian (`it`)** matching the desktop app.
+- [ ] **M8.3** Manifest V3 browser extension (Chrome + Firefox) with minimal TS/JS code: optional browser download
       interception (filtered by MIME/file size), context menu "Download with Ruscello" on links/selection/page
       ("Analyze page with LinkGrabber"), automatic forwarding of domain cookies for authenticated downloads.
-- [ ] **M8.3** Simple one-click pairing between extension and desktop app in Settings.
+- [ ] **M8.4** Simple one-click pairing between extension and desktop app in Settings.
 
 ---
 
@@ -358,7 +374,7 @@ optional live tests behind feature flag.
       Multi-part archives (`.part1.rar`, `.7z.001`) extracted only once all parts in the Package complete;
       password list support; optional archive deletion after successful extraction.
 - [ ] **M9.5** Automatic checksum verification when a site/package provides `.sfv`, `.md5`, or `.sha256` files.
-- [ ] **M9.6** Watch folder rules for `.torrent` files and `.txt` link lists.
+- [ ] **M9.6** Watch folder rules for `.torrent`, `.dlc`, and `.txt` link lists.
 - [ ] **M9.7** Optional post-download user command hook.
 - [ ] **M9.8 FTP/FTPS** (`suppaftp` crate) with resume via `REST`, deferred from M1.11.
 

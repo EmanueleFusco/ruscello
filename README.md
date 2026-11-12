@@ -11,8 +11,9 @@
 - 🧲 **BitTorrent**: magnet links, `.torrent` files, selective file downloading, seeding limits (`librqbit`).
 - ⚡ **High-Speed HTTP**: dynamic multi-connection segmentation with work stealing, mirror support, bandwidth limiting.
 - 🛡️ **Zero Lost Downloads**: crash-safe resume after PC power-off, process crash, or network drop; strict data integrity.
-- 🔗 **Broad Site Support**: native hoster plugins, declarative TOML recipes, native HLS/DASH, optional `yt-dlp` sidecar.
+- 🔗 **Broad Site & Container Support**: native hoster plugins (`fuckingfast`, `XFileSharing`, `datanodes`, etc.), JDownloader **`.dlc` container decryption**, declarative TOML recipes, native HLS/DASH, optional `yt-dlp` sidecar.
 - 🔎 **LinkGrabber**: analyzes web pages and highlights the files you most likely want to download with explainable scoring.
+- 📱 **LAN Remote Web UI**: optional qBittorrent-style web interface accessible from your phone or another device on the local network (with or without password, plus instant QR code pairing).
 - 🤖 **Hands-Off Automation**: queues, retries, checksum verification, multi-part archive extraction, post-queue actions.
 - 🧑‍💻 **Clean Professional UI**: built with `iced`, organizing downloads by automatic File Types and user Categories.
 - 🌐 **Bilingual Interface**: available in **English** and **Italian** (user-selectable in Settings).

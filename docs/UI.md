@@ -56,11 +56,11 @@ rather than cluttering toolbars.
 
 ## Unified "Add Download" Dialog
 
-1. Multi-line input box: paste URLs, magnet links, free-form text containing links, or drag & drop `.torrent`/`.txt`
-   files. Pre-populated from clipboard if valid URLs are detected (never auto-started without confirmation unless an
-   auto-accept rule matches).
+1. Multi-line input box: paste URLs, magnet links, free-form text containing links, or drag & drop `.torrent` / `.dlc` / `.txt`
+   files (or pick them via file dialog). Pre-populated from clipboard if valid URLs are detected (never auto-started without
+   confirmation unless an auto-accept rule matches).
 2. Immediate background probing (per-row spinner): each entry resolves into a detected type (*Direct File*,
-   *Hoster «name»*, *Torrent*, *Media Stream*, or *Web Page → LinkGrabber*).
+   *Hoster «name»*, *Container `.dlc` (decrypted Package)*, *Torrent*, *Media Stream*, or *Web Page → LinkGrabber*).
 3. For web pages: switches to the **LinkGrabber** view (see `PLAN.md` M5.5) with collapsible groups:
    *Likely Targets ⭐* (pre-selected), *Other Files*, *Media*, *Linked Pages*; each row displays filename, size,
    host, and explainable score badge.
@@ -96,6 +96,9 @@ rather than cluttering toolbars.
 - **Speed**: Global limits, Alternative speed limits (`🐢`), Time-of-day scheduler.
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.
 - **Categories & Rules**: User categories, default folders, auto-assignment rules.
-- **Integrations**: Browser extension pairing, `yt-dlp`/`ffmpeg` sidecar manager & auto-update, clipboard monitor.
+- **Integrations & Remote Web UI**:
+  - **LAN Remote Web UI (qBittorrent-style)**: toggle *Enable Remote Web UI on local network*, port number, **Require Password** toggle (user can choose password-protected or no-password access on LAN), clickable LAN URL (`http://192.168.x.x:9666`), and a **QR Code** to open the interface immediately on a smartphone browser.
+  - **Browser Extension**: pairing token and instructions.
+  - **Sidecars & Clipboard**: `yt-dlp`/`ffmpeg` sidecar manager & auto-update, optional clipboard monitor.
 - **Hoster Accounts**: Credentials stored in OS keyring.
 - **Advanced**: Logs, proxy, custom User-Agent, DNS, reset.

@@ -105,6 +105,28 @@ expect_download = true      # response is the file → direct link
 
 - **LinkGrabber**: candidate extraction + explainable scoring (see `PLAN.md` M5.5); parallel size probes are
   bounded (e.g., max 4 concurrent probes with short timeouts).
+- **`.dlc` (Download Link Container) Decryption (`ruscello-resolver`)**:
+  1. Trim whitespace from the `.dlc` file; split into `encrypted_body_b64 = raw[..raw.len()-88]` and
+     `dlc_key = raw[raw.len()-88..]` (88 ASCII chars).
+  2. Exchange `dlc_key` via `GET http://service.jdownloader.org/dlcrypt/service.php?srcType=dlc&destType=pylo&data=<dlc_key>`
+     (with fallback to `https://dcrypt.it/decrypt/paste`) and extract `<rc>...</rc>`.
+  3. Base64-decode `<rc>` and decrypt with **AES-128-CBC (no padding)** using static key `b"cb99b5cbc24db398"` and
+     IV `b"9bc24cb995cb8db3"` (crates `aes` + `cbc` + `base64`) → yields the 16-byte ASCII `real_key`.
+  4. Base64-decode `encrypted_body_b64`, decrypt with **AES-128-CBC (no padding)** using `key = real_key` and
+     `iv = real_key`, strip trailing null/whitespace padding, and Base64-decode the resulting string into XML (`<dlc>`).
+  5. Parse `<package name="...">` and `<file><url>...</url><filename>...</filename><size>...</size></file>` (each
+     attribute/tag text is individually Base64-encoded) into a Ruscello `Package`.
+
+## Local API & LAN Remote Web UI (`ruscello-api`)
+
+- Built on `axum`, serving both:
+  1. **Local IPC / Browser Extension API** on `127.0.0.1` (token-authenticated);
+  2. **Optional LAN Remote Web UI** on `0.0.0.0:<port>` (qBittorrent Web UI style, disabled by default, enabled in Settings):
+     - Serves a self-contained, mobile-responsive single-page web interface bundled into the binary (HTML/CSS/JS via
+       `include_str!`) localized in `en` and `it`, plus REST and Server-Sent Events / WebSocket endpoints for live progress.
+     - Supports **optional password protection** (user can choose open access on a trusted LAN or password authentication
+       verified via Argon2/SHA-256 hash and HttpOnly session cookie).
+     - Desktop Settings displays the local LAN address (`http://<lan-ip>:<port>`) and generates a scannable **QR Code** (`qrcode` crate).
 
 ## Persistence
 
@@ -129,11 +151,11 @@ expect_download = true      # response is the file → direct link
 | Config / Serde | `serde`, `toml` |
 | Webview | `wry`, `tao` (isolated to `apps/webview`) |
 | OS Integration | `directories`, `keyring`, `single-instance` (or custom named pipe / Unix socket), `sysinfo` (disk space), `zbus` (Linux), `windows` (Win32) |
-| Files / Archives / Hashes | `infer` (magic bytes), `zip`, `sevenz-rust2`, `tar`, `flate2`, `sha2`, `md-5`, `sha1`, `crc32fast` |
+| Files / Archives / Crypto | `infer` (magic bytes), `zip`, `sevenz-rust2`, `tar`, `flate2`, `sha2`, `md-5`, `sha1`, `crc32fast`, `aes`, `cbc`, `base64` (`.dlc` container decryption & HLS AES-128) |
 | Logging | `tracing`, `tracing-subscriber`, `tracing-appender` |
 | Localization (i18n) | `fluent`, `fluent-langneg`, `sys-locale` (`en` + `it` bundles, runtime switchable) |
 | Testing | `proptest`, `insta`, `tempfile`, `axum` (testkit), `criterion`, `cargo-nextest`, `cargo-fuzz` |
-| Local API | `axum` |
+| Local API & LAN Web UI | `axum`, `local-ip-address`, `qrcode` (LAN Web UI QR code in Settings) |
 
 ## Reference Open-Source Projects to Study
 
