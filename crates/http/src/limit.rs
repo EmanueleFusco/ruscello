@@ -67,6 +67,9 @@ impl BandwidthLimit {
         if requested == 0 {
             return 0;
         }
+        if let Ok(granted) = self.try_acquire(local, requested, Instant::now()) {
+            return granted;
+        }
         let mut global_changed = self.0.changed.subscribe();
         let mut local_changed = local.0.changed.subscribe();
         loop {
