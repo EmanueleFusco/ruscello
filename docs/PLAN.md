@@ -107,7 +107,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
       connection drop after N bytes, per-connection throttling, max connections per IP limit
       (returning 429/503), artificial latency, intermittent 5xx responses. Deterministic seed-generated
       payloads (no binary blobs committed to git).
-- [ ] **M1.2 Probe**: initial request (`GET` with `Range: bytes=0-` preferred over `HEAD`, as many servers
+- [x] **M1.2 Probe**: initial request (`GET` with `Range: bytes=0-` preferred over `HEAD`, as many servers
       mishandle `HEAD`) → size, range support, filename (`Content-Disposition` > final URL >
       MIME → extension), validators (`ETag`, `Last-Modified`), final URL after redirects.
 - [ ] **M1.3 Segment allocator** (pure, no I/O, tested with `proptest`):
