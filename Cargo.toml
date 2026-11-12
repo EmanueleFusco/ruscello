@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+default-members = ["apps/gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/EmanueleFusco/ruscello"
+authors = ["Emanuele Fusco"]
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+ruscello-core = { path = "crates/core" }
+ruscello-http = { path = "crates/http" }
+ruscello-torrent = { path = "crates/torrent" }
+ruscello-media = { path = "crates/media" }
+ruscello-resolver = { path = "crates/resolver" }
+ruscello-browser = { path = "crates/browser" }
+ruscello-storage = { path = "crates/storage" }
+ruscello-engine = { path = "crates/engine" }
+ruscello-api = { path = "crates/api" }
+ruscello-testkit = { path = "crates/testkit" }
+# External crates: add here with explicit versions as they are introduced
+# (check crates.io for the latest release; see docs/ARCHITECTURE.md for suggestions).
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+large_futures = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev.package."*"]
+# Optimise dependencies in debug builds: crypto/hashing/torrent code is very slow unoptimised.
+opt-level = 2

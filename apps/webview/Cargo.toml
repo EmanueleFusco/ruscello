@@ -1,0 +1,18 @@
+[package]
+name = "ruscello-webview"
+description = "Out-of-process browser helper (wry/tao), spawned on demand by the engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ruscello-webview"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

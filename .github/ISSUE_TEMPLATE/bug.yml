@@ -1,0 +1,26 @@
+name: Bug
+description: Something does not work as expected
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Steps to reproduce, expected vs actual behaviour.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Windows, Linux, macOS]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines (remove cookies/tokens).
+      render: text

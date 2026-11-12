@@ -1,0 +1,31 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Ruscello runtime artefacts (never commit)
+*.rscpart
+*.rscpart.ctl
+*.db
+*.db-wal
+*.db-shm
+/downloads/
+
+# Fuzzing
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+
+# Browser extension build output
+/extensions/browser/dist/
+/extensions/browser/node_modules/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local env / secrets
+.env
+*.local.toml

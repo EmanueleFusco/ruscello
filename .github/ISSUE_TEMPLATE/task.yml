@@ -1,0 +1,24 @@
+name: Task
+description: A planned task from docs/PLAN.md
+labels: ["type:task"]
+body:
+  - type: input
+    id: ref
+    attributes:
+      label: Plan reference
+      placeholder: "M1.3"
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What must be done (copy/expand from docs/PLAN.md).
+    validations:
+      required: true
+  - type: textarea
+    id: dod
+    attributes:
+      label: Acceptance criteria / tests
+    validations:
+      required: true

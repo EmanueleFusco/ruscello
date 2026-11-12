@@ -1,0 +1,18 @@
+[package]
+name = "ruscello-cli"
+description = "Headless command-line front-end, also used by crash/resume tests."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ruscello-cli"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

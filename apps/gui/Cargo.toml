@@ -1,0 +1,18 @@
+[package]
+name = "ruscello-gui"
+description = "Ruscello desktop application (iced GUI)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ruscello"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true
