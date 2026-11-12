@@ -5,4 +5,6 @@
 //! See `docs/ARCHITECTURE.md` and `docs/PLAN.md` for responsibilities and milestones.
 
 /// Headless HTTP entry point while the queue and engine handle are being built.
-pub use ruscello_http::{DownloadOptions, HttpDownloader, HttpError, Url};
+pub use ruscello_http::{
+    DownloadOptions, DownloadProgress, ErrorClass, HttpDownloader, HttpError, Url,
+};

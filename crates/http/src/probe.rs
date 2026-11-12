@@ -17,8 +17,11 @@ pub enum HttpError {
     Status(StatusCode),
     #[error("invalid HTTP response: {0}")]
     InvalidResponse(&'static str),
-    #[error("the server did not provide a resumable representation")]
-    NonResumable,
+    #[error("the server returned HTTP {status} and requested a retry delay")]
+    Throttled {
+        status: StatusCode,
+        retry_after: Duration,
+    },
     #[error("the representation changed")]
     RepresentationChanged,
     #[error("download cancelled")]
@@ -163,7 +166,7 @@ fn probe_size(response: &Response) -> Result<(Option<u64>, bool), HttpError> {
         {
             Ok((Some(0), true))
         }
-        status => Err(HttpError::Status(status)),
+        _ => Err(crate::retry::status_error(response)),
     }
 }
 

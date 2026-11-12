@@ -1190,6 +1190,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "crc32fast",
+ "getrandom 0.4.3",
  "httpdate",
  "mime_guess",
  "percent-encoding",
