@@ -60,6 +60,33 @@ impl SegmentAllocator {
         }
     }
 
+    /// Rebuilds assignments around the already synchronized ranges.
+    pub(crate) fn restore(
+        size: u64,
+        connections: NonZeroUsize,
+        minimum: NonZeroU64,
+        completed: &[Range<u64>],
+    ) -> Self {
+        let mut allocator = Self::new(size, connections, minimum);
+        if completed.is_empty() {
+            return allocator;
+        }
+        allocator.ready.clear();
+        let target = size.div_ceil(connections.get() as u64).max(minimum.get());
+        let mut cursor = 0;
+        let tail = size..size;
+        for range in completed.iter().chain(std::iter::once(&tail)) {
+            while cursor < range.start {
+                let end = cursor.saturating_add(target).min(range.start);
+                allocator.ready.push_back(cursor..end);
+                cursor = end;
+            }
+            allocator.completed += range.end - range.start;
+            cursor = range.end;
+        }
+        allocator
+    }
+
     /// Assigns ready work or steals half of the largest remaining active range.
     pub fn assign(&mut self) -> Option<Work> {
         let id = WorkId(self.next_id);

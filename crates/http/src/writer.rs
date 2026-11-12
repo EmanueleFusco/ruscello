@@ -10,9 +10,11 @@ use bytes::Bytes;
 use tempfile::TempPath;
 use tokio::sync::{mpsc, oneshot};
 
+mod control;
 mod disk;
 mod names;
 
+pub(crate) use control::TransferKey;
 pub use names::sanitize_filename;
 
 const BATCH_BYTES: usize = 1024 * 1024;
@@ -32,6 +34,8 @@ pub enum WriterError {
     Incomplete,
     #[error("no available filename")]
     NoFilename,
+    #[error("another process is writing this download")]
+    Busy,
 }
 
 /// Owns a bounded channel to a dedicated file writer. Dropping it leaves the partial file in place.
@@ -39,6 +43,7 @@ pub enum WriterError {
 pub struct FileWriter {
     commands: mpsc::Sender<Command>,
     partial: PathBuf,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl FileWriter {
@@ -48,22 +53,56 @@ impl FileWriter {
         filename: &str,
         size: Option<u64>,
     ) -> Result<Self, WriterError> {
+        Ok(Self::start(directory, filename, size, None).await?.0)
+    }
+
+    pub(crate) async fn open_download(
+        directory: &Path,
+        filename: &str,
+        key: TransferKey,
+    ) -> Result<(Self, Vec<Range<u64>>, bool), WriterError> {
+        Self::start(directory, filename, key.size, Some(key)).await
+    }
+
+    async fn start(
+        directory: &Path,
+        filename: &str,
+        size: Option<u64>,
+        key: Option<TransferKey>,
+    ) -> Result<(Self, Vec<Range<u64>>, bool), WriterError> {
         let directory = directory.to_owned();
         let filename = sanitize_filename(filename);
         let (commands, receiver) = mpsc::channel(16);
         let (ready, started) = oneshot::channel();
-        tokio::task::spawn_blocking(move || match Worker::create(&directory, filename, size) {
-            Ok(worker) => {
-                if ready.send(Ok(worker.partial.clone())).is_ok() {
-                    worker.run(receiver);
+        let task = tokio::task::spawn_blocking(move || {
+            match Worker::create(&directory, filename, size, key) {
+                Ok((worker, restarted)) => {
+                    if ready
+                        .send(Ok((
+                            worker.partial.clone(),
+                            worker.covered.ranges(),
+                            restarted,
+                        )))
+                        .is_ok()
+                    {
+                        worker.run(receiver);
+                    }
+                }
+                Err(error) => {
+                    let _ = ready.send(Err(error));
                 }
             }
-            Err(error) => {
-                let _ = ready.send(Err(error));
-            }
         });
-        let partial = started.await.map_err(|_| WriterError::Stopped)??;
-        Ok(Self { commands, partial })
+        let (partial, ranges, restarted) = started.await.map_err(|_| WriterError::Stopped)??;
+        Ok((
+            Self {
+                commands,
+                partial,
+                task,
+            },
+            ranges,
+            restarted,
+        ))
     }
 
     pub fn partial_path(&self) -> &Path {
@@ -82,6 +121,19 @@ impl FileWriter {
 
     pub async fn sync_data(&mut self) -> Result<(), WriterError> {
         self.send(Command::Sync).await
+    }
+
+    pub(crate) async fn checkpoint(&mut self) -> Result<(), WriterError> {
+        self.send(Command::Checkpoint).await
+    }
+
+    pub(crate) async fn invalidate_checkpoint(&mut self) -> Result<(), WriterError> {
+        self.send(Command::Invalidate).await
+    }
+
+    pub(crate) async fn close(self) {
+        drop(self.commands);
+        let _ = self.task.await;
     }
 
     /// Syncs and publishes a complete file without overwriting an existing destination.
@@ -108,6 +160,8 @@ enum Command {
         reply: Reply<()>,
     },
     Sync(Reply<()>),
+    Checkpoint(Reply<()>),
+    Invalidate(Reply<()>),
     Finish(Reply<PathBuf>),
 }
 
@@ -120,17 +174,32 @@ struct Worker {
     writes: BTreeMap<u64, Vec<u8>>,
     buffered: usize,
     covered: Coverage,
+    control: Option<control::Control>,
 }
 
 impl Worker {
-    fn create(directory: &Path, name: String, size: Option<u64>) -> Result<Self, WriterError> {
+    fn create(
+        directory: &Path,
+        name: String,
+        size: Option<u64>,
+        key: Option<TransferKey>,
+    ) -> Result<(Self, bool), WriterError> {
         let directory = fs::canonicalize(directory)?;
         for index in 0..CANDIDATES {
             let filename = names::candidate(&name, index);
+            let partial = directory.join(format!("{filename}.rscpart"));
+            let sidecar = control::path(&partial);
+            if let Some(key) = &key
+                && let Some(resumed) = Self::reopen(&directory, &name, &partial, key)?
+            {
+                return Ok(resumed);
+            }
             if directory.join(&filename).try_exists()? {
                 continue;
             }
-            let partial = directory.join(format!("{filename}.rscpart"));
+            if sidecar.try_exists()? {
+                continue;
+            }
             let file = match OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -148,18 +217,86 @@ impl Worker {
                 let _ = fs::remove_file(&partial);
                 return Err(error.into());
             }
-            return Ok(Self {
-                file,
-                partial,
-                name,
-                directory,
-                size,
-                writes: BTreeMap::new(),
-                buffered: 0,
-                covered: Coverage::default(),
-            });
+            let mut worker = Self::new(file, partial, name, directory, size);
+            if let Some(key) = key {
+                lock_partial(&worker.file)?;
+                worker.control = Some(control::Control::empty(key));
+                worker.checkpoint()?;
+            }
+            return Ok((worker, false));
         }
         Err(WriterError::NoFilename)
+    }
+
+    fn new(
+        file: File,
+        partial: PathBuf,
+        name: String,
+        directory: PathBuf,
+        size: Option<u64>,
+    ) -> Self {
+        Self {
+            file,
+            partial,
+            name,
+            directory,
+            size,
+            writes: BTreeMap::new(),
+            buffered: 0,
+            covered: Coverage::default(),
+            control: None,
+        }
+    }
+
+    fn reopen(
+        directory: &Path,
+        name: &str,
+        partial: &Path,
+        key: &TransferKey,
+    ) -> Result<Option<(Self, bool)>, WriterError> {
+        let path = control::path(partial);
+        if matching_checkpoint(&path, key)?.is_none() {
+            return Ok(None);
+        }
+        match fs::symlink_metadata(partial) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        let file = match OpenOptions::new().read(true).write(true).open(partial) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        lock_partial(&file)?;
+        let Some(previous) = matching_checkpoint(&path, key)? else {
+            return Ok(None);
+        };
+        let length = file.metadata()?.len();
+        let resumable = key.can_resume(&previous.key) && Some(length) == key.size;
+        let mut worker = Self::new(
+            file,
+            partial.to_owned(),
+            name.to_owned(),
+            directory.to_owned(),
+            key.size,
+        );
+        worker.control = Some(control::Control::empty(key.clone()));
+        if resumable {
+            for range in previous.completed {
+                worker.covered.add(range);
+            }
+        } else {
+            // Publish an empty checkpoint before truncation. An interruption after
+            // truncation must never leave the old record claiming those bytes.
+            worker.checkpoint()?;
+            worker.file.set_len(0)?;
+            if let Some(size) = key.size {
+                disk::prepare(&worker.file, size)?;
+            }
+        }
+        Ok(Some((worker, !resumable)))
     }
 
     fn run(mut self, mut commands: mpsc::Receiver<Command>) {
@@ -171,6 +308,8 @@ impl Worker {
                     reply,
                 } => (self.write(offset, &bytes), reply),
                 Command::Sync(reply) => (self.sync(), reply),
+                Command::Checkpoint(reply) => (self.checkpoint(), reply),
+                Command::Invalidate(reply) => (self.invalidate_checkpoint(), reply),
                 Command::Finish(reply) => {
                     let _ = reply.send(self.finish());
                     return;
@@ -249,12 +388,26 @@ impl Worker {
         Ok(())
     }
 
+    fn checkpoint(&mut self) -> Result<(), WriterError> {
+        self.sync()?;
+        if let Some(control) = &mut self.control {
+            control.completed = self.covered.ranges();
+            control::write(&self.directory, &control::path(&self.partial), control)?;
+        }
+        Ok(())
+    }
+
+    fn invalidate_checkpoint(&mut self) -> Result<(), WriterError> {
+        self.covered = Coverage::default();
+        self.checkpoint()
+    }
+
     fn finish(mut self) -> Result<PathBuf, WriterError> {
         if !self.covered.complete(self.size) {
             return Err(WriterError::Incomplete);
         }
         self.sync()?;
-        drop(self.file);
+        let control_path = control::path(&self.partial);
         let mut partial = TempPath::try_from_path(self.partial)?;
         partial.disable_cleanup(true);
         for index in 0..CANDIDATES {
@@ -262,6 +415,12 @@ impl Worker {
             match partial.persist_noclobber(&destination) {
                 Ok(()) => {
                     disk::sync_directory(&self.directory)?;
+                    if self.control.is_some()
+                        && let Err(error) = fs::remove_file(&control_path)
+                        && error.kind() != io::ErrorKind::NotFound
+                    {
+                        tracing::warn!(kind = ?error.kind(), "Could not remove completed checkpoint");
+                    }
                     tracing::debug!("Published completed download");
                     return Ok(destination);
                 }
@@ -275,10 +434,47 @@ impl Worker {
     }
 }
 
+fn matching_checkpoint(
+    path: &Path,
+    key: &TransferKey,
+) -> Result<Option<control::Control>, WriterError> {
+    match control::read(path) {
+        Ok(control) => Ok((control.key.source == key.source).then_some(control)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            tracing::warn!("Ignoring an invalid download checkpoint");
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn lock_partial(file: &File) -> Result<(), WriterError> {
+    match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(fs::TryLockError::WouldBlock) => Err(WriterError::Busy),
+        Err(fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+/// Reads the byte count recorded by the most recent valid checkpoint.
+pub fn persisted_bytes(partial: &Path) -> Result<u64, WriterError> {
+    let control = control::read(&control::path(partial))?;
+    Ok(control
+        .completed
+        .iter()
+        .map(|range| range.end - range.start)
+        .sum())
+}
+
 #[derive(Default)]
 struct Coverage(BTreeMap<u64, u64>);
 
 impl Coverage {
+    fn ranges(&self) -> Vec<Range<u64>> {
+        self.0.iter().map(|(&start, &end)| start..end).collect()
+    }
+
     fn add(&mut self, range: Range<u64>) {
         let (mut start, mut end) = (range.start, range.end);
         if let Some((&earlier, &earlier_end)) = self.0.range(..=start).next_back()

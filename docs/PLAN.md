@@ -121,7 +121,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
       (`FileExt::seek_write`/`write_at`) from a dedicated writer task with coalescing buffers
       (e.g., 1–4 MiB per segment) to avoid micro-writes; atomic rename to final filename upon completion;
       collision handling (`file (1).ext`) and OS-illegal character sanitization.
-- [ ] **M1.5 Persistent state / resume**: control file `*.rscpart.ctl` (`bincode`/`postcard` +
+- [x] **M1.5 Persistent state / resume**: control file `*.rscpart.ctl` (`bincode`/`postcard` +
       CRC32 checksum + format version) storing completed bitmap/ranges, written via *write-temp + fsync +
       rename* every ~2 s or every X MiB; guaranteed ordering: **fsync data file first, then update control
       file** (so the control file never claims bytes not yet persisted to disk). On resume: validate with

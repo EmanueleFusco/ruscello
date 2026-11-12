@@ -41,6 +41,48 @@ pub(super) fn sync_directory(_directory: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+pub(super) fn replace_checkpoint(
+    temporary: tempfile::TempPath,
+    destination: &Path,
+) -> io::Result<()> {
+    temporary.persist(destination).map_err(|error| error.error)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // Request a write-through replacement of the durable checkpoint.
+pub(super) fn replace_checkpoint(
+    temporary: tempfile::TempPath,
+    destination: &Path,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect::<Vec<_>>()
+    };
+    let source = wide(temporary.as_ref());
+    let target = wide(destination);
+    // SAFETY: Both path buffers remain valid and are NUL-terminated for this synchronous call.
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)] // The Windows standard library has no sparse-file operation.
 fn sparse(file: &File) -> io::Result<()> {
