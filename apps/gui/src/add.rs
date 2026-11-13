@@ -75,6 +75,33 @@ impl Input {
     }
 }
 
+fn read_link_shortcut(path: &std::path::Path) -> Option<Input> {
+    const MAX_BYTES: u64 = 64 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(MAX_BYTES + 1).read_to_string(&mut text).ok()?;
+    if text.len() as u64 > MAX_BYTES {
+        return None;
+    }
+    let text = text.trim_start_matches('\u{feff}');
+    let mut internet_shortcut = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            internet_shortcut = line.eq_ignore_ascii_case("[InternetShortcut]");
+        }
+        if internet_shortcut
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim().eq_ignore_ascii_case("url")
+        {
+            return Input::url(value.trim());
+        }
+    }
+    None
+}
+
 pub(crate) fn parse(text: &str) -> Vec<Input> {
     let mut unique = HashSet::new();
     text.lines()
@@ -146,29 +173,46 @@ pub(crate) async fn load_files(paths: Vec<PathBuf>) -> Vec<Input> {
     tokio::task::spawn_blocking(move || {
         paths
             .into_iter()
-            .flat_map(|path| match Input::path(path) {
-                Input::Text(path) => {
-                    let parsed = std::fs::File::open(&path).ok().and_then(|file| {
-                        let max = 1024 * 1024;
-                        if !file.metadata().ok()?.is_file() {
-                            return None;
-                        }
-                        let mut text = String::new();
-                        file.take(max + 1).read_to_string(&mut text).ok()?;
-                        (text.len() as u64 <= max)
-                            .then(|| parse(text.trim_start_matches('\u{feff}')))
-                    });
-                    parsed.map_or_else(
-                        || vec![Input::Invalid(path.to_string_lossy().into_owned())],
-                        |items| {
-                            items
-                                .into_iter()
-                                .filter(|entry| matches!(entry, Input::Http(_) | Input::Torrent(_)))
-                                .collect()
-                        },
-                    )
+            .flat_map(|path| {
+                if let Some(input) = path.to_str().and_then(Input::url) {
+                    return vec![input];
                 }
-                input => vec![input],
+                if path
+                    .extension()
+                    .and_then(|part| part.to_str())
+                    .is_some_and(|part| part.eq_ignore_ascii_case("url"))
+                {
+                    return vec![
+                        read_link_shortcut(&path)
+                            .unwrap_or_else(|| Input::Invalid(path.to_string_lossy().into_owned())),
+                    ];
+                }
+                match Input::path(path) {
+                    Input::Text(path) => {
+                        let parsed = std::fs::File::open(&path).ok().and_then(|file| {
+                            let max = 1024 * 1024;
+                            if !file.metadata().ok()?.is_file() {
+                                return None;
+                            }
+                            let mut text = String::new();
+                            file.take(max + 1).read_to_string(&mut text).ok()?;
+                            (text.len() as u64 <= max)
+                                .then(|| parse(text.trim_start_matches('\u{feff}')))
+                        });
+                        parsed.map_or_else(
+                            || vec![Input::Invalid(path.to_string_lossy().into_owned())],
+                            |items| {
+                                items
+                                    .into_iter()
+                                    .filter(|entry| {
+                                        matches!(entry, Input::Http(_) | Input::Torrent(_))
+                                    })
+                                    .collect()
+                            },
+                        )
+                    }
+                    input => vec![input],
+                }
             })
             .take(1000)
             .collect()
@@ -188,6 +232,10 @@ pub(crate) struct Dialog {
     pub(crate) destination: Option<PathBuf>,
     pub(crate) paused: bool,
     pub(crate) submitting: bool,
+    pub(crate) advanced: bool,
+    pub(crate) connections: String,
+    pub(crate) bandwidth: String,
+    pub(crate) checksum: String,
 }
 
 impl Dialog {
@@ -200,10 +248,21 @@ impl Dialog {
 
     pub(crate) fn can_submit(&self) -> bool {
         !self.submitting
+            && self.valid_options()
+            && !self.entries.iter().any(|input| matches!(input, Input::Http(url) if matches!(self.previews.get(url), None | Some(Probe::Pending))))
             && self.entries.iter().any(|input| match input {
                 Input::Http(url) => self.is_ready(url),
                 _ => false,
             })
+    }
+
+    fn valid_options(&self) -> bool {
+        let connections = self.connections.trim();
+        let checksum = self.checksum.trim();
+        let bandwidth = self.bandwidth.trim();
+        (connections.is_empty() || connections.parse::<std::num::NonZeroUsize>().is_ok())
+            && (bandwidth.is_empty() || bandwidth.parse::<std::num::NonZeroU64>().is_ok())
+            && (checksum.is_empty() || ruscello_engine::parse_checksum(checksum).is_ok())
     }
 
     pub(crate) fn refresh(&mut self) -> Vec<Url> {
@@ -211,6 +270,8 @@ impl Dialog {
         let mut unique = HashSet::new();
         self.entries.extend(self.files.iter().cloned());
         self.entries.retain(|item| unique.insert(item.clone()));
+        self.previews
+            .retain(|url, _| unique.contains(&Input::Http(url.clone())));
         let mut urls = Vec::new();
         for entry in &self.entries {
             if let Input::Http(url) = entry
@@ -249,6 +310,10 @@ impl Dialog {
                 request.destination = self.destination.clone();
                 request.category = self.category;
                 request.start_immediately = !self.paused;
+                request.max_connections = self.connections.trim().parse().ok();
+                request.bandwidth = self.bandwidth.trim().parse().ok();
+                request.checksum =
+                    (!self.checksum.trim().is_empty()).then(|| self.checksum.trim().to_owned());
                 if let Some(Probe::File(filename, _)) = self.previews.get(url) {
                     request.filename_hint = Some(filename.clone());
                 }
@@ -278,5 +343,21 @@ mod tests {
                 "invalid-input"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn imports_link_shortcuts_and_dropped_urls() -> anyhow::Result<()> {
+        let folder = tempfile::tempdir()?;
+        let shortcut = folder.path().join("example.url");
+        std::fs::write(
+            &shortcut,
+            "[InternetShortcut]\r\nURL=https://example.test/file.zip\r\n",
+        )?;
+        let url = Url::parse("https://example.test/file.zip")?;
+        assert_eq!(
+            load_files(vec![shortcut, PathBuf::from(url.as_str())]).await,
+            [Input::Http(url.clone()), Input::Http(url),]
+        );
+        Ok(())
     }
 }

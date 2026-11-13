@@ -106,6 +106,7 @@ struct Telemetry {
     speed: u64,
     resumable: bool,
     offline: bool,
+    segments: Option<ruscello_engine::SegmentProgress>,
 }
 
 impl Queue {
@@ -142,10 +143,22 @@ impl Queue {
                 *self.category_counts.entry(category).or_default() += 1;
             }
         }
-        self.telemetry.retain(|id, _| {
-            self.downloads
-                .get(id)
-                .is_some_and(|download| download.status().is_active())
+        self.telemetry.retain(|id, sample| {
+            let Some(download) = self.downloads.get(id) else {
+                return false;
+            };
+            if !download.status().is_active() {
+                sample.speed = 0;
+                sample.offline = false;
+                if let Some(segments) = &mut sample.segments {
+                    segments.connections = 0;
+                    segments.active = 0;
+                    if download.status() == Status::Completed {
+                        segments.complete = u64::MAX;
+                    }
+                }
+            }
+            true
         });
         self.logs.retain(|id, _| self.downloads.contains_key(id));
         if self
@@ -247,6 +260,7 @@ impl Queue {
                     speed,
                     resumable: update.progress.resumable,
                     offline: update.progress.waiting_for_network,
+                    segments: update.progress.segments,
                 },
             );
         }
@@ -269,6 +283,10 @@ impl Queue {
 
     pub(crate) fn offline(&self, id: DownloadId) -> bool {
         self.telemetry.get(&id).is_some_and(|sample| sample.offline)
+    }
+
+    pub(crate) fn segments(&self, id: DownloadId) -> Option<ruscello_engine::SegmentProgress> {
+        self.telemetry.get(&id).and_then(|sample| sample.segments)
     }
 
     pub(crate) fn log(&mut self, id: DownloadId, message: EngineLog) {

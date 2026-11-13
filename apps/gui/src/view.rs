@@ -248,6 +248,7 @@ fn header(app: &App) -> Element<'_, Message> {
                 .width(column.width()),
         );
     }
+    cells = cells.push(space::horizontal().width(96));
     let header = container(cells)
         .width(Fill)
         .padding([7, 12])
@@ -433,9 +434,8 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
     } else {
         space::horizontal().width(32).into()
     };
-    mouse_area(
+    let controls: Element<'_, Message> = if selected || app.hovered == Some(id) {
         row![
-            row_button,
             pause,
             icon_button(
                 '\u{e247}',
@@ -445,8 +445,17 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             icon_button('\u{e0b6}', l.get("actions"), Message::Menu(id)),
         ]
         .align_y(Alignment::Center)
-        .height(ROW_HEIGHT),
+        .into()
+    } else {
+        space::horizontal().width(96).into()
+    };
+    mouse_area(
+        row![row_button, controls]
+            .align_y(Alignment::Center)
+            .height(ROW_HEIGHT),
     )
+    .on_enter(Message::Hover(Some(id)))
+    .on_exit(Message::Hover(None))
     .on_right_press(Message::Menu(id))
     .into()
 }
@@ -493,9 +502,18 @@ fn details(app: &App) -> Element<'_, Message> {
             if app.queue.resumable(download.id) == Some(false) {
                 fields = fields.push(text(l.get("not-resumable")));
             }
+            if let Some(checksum) = &download.checksum {
+                fields = fields.push(field(l.get("checksum"), checksum.to_string()));
+            }
             fields.into()
         }
-        (Some(_), DetailTab::Segments) => text(l.get("no-segments")).into(),
+        (Some(download), DetailTab::Segments) => {
+            if let Some(segments) = app.queue.segments(download.id) {
+                segment_map(l, segments)
+            } else {
+                text(l.get("no-segments")).into()
+            }
+        }
         (Some(download), DetailTab::Log) => {
             if let Some(logs) = app.queue.logs.get(&download.id) {
                 column(
@@ -518,6 +536,37 @@ fn details(app: &App) -> Element<'_, Message> {
         .into()
 }
 
+fn segment_map(
+    l: &Strings,
+    segments: ruscello_engine::SegmentProgress,
+) -> Element<'static, Message> {
+    let cells = (0..64).fold(row![].spacing(2), |cells, index| {
+        let mask = 1 << index;
+        cells.push(container(space::horizontal()).width(Fill).height(12).style(
+            move |theme: &Theme| {
+                let palette = theme.extended_palette();
+                let color = if segments.active & mask != 0 {
+                    palette.primary.base.color
+                } else if segments.complete & mask != 0 {
+                    palette.success.base.color
+                } else {
+                    palette.background.strong.color
+                };
+                container::Style::default().background(color)
+            },
+        ))
+    });
+    column![
+        cells,
+        text(l.with(
+            "segment-connections",
+            [("count", segments.connections.to_string())]
+        ))
+    ]
+    .spacing(8)
+    .into()
+}
+
 fn field(label: String, value: String) -> Element<'static, Message> {
     row![text(label).width(105), text(value).width(Fill)]
         .spacing(6)
@@ -527,7 +576,12 @@ fn field(label: String, value: String) -> Element<'static, Message> {
 fn status_bar(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
     let q = &app.queue;
-    let speed = q.limits.bandwidth.map_or_else(
+    let limit = if app.alternate_speed() {
+        Some(app.preferences.alternate_bandwidth)
+    } else {
+        q.limits.bandwidth
+    };
+    let speed = limit.map_or_else(
         || l.get("limit-off"),
         |limit| l.with("speed-limit", [("speed", rate(l, limit.get()))]),
     );
@@ -667,6 +721,25 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         .as_ref()
         .map_or_else(|| l.get("automatic"), |path| path.display().to_string());
     let can_submit = !app.booting && dialog.can_submit();
+    let mut advanced = column![
+        button(text(l.get("advanced")))
+            .on_press(Message::AddAdvanced)
+            .style(button::secondary)
+    ]
+    .spacing(5);
+    if dialog.advanced {
+        advanced = advanced.push(
+            row![
+                text_input(&l.get("limit-download"), &dialog.connections)
+                    .on_input(Message::AddConnections),
+                text_input(&l.get("expected-checksum"), &dialog.checksum)
+                    .on_input(Message::AddChecksum),
+                text_input(&l.get("download-bandwidth"), &dialog.bandwidth)
+                    .on_input(Message::AddBandwidth),
+            ]
+            .spacing(8),
+        );
+    }
     container(
         column![
             row![
@@ -700,6 +773,7 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
             ]
             .align_y(Alignment::Center)
             .spacing(8),
+            advanced,
             row![
                 checkbox(!dialog.paused)
                     .label(l.get("start-immediately"))

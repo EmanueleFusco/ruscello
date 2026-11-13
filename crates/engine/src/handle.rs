@@ -77,6 +77,9 @@ pub struct AddDownload {
     pub tags: Vec<Tag>,
     pub priority: Priority,
     pub start_immediately: bool,
+    pub max_connections: Option<NonZeroUsize>,
+    pub bandwidth: Option<NonZeroU64>,
+    pub checksum: Option<String>,
 }
 
 impl AddDownload {
@@ -90,6 +93,9 @@ impl AddDownload {
             tags: Vec::new(),
             priority: Priority::default(),
             start_immediately: true,
+            max_connections: None,
+            bandwidth: None,
+            checksum: None,
         }
     }
 }
@@ -119,7 +125,7 @@ pub enum EngineLog {
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
-    Added(Download),
+    Added(Box<Download>),
     Removed(DownloadId),
     Progress(Vec<ProgressUpdate>),
     StatusChanged {
@@ -151,6 +157,8 @@ pub enum EngineError {
     UnsupportedSource,
     #[error("the HTTP source is not a valid URL")]
     InvalidUrl,
+    #[error("the expected checksum is invalid")]
+    InvalidChecksum(#[from] crate::ChecksumError),
     #[error("the engine could not allocate a download ID")]
     Identifier,
     #[error("a download file operation failed")]
@@ -186,6 +194,7 @@ pub(super) enum Update {
     Priority(DownloadId, Priority),
     Move(DownloadId, Option<DownloadId>),
     Limits(Limits),
+    TemporaryBandwidth(Option<NonZeroU64>),
     Categories(CategorySettings),
 }
 
@@ -309,6 +318,14 @@ impl EngineHandle {
 
     pub async fn set_limits(&self, limits: Limits) -> Result<(), EngineError> {
         self.update(Update::Limits(limits)).await
+    }
+
+    /// Overrides the effective global bandwidth limit for this engine session.
+    pub async fn set_temporary_bandwidth(
+        &self,
+        rate: Option<NonZeroU64>,
+    ) -> Result<(), EngineError> {
+        self.update(Update::TemporaryBandwidth(rate)).await
     }
 
     pub async fn set_categories(&self, settings: CategorySettings) -> Result<(), EngineError> {

@@ -62,24 +62,39 @@ impl BandwidthLimit {
         }
     }
 
-    /// Atomically debits both buckets. Locks are held only for the accounting operation.
-    pub(crate) async fn acquire(&self, local: &Self, requested: usize) -> usize {
+    /// Atomically debits all applicable buckets.
+    pub(crate) async fn acquire(
+        &self,
+        local: &Self,
+        individual: Option<&Self>,
+        requested: usize,
+    ) -> usize {
         if requested == 0 {
             return 0;
         }
-        if let Ok(granted) = self.try_acquire(local, requested, Instant::now()) {
+        let mut limits = [Some(self), Some(local), individual];
+        // A consistent address order avoids deadlocks when callers share a bucket.
+        limits.sort_unstable_by_key(|limit| {
+            limit.map_or(usize::MAX, |limit| Arc::as_ptr(&limit.0).addr())
+        });
+        if let Ok(granted) = Self::try_acquire(limits, requested) {
             return granted;
         }
         let mut global_changed = self.0.changed.subscribe();
         let mut local_changed = local.0.changed.subscribe();
+        let mut individual_changed = individual.map(|limit| limit.0.changed.subscribe());
         loop {
-            match self.try_acquire(local, requested, Instant::now()) {
+            match Self::try_acquire(limits, requested) {
                 Ok(granted) => return granted,
                 Err(wait) => {
                     tokio::select! {
                         _ = time::sleep(wait) => {}
                         _ = global_changed.changed() => {}
                         _ = local_changed.changed() => {}
+                        () = async {
+                            if let Some(receiver) = &mut individual_changed { let _ = receiver.changed().await; }
+                            else { std::future::pending::<()>().await; }
+                        } => {}
                     }
                 }
             }
@@ -93,18 +108,22 @@ impl BandwidthLimit {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn try_acquire(&self, local: &Self, requested: usize, now: Instant) -> Result<usize, Duration> {
-        if Arc::ptr_eq(&self.0, &local.0) {
-            return debit(&mut self.lock(), None, requested, now);
-        }
-        // Address order also protects callers that reuse the buckets in reverse roles.
-        if Arc::as_ptr(&self.0).addr() < Arc::as_ptr(&local.0).addr() {
-            let mut first = self.lock();
-            debit(&mut first, Some(&mut local.lock()), requested, now)
-        } else {
-            let mut first = local.lock();
-            debit(&mut first, Some(&mut self.lock()), requested, now)
-        }
+    fn try_acquire(limits: [Option<&Self>; 3], requested: usize) -> Result<usize, Duration> {
+        let mut previous = None;
+        let mut guards = limits.map(|limit| {
+            let limit = limit?;
+            let current = Arc::as_ptr(&limit.0);
+            if previous == Some(current) {
+                return None;
+            }
+            previous = Some(current);
+            Some(limit.lock())
+        });
+        debit(
+            guards.iter_mut().filter_map(Option::as_deref_mut),
+            requested,
+            Instant::now(),
+        )
     }
 }
 
@@ -137,30 +156,31 @@ impl Bucket {
     }
 }
 
-fn debit(
-    first: &mut Bucket,
-    second: Option<&mut Bucket>,
+fn debit<'a>(
+    limits: impl Iterator<Item = &'a mut Bucket>,
     requested: usize,
     now: Instant,
 ) -> Result<usize, Duration> {
-    first.refill(now);
-    let mut count = requested.min(capacity(first.rate));
-    let mut second = second;
-    if let Some(other) = &mut second {
-        other.refill(now);
-        count = count.min(capacity(other.rate));
+    let mut buckets: [Option<&mut Bucket>; 3] = [None, None, None];
+    for (slot, bucket) in buckets.iter_mut().zip(limits) {
+        *slot = Some(bucket);
     }
-    let wait = first.wait(count).max(
-        second
-            .as_ref()
-            .map_or(Duration::ZERO, |other| other.wait(count)),
-    );
+    let mut count = requested;
+    for bucket in buckets.iter_mut().flatten() {
+        bucket.refill(now);
+        count = count.min(capacity(bucket.rate));
+    }
+    let wait = buckets
+        .iter()
+        .flatten()
+        .map(|bucket| bucket.wait(count))
+        .max()
+        .unwrap_or_default();
     if !wait.is_zero() {
         return Err(wait);
     }
-    first.spend(count);
-    if let Some(other) = second {
-        other.spend(count);
+    for bucket in buckets.iter_mut().flatten() {
+        bucket.spend(count);
     }
     Ok(count)
 }
@@ -183,22 +203,34 @@ mod tests {
             updated: start,
         };
         assert_eq!(
-            debit(&mut global, Some(&mut local), 30, start),
+            debit([&mut global, &mut local].into_iter(), 30, start),
             Err(Duration::from_millis(100))
         );
         assert_eq!(global.tokens, 100.0);
         let later = start + Duration::from_millis(100);
-        assert_eq!(debit(&mut global, Some(&mut local), 30, later), Ok(20));
+        assert_eq!(
+            debit([&mut global, &mut local].into_iter(), 30, later),
+            Ok(20)
+        );
         assert_eq!(global.tokens, 80.0);
         assert_eq!(local.tokens, 0.0);
+    }
+
+    #[tokio::test]
+    async fn applies_the_individual_limit_without_double_debiting_a_shared_bucket() {
+        let shared = BandwidthLimit::new(NonZeroU64::new(1000));
+        let individual = BandwidthLimit::new(NonZeroU64::new(100));
+        assert_eq!(shared.acquire(&shared, Some(&individual), 100).await, 10);
+        assert!(shared.lock().tokens >= 90.0);
+        assert!(individual.lock().tokens < 1.0);
     }
 
     #[tokio::test]
     async fn reconfiguration_wakes_waiting_workers() {
         let global = BandwidthLimit::new(NonZeroU64::new(1));
         let local = BandwidthLimit::default();
-        assert_eq!(global.acquire(&local, 500).await, 1);
-        let pending = global.acquire(&local, 500);
+        assert_eq!(global.acquire(&local, None, 500).await, 1);
+        let pending = global.acquire(&local, None, 500);
         tokio::pin!(pending);
         assert!(
             time::timeout(Duration::from_millis(10), &mut pending)

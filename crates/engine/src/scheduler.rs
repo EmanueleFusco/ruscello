@@ -34,6 +34,7 @@ pub(super) struct Scheduler {
     disk: DiskPolicy,
     categories: CategoryBook,
     limits: Limits,
+    temporary_bandwidth: Option<std::num::NonZeroU64>,
     events: broadcast::Sender<EngineEvent>,
     hosts: HostConnections,
     http: HttpDownloader,
@@ -79,6 +80,7 @@ impl Scheduler {
             disk: options.disk,
             categories,
             limits,
+            temporary_bandwidth: None,
             events,
             hosts,
             http,
@@ -214,6 +216,9 @@ impl Scheduler {
             .map_or(0, |max| max.saturating_add(1));
         for (offset, request) in requests.into_iter().enumerate() {
             let url = source_url(&request.source)?;
+            if let Some(checksum) = &request.checksum {
+                crate::parse_checksum(checksum)?;
+            }
             let id = self.allocate_id(&mut ids)?;
             let category = self.categories.assign(
                 request.category,
@@ -241,6 +246,9 @@ impl Scheduler {
             download.filename = request.filename_hint;
             download.tags = request.tags;
             download.priority = request.priority;
+            download.max_connections = request.max_connections;
+            download.bandwidth = request.bandwidth;
+            download.checksum = request.checksum.map(String::into_boxed_str);
             if !request.start_immediately {
                 download.transition(Status::Paused)?;
             }
@@ -262,7 +270,7 @@ impl Scheduler {
         let mut ids = Vec::with_capacity(entries.len());
         for entry in entries {
             let id = entry.download.id;
-            self.emit(EngineEvent::Added(entry.download.clone()));
+            self.emit(EngineEvent::Added(Box::new(entry.download.clone())));
             self.queue.insert(id, entry);
             ids.push(id);
         }
@@ -314,7 +322,17 @@ impl Scheduler {
                     .await?;
                 self.limits = limits;
                 self.hosts.set_limit(limits.connections_per_host);
-                self.http.global_bandwidth().set_rate(limits.bandwidth);
+                self.http
+                    .global_bandwidth()
+                    .set_rate(self.temporary_bandwidth.or(limits.bandwidth));
+                self.emit(EngineEvent::QueueChanged);
+                Ok(())
+            }
+            Update::TemporaryBandwidth(rate) => {
+                self.temporary_bandwidth = rate;
+                self.http
+                    .global_bandwidth()
+                    .set_rate(rate.or(self.limits.bandwidth));
                 self.emit(EngineEvent::QueueChanged);
                 Ok(())
             }

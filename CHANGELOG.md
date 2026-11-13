@@ -9,11 +9,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - M3.1 and M3.7: Native desktop queue with virtualized rows, search, filters, persisted details and columns,
   system-aware light and dark themes, bundled Inter and Lucide fonts, and live English and Italian switching.
 - M3.2 and M3.3: Add dialog with HTTP previews, clipboard and text-file imports, destination and category
-  selection, named batches, and multi-selection actions with keyboard shortcuts.
+  selection, named batches, per-download connection and bandwidth limits, expected checksums, and
+  multi-selection actions with keyboard shortcuts.
 - M3.4: Settings navigation, persistent GPU/software renderer selection, download paths and speed limits,
-  LAN preferences with QR code, diagnostic details, and GitHub release checks and notes.
+  LAN preferences with a QR code and an OS-keyring password, diagnostic details, and GitHub release
+  checks and notes.
 - M3.5 and M3.6: System tray, desktop notifications, login launch, single-instance forwarding, and
   per-user magnet, Torrent, and DLC associations on Windows and Linux.
+- M3.8: Headless desktop workflow tests and view snapshots using iced_test and the software renderer.
 - M0: Cargo workspace structure (crates `core`, `http`, `torrent`, `media`, `resolver`, `browser`,
   `storage`, `engine`, `api`, `testkit`; apps `gui`, `cli`, `webview`), work plan, ADRs, UI and testing
   specifications, GitHub Actions CI, `cargo-deny` configuration, and `AGENTS.md`.

@@ -42,6 +42,8 @@ pub(super) enum TransferError {
     File(#[from] io::Error),
     #[error("a file operation stopped unexpectedly")]
     Worker(#[from] tokio::task::JoinError),
+    #[error("the saved checksum is invalid")]
+    Checksum(#[from] crate::ChecksumError),
 }
 
 impl TransferError {
@@ -58,6 +60,7 @@ impl TransferError {
         match self {
             Self::File(_) => FailureReason::FileSystem,
             Self::Worker(_) => FailureReason::Internal,
+            Self::Checksum(_) => FailureReason::IntegrityCheck,
             Self::Http(HttpError::Storage(WriterError::ChecksumMismatch)) => {
                 FailureReason::IntegrityCheck
             }
@@ -117,18 +120,28 @@ pub(super) async fn run(
         Some(staged) => staged,
         None => {
             let transfer_cancellation = cancellation.child_token();
+            let default_connections = context.limits.connections_per_download;
             let options = DownloadOptions {
                 directory: entry.working_directory.clone(),
-                connections: context
-                    .limits
-                    .connections_per_download
+                connections: entry
+                    .download
+                    .max_connections
+                    .unwrap_or(default_connections)
+                    .min(default_connections)
                     .min(context.limits.connections_per_host),
+                expected_checksum: entry
+                    .download
+                    .checksum
+                    .as_deref()
+                    .map(crate::parse_checksum)
+                    .transpose()?,
                 cancellation: transfer_cancellation.clone(),
                 retry: RetryPolicy {
                     max_retries: context.limits.retries,
                     ..RetryPolicy::default()
                 },
                 bandwidth: context.bandwidth,
+                download_bandwidth: entry.download.bandwidth,
                 progress: Some(progress),
                 checkpoint_job: Some(CheckpointJob {
                     id: entry.download.id.0,

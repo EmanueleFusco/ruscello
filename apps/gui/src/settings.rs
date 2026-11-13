@@ -119,6 +119,35 @@ impl Draft {
 pub(crate) enum Folder {
     Default,
     Temporary,
+    Category(ruscello_core::CategoryId),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TorrentOption {
+    Dht,
+    Pex,
+    Upnp,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TorrentField {
+    Port,
+    Ratio,
+    Minutes,
+    Interface,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CategoryDraft {
+    pub(crate) name: String,
+    pub(crate) rule: String,
+    pub(crate) category: Option<ruscello_core::CategoryId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CategoryEdit {
+    Name,
+    Rule,
 }
 
 pub(crate) async fn pick_folder() -> Option<PathBuf> {
@@ -137,6 +166,25 @@ pub(crate) async fn lan_address() -> Option<IpAddr> {
     .await
     .ok()
     .flatten()
+}
+
+#[derive(Clone)]
+pub(crate) struct LanPassword(pub(crate) String);
+
+impl std::fmt::Debug for LanPassword {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LanPassword([redacted])")
+    }
+}
+
+pub(crate) async fn save_lan_password(password: LanPassword) -> bool {
+    tokio::task::spawn_blocking(move || {
+        keyring::Entry::new("Ruscello LAN Web UI", "remote-control")
+            .and_then(|entry| entry.set_password(&password.0))
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -200,6 +248,30 @@ pub(crate) fn diagnostics(renderer: crate::preferences::Renderer) -> String {
         std::env::consts::ARCH,
         renderer.backend()
     )
+}
+
+pub(crate) async fn open_latest_log() -> bool {
+    tokio::task::spawn_blocking(|| {
+        let result = (|| -> anyhow::Result<()> {
+            let paths = ruscello_platform::paths::AppPaths::discover()?;
+            let latest = std::fs::read_dir(paths.logs().join("ruscello"))?
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_type().is_ok_and(|kind| kind.is_file())
+                        && entry
+                            .path()
+                            .extension()
+                            .is_some_and(|extension| extension == "log")
+                })
+                .max_by_key(std::fs::DirEntry::file_name)
+                .ok_or_else(|| anyhow::anyhow!("No desktop log file found"))?;
+            open::that_detached(latest.path())?;
+            Ok(())
+        })();
+        result.is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -184,19 +184,21 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 
 - [x] **M3.1** Main window shell: sidebar (Status / File Types / Categories), virtualized download list,
       collapsible details panel, status bar (total speed ↓↑, active limit, free disk space).
-- [ ] **M3.2** Unified smart "Add Download" dialog: paste one or more URLs / magnets / `.torrent` / `.dlc` paths;
+- [x] **M3.2** Unified smart "Add Download" dialog: paste one or more URLs / magnets / `.torrent` / `.dlc` paths;
       automatic type detection; category and destination folder picker; drag & drop of files (`.torrent`, `.dlc`, `.txt`) and links.
 - [x] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
       copy link, priority, reorder; multi-selection; keyboard shortcuts.
-- [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
+- [x] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
       **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations & Remote Control (LAN Web UI toggle, port, optional password, QR code; browser extension; `yt-dlp`/`ffmpeg`), Advanced.
+      Desktop controls for the Torrent, LAN, extension, sidecar, and updater services follow their backend milestones
+      (M4, M7, M8, and M10.5).
 - [x] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets/`.torrent`/`.dlc` files to the running instance).
 - [x] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
 - [x] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
       **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
-- [ ] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
+- [x] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
 
 ### Definition of Done — M3
 Users can add, monitor, pause, resume, and cancel HTTP downloads from the GUI, switch UI language between

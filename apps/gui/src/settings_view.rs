@@ -2,12 +2,11 @@ use iced::{
     Alignment, Element, Fill, Point, Rectangle, Renderer as IcedRenderer, Size, Theme, mouse,
     widget::{button, canvas, checkbox, column, container, row, scrollable, text, text_input},
 };
-use ruscello_engine::Url;
 
 use crate::{
     app::{App, Message},
     preferences::{Appearance, Locale, Renderer},
-    settings::{Folder, Number, Page, UpdateStatus},
+    settings::{Folder, Number, Page, TorrentField, TorrentOption, UpdateStatus},
     theme,
     view::option,
 };
@@ -27,7 +26,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
         Page::General => general(app),
         Page::Downloads => downloads(app),
         Page::Speed => speed(app),
-        Page::Torrent => text(l.get("torrent-unavailable")).into(),
+        Page::Torrent => torrent(app),
         Page::Categories => categories(app),
         Page::Integrations => integrations(app),
         Page::Advanced => advanced(app),
@@ -158,23 +157,138 @@ fn speed(app: &App) -> Element<'_, Message> {
     .into()
 }
 
+fn torrent(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let preferences = &app.preferences.torrent;
+    let mut controls = column![text(l.get("torrent-unavailable"))].spacing(10);
+    for (key, value, choice) in [
+        ("torrent-dht", preferences.dht, TorrentOption::Dht),
+        ("torrent-pex", preferences.pex, TorrentOption::Pex),
+        ("torrent-upnp", preferences.upnp, TorrentOption::Upnp),
+    ] {
+        controls = controls.push(
+            checkbox(value)
+                .label(l.get(key))
+                .on_toggle(move |value| Message::TorrentOption(choice, value)),
+        );
+    }
+    for (key, value, field) in [
+        ("torrent-port", &preferences.port, TorrentField::Port),
+        (
+            "torrent-ratio",
+            &preferences.seed_ratio,
+            TorrentField::Ratio,
+        ),
+        (
+            "torrent-minutes",
+            &preferences.seed_minutes,
+            TorrentField::Minutes,
+        ),
+        (
+            "torrent-interface",
+            &preferences.interface,
+            TorrentField::Interface,
+        ),
+    ] {
+        let label = l.get(key);
+        controls = controls.push(
+            row![
+                text(label.clone()).width(260),
+                text_input(&label, value)
+                    .on_input(move |value| Message::TorrentField(field, value))
+                    .width(160),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    controls.into()
+}
+
 fn categories(app: &App) -> Element<'_, Message> {
+    use crate::settings::CategoryEdit;
+    use ruscello_engine::CategoryMatch;
     let l = &app.strings;
     let mut categories = column![text(l.get("categories")).size(18)].spacing(8);
+    let mut choices = row![].spacing(5);
     for policy in &app.queue.categories.categories {
         let category = &policy.category;
         let folder = category
             .destination
             .as_ref()
             .map_or_else(|| l.get("automatic"), |path| path.display().to_string());
-        categories =
-            categories.push(row![text(l.category(category)).width(180), text(folder)].spacing(10));
+        categories = categories.push(
+            row![
+                text(l.category(category)).width(180),
+                text(folder).width(Fill),
+                button(text(l.get("choose-folder")))
+                    .on_press(Message::ChooseFolder(Folder::Category(category.id))),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        );
+        choices = choices.push(option(
+            l.category(category),
+            app.category_draft.category == Some(category.id),
+            Message::CategoryTarget(category.id),
+        ));
+    }
+    categories = categories.push(
+        row![
+            text_input(&l.get("category-name"), &app.category_draft.name)
+                .on_input(|name| Message::CategoryEdit(CategoryEdit::Name, name)),
+            button(text(l.get("create-category"))).on_press(Message::CreateCategory),
+        ]
+        .spacing(8),
+    );
+    categories = categories.push(text(l.with(
+        "rules-count",
+        [("count", app.queue.categories.rules.len().to_string())],
+    )));
+    for (index, rule) in app.queue.categories.rules.iter().enumerate() {
+        let (kind, value) = match &rule.matcher {
+            CategoryMatch::Domain(value) => ("domain", value.clone()),
+            CategoryMatch::Extension(value) => ("extension", value.clone()),
+            CategoryMatch::Regex(value) => ("regex", value.clone()),
+            CategoryMatch::Source(value) => ("source", format!("{value:?}")),
+        };
+        let category = app
+            .queue
+            .categories
+            .categories
+            .iter()
+            .find(|policy| policy.category.id == rule.category)
+            .map_or_else(|| l.get("unknown"), |policy| l.category(&policy.category));
+        categories = categories.push(
+            row![
+                text(format!("{kind}:{value}")).width(Fill),
+                text(category),
+                button(text(l.get("remove"))).on_press(Message::RemoveCategoryRule(index)),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
     }
     categories
-        .push(text(l.with(
-            "rules-count",
-            [("count", app.queue.categories.rules.len().to_string())],
-        )))
+        .push(
+            scrollable(choices)
+                .direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::default(),
+                ))
+                .width(Fill),
+        )
+        .push(
+            row![
+                text_input(&l.get("rule-pattern"), &app.category_draft.rule)
+                    .on_input(|rule| Message::CategoryEdit(CategoryEdit::Rule, rule)),
+                button(text(l.get("add-rule"))).on_press_maybe(
+                    app.category_draft
+                        .category
+                        .map(|_| Message::AddCategoryRule)
+                ),
+            ]
+            .spacing(8),
+        )
         .into()
 }
 
@@ -193,17 +307,28 @@ fn integrations(app: &App) -> Element<'_, Message> {
         save(app),
     ]
     .spacing(10);
+    if app.preferences.lan_auth {
+        controls = controls.push(
+            row![
+                text_input(&l.get("lan-password"), &app.lan_password.0)
+                    .secure(true)
+                    .on_input(
+                        |password| Message::LanPassword(crate::settings::LanPassword(password))
+                    ),
+                button(text(l.get("save-password"))).on_press_maybe(
+                    (!app.lan_password.0.is_empty()).then_some(Message::SaveLanPassword)
+                ),
+            ]
+            .spacing(8),
+        );
+    }
     if app.preferences.lan_enabled
-        && let Some(ip) = app.lan_address
+        && let Some(url) = app.lan_url()
+        && let Ok(code) = qrcode::QrCode::new(&url)
     {
-        let url = format!("http://{ip}:{}", app.preferences.lan_port);
-        if Url::parse(&url).is_ok()
-            && let Ok(code) = qrcode::QrCode::new(&url)
-        {
-            controls = controls
-                .push(text(url))
-                .push(canvas(Qr(code)).width(160).height(160));
-        }
+        controls = controls
+            .push(button(text(url)).on_press(Message::CopyLanUrl))
+            .push(canvas(Qr(code)).width(160).height(160));
     }
     controls
         .push(text(l.get("browser-extension")))
@@ -254,6 +379,7 @@ fn about(app: &App) -> Element<'_, Message> {
             }
             content = content
                 .push(button(text(l.get("open-release"))).on_press(Message::OpenRelease))
+                .push(button(text(l.get("install-update"))))
                 .push(text(l.get("install-pending")));
             None
         }

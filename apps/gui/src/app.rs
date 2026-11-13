@@ -118,6 +118,10 @@ pub(crate) enum Message {
     PickDestination,
     Destination(Option<PathBuf>),
     AddCategory(Option<CategoryId>),
+    AddAdvanced,
+    AddConnections(String),
+    AddBandwidth(String),
+    AddChecksum(String),
     StartImmediately(bool),
     Probe(Url, add::Probe),
     SubmitAdd,
@@ -125,6 +129,7 @@ pub(crate) enum Message {
     Modifiers(keyboard::Modifiers),
     Shortcut(Shortcut),
     Menu(DownloadId),
+    Hover(Option<DownloadId>),
     RowAction(Action),
     SingleAction(DownloadId, Action),
     DeleteFiles(bool),
@@ -132,6 +137,7 @@ pub(crate) enum Message {
     CancelRemove,
     PauseAll,
     AlternateSpeed,
+    AlternateApplied(bool, bool),
     ActionResult(bool),
     SettingsPage(Page),
     Renderer(Renderer),
@@ -143,12 +149,23 @@ pub(crate) enum Message {
     LanEnabled(bool),
     LanAuth(bool),
     LanAddress(Option<std::net::IpAddr>),
+    LanPassword(settings::LanPassword),
+    SaveLanPassword,
+    LanPasswordSaved(bool),
+    CopyLanUrl,
     CheckAutomatically(bool),
     CheckUpdates,
     UpdateChecked(UpdateStatus),
     OpenRelease,
     CopyDiagnostics,
     OpenLogs,
+    TorrentOption(settings::TorrentOption, bool),
+    TorrentField(settings::TorrentField, String),
+    CategoryEdit(settings::CategoryEdit, String),
+    CategoryTarget(ruscello_core::CategoryId),
+    AddCategoryRule,
+    CreateCategory,
+    RemoveCategoryRule(usize),
     SetupTray,
     Tray(desktop::Event),
     Incoming(Vec<String>),
@@ -187,13 +204,18 @@ pub(crate) struct App {
     pub(crate) selection: BTreeSet<DownloadId>,
     modifiers: keyboard::Modifiers,
     pub(crate) menu: Option<DownloadId>,
+    pub(crate) hovered: Option<DownloadId>,
     pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
-    alternate_previous: Option<ruscello_engine::Limits>,
+    deferred_inputs: Vec<String>,
+    alternate_speed: bool,
+    alternate_pending: bool,
     pub(crate) page: Page,
     pub(crate) settings_draft: Draft,
     pub(crate) renderer: Renderer,
     pub(crate) lan_address: Option<std::net::IpAddr>,
+    pub(crate) lan_password: settings::LanPassword,
     pub(crate) update_status: UpdateStatus,
+    pub(crate) category_draft: settings::CategoryDraft,
     default_destination: PathBuf,
     tray: Option<tray_icon::TrayIcon>,
     tray_events: desktop::Receiver<desktop::Event>,
@@ -251,12 +273,17 @@ impl App {
             selection: BTreeSet::new(),
             modifiers: keyboard::Modifiers::default(),
             menu: None,
+            hovered: None,
             remove: None,
-            alternate_previous: None,
+            deferred_inputs: Vec::new(),
+            alternate_speed: false,
+            alternate_pending: false,
             page: Page::General,
             settings_draft: Draft::default(),
             lan_address: None,
+            lan_password: settings::LanPassword(String::new()),
             update_status: UpdateStatus::Idle,
+            category_draft: settings::CategoryDraft::default(),
             default_destination,
             tray: None,
             tray_events: desktop.tray,
@@ -410,6 +437,10 @@ impl App {
                     .ok();
             }
             Message::Incoming(inputs) => {
+                if self.add.as_ref().is_some_and(|dialog| dialog.submitting) {
+                    self.deferred_inputs.extend(inputs);
+                    return self.show_window();
+                }
                 if !inputs.is_empty() {
                     self.settings = false;
                     let dialog = self.add.get_or_insert_with(Dialog::default);
@@ -496,7 +527,7 @@ impl App {
                 self.settings = open;
                 if open {
                     self.settings_draft = Draft::new(
-                        self.alternate_previous.unwrap_or(self.queue.limits),
+                        self.queue.limits,
                         self.preferences.alternate_bandwidth,
                         self.preferences.lan_port,
                     );
@@ -506,7 +537,9 @@ impl App {
             Message::Locale(locale) => {
                 self.preferences.locale = locale;
                 self.strings.set_locale(locale);
-                if let Ok(tray) = desktop::tray(&self.strings) {
+                if self.tray.is_some()
+                    && let Ok(tray) = desktop::tray(&self.strings)
+                {
                     self.tray = Some(tray);
                 }
                 return self.save_preferences();
@@ -550,6 +583,9 @@ impl App {
                 ]);
             }
             Message::CloseAdd => {
+                if self.add.as_ref().is_some_and(|dialog| dialog.submitting) {
+                    return Task::none();
+                }
                 self.add = None;
                 self.editor = text_editor::Content::new();
                 self.pending_probes.clear();
@@ -580,12 +616,24 @@ impl App {
                 if paths.is_empty() {
                     return Task::none();
                 }
+                if self.add.as_ref().is_some_and(|dialog| dialog.submitting) {
+                    self.deferred_inputs.extend(
+                        paths
+                            .iter()
+                            .map(|path| crate::instance::normalize(path.as_os_str())),
+                    );
+                    return Task::none();
+                }
                 self.settings = false;
                 self.add.get_or_insert_with(Dialog::default);
                 return Task::perform(add::load_files(paths), Message::FilesLoaded);
             }
             Message::FilesLoaded(inputs) => {
                 if let Some(dialog) = &mut self.add {
+                    if dialog.submitting {
+                        self.deferred_inputs.extend(inputs.iter().map(Input::label));
+                        return Task::none();
+                    }
                     dialog.files.extend(inputs);
                     return self.refresh_add();
                 }
@@ -594,7 +642,10 @@ impl App {
                 return Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
-                            .add_filter("Torrent / DLC / TXT", &["torrent", "dlc", "txt"])
+                            .add_filter(
+                                "Torrent / DLC / TXT / URL",
+                                &["torrent", "dlc", "txt", "url"],
+                            )
                             .pick_files()
                             .await
                             .unwrap_or_default()
@@ -626,6 +677,26 @@ impl App {
                     dialog.category = category;
                 }
             }
+            Message::AddAdvanced => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.advanced = !dialog.advanced;
+                }
+            }
+            Message::AddConnections(value) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.connections = value;
+                }
+            }
+            Message::AddBandwidth(value) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.bandwidth = value;
+                }
+            }
+            Message::AddChecksum(value) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.checksum = value;
+                }
+            }
             Message::StartImmediately(start) => {
                 if let Some(dialog) = &mut self.add {
                     dialog.paused = !start;
@@ -642,6 +713,9 @@ impl App {
             }
             Message::SubmitAdd => {
                 if let (Some(engine), Some(dialog)) = (self.engine.clone(), &mut self.add) {
+                    if !dialog.can_submit() {
+                        return Task::none();
+                    }
                     let requests = dialog.requests();
                     if !requests.is_empty() && !dialog.submitting {
                         dialog.submitting = true;
@@ -665,13 +739,22 @@ impl App {
                 }
             }
             Message::Added(success) => {
-                if success {
-                    return self.interaction(Message::CloseAdd);
-                }
                 if let Some(dialog) = &mut self.add {
                     dialog.submitting = false;
                 }
+                let inputs = std::mem::take(&mut self.deferred_inputs);
+                if success {
+                    let close = self.interaction(Message::CloseAdd);
+                    if inputs.is_empty() {
+                        return close;
+                    }
+                    let open = self.update(Message::Incoming(inputs));
+                    return Task::batch([close, open]);
+                }
                 self.banner = Some("add-failed");
+                if !inputs.is_empty() {
+                    return self.update(Message::Incoming(inputs));
+                }
             }
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Shortcut(shortcut) => return self.shortcut(shortcut),
@@ -684,6 +767,7 @@ impl App {
                 self.menu = (self.menu != Some(id)).then_some(id);
             }
             Message::RowAction(action) => return self.row_action(action),
+            Message::Hover(id) => self.hovered = id,
             Message::SingleAction(id, action) => {
                 self.selection.clear();
                 self.selection.insert(id);
@@ -723,18 +807,24 @@ impl App {
                 );
             }
             Message::AlternateSpeed => {
-                if let Some(engine) = self.engine.clone() {
-                    let mut limits = self.queue.limits;
-                    if let Some(previous) = self.alternate_previous.take() {
-                        limits = previous;
-                    } else {
-                        self.alternate_previous = Some(limits);
-                        limits.bandwidth = Some(self.preferences.alternate_bandwidth);
-                    }
+                if !self.alternate_pending
+                    && let Some(engine) = self.engine.clone()
+                {
+                    self.alternate_pending = true;
+                    let enabled = !self.alternate_speed;
+                    let rate = enabled.then_some(self.preferences.alternate_bandwidth);
                     return Task::perform(
-                        async move { engine.set_limits(limits).await.is_ok() },
-                        Message::ActionResult,
+                        async move { engine.set_temporary_bandwidth(rate).await.is_ok() },
+                        move |success| Message::AlternateApplied(enabled, success),
                     );
+                }
+            }
+            Message::AlternateApplied(enabled, success) => {
+                self.alternate_pending = false;
+                if success {
+                    self.alternate_speed = enabled;
+                } else {
+                    self.banner = Some("action-failed");
                 }
             }
             Message::ActionResult(false) => self.banner = Some("action-failed"),
@@ -762,20 +852,24 @@ impl App {
                 self.settings_draft.fields[field.index()] = value
             }
             Message::SaveLimits => {
-                let limits = self.alternate_previous.unwrap_or(self.queue.limits);
-                let Some((mut limits, alternate, port)) = self.settings_draft.parse(limits) else {
+                let Some((limits, alternate, port)) = self.settings_draft.parse(self.queue.limits)
+                else {
                     self.banner = Some("invalid-settings");
                     return Task::none();
                 };
                 self.preferences.alternate_bandwidth = alternate;
                 self.preferences.lan_port = port;
-                if self.alternate_previous.is_some() {
-                    self.alternate_previous = Some(limits);
-                    limits.bandwidth = Some(alternate);
-                }
+                let enabled = self.alternate_speed;
                 let change = self.engine.clone().map_or_else(Task::none, |engine| {
                     Task::perform(
-                        async move { engine.set_limits(limits).await.is_ok() },
+                        async move {
+                            engine.set_limits(limits).await.is_ok()
+                                && (!enabled
+                                    || engine
+                                        .set_temporary_bandwidth(Some(alternate))
+                                        .await
+                                        .is_ok())
+                        },
                         Message::ActionResult,
                     )
                 });
@@ -790,6 +884,18 @@ impl App {
                 match folder {
                     Folder::Default => self.preferences.default_folder = Some(path),
                     Folder::Temporary => self.preferences.temporary_folder = Some(path),
+                    Folder::Category(id) => {
+                        let mut categories = self.queue.categories.clone();
+                        if let Some(policy) = categories
+                            .categories
+                            .iter_mut()
+                            .find(|policy| policy.category.id == id)
+                        {
+                            policy.category.destination = Some(path);
+                            return self.save_categories(categories);
+                        }
+                        return Task::none();
+                    }
                 }
                 return self.save_preferences();
             }
@@ -806,6 +912,29 @@ impl App {
                 return self.save_preferences();
             }
             Message::LanAddress(address) => self.lan_address = address,
+            Message::LanPassword(password) => self.lan_password = password,
+            Message::SaveLanPassword => {
+                if self.lan_password.0.is_empty() {
+                    return Task::none();
+                }
+                let password = settings::LanPassword(std::mem::take(&mut self.lan_password.0));
+                return Task::perform(
+                    settings::save_lan_password(password),
+                    Message::LanPasswordSaved,
+                );
+            }
+            Message::LanPasswordSaved(saved) => {
+                self.banner = Some(if saved {
+                    "lan-password-saved"
+                } else {
+                    "lan-password-failed"
+                });
+            }
+            Message::CopyLanUrl => {
+                if let Some(url) = self.lan_url() {
+                    return clipboard::write(url);
+                }
+            }
             Message::CheckAutomatically(value) => {
                 self.preferences.check_updates = value;
                 return self.save_preferences();
@@ -832,28 +961,113 @@ impl App {
                 return clipboard::write(settings::diagnostics(self.renderer));
             }
             Message::OpenLogs => {
-                return Task::perform(
-                    async {
-                        tokio::task::spawn_blocking(|| {
-                            ruscello_platform::paths::AppPaths::discover()
-                                .ok()
-                                .is_some_and(|paths| {
-                                    open::that_detached(paths.logs().join("ruscello")).is_ok()
-                                })
-                        })
-                        .await
-                        .unwrap_or(false)
+                return Task::perform(settings::open_latest_log(), Message::ActionResult);
+            }
+            Message::TorrentOption(option, value) => {
+                match option {
+                    settings::TorrentOption::Dht => self.preferences.torrent.dht = value,
+                    settings::TorrentOption::Pex => self.preferences.torrent.pex = value,
+                    settings::TorrentOption::Upnp => self.preferences.torrent.upnp = value,
+                }
+                return self.save_preferences();
+            }
+            Message::TorrentField(field, value) => {
+                match field {
+                    settings::TorrentField::Port => self.preferences.torrent.port = value,
+                    settings::TorrentField::Ratio => self.preferences.torrent.seed_ratio = value,
+                    settings::TorrentField::Minutes => {
+                        self.preferences.torrent.seed_minutes = value
+                    }
+                    settings::TorrentField::Interface => self.preferences.torrent.interface = value,
+                }
+                return self.save_preferences();
+            }
+            Message::CategoryEdit(field, value) => match field {
+                settings::CategoryEdit::Name => self.category_draft.name = value,
+                settings::CategoryEdit::Rule => self.category_draft.rule = value,
+            },
+            Message::CategoryTarget(id) => self.category_draft.category = Some(id),
+            Message::CreateCategory => {
+                let name = self.category_draft.name.trim();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                let mut categories = self.queue.categories.clone();
+                let ids = categories
+                    .categories
+                    .iter()
+                    .map(|policy| policy.category.id)
+                    .collect::<BTreeSet<_>>();
+                let id = (1..).map(CategoryId).find(|id| !ids.contains(id));
+                let Some(id) = id else {
+                    return Task::none();
+                };
+                categories.categories.push(ruscello_engine::CategoryPolicy {
+                    category: ruscello_core::Category {
+                        id,
+                        name: name.to_owned(),
+                        destination: None,
                     },
-                    Message::ActionResult,
-                );
+                    limits: ruscello_engine::CategoryLimits::default(),
+                });
+                self.category_draft.name.clear();
+                return self.save_categories(categories);
+            }
+            Message::AddCategoryRule => {
+                let mut categories = self.queue.categories.clone();
+                let Some(category) = self.category_draft.category else {
+                    return Task::none();
+                };
+                let rule = self.category_draft.rule.trim();
+                if rule.is_empty() {
+                    return Task::none();
+                }
+                let matcher = match rule.split_once(':') {
+                    Some(("domain", value)) => {
+                        ruscello_engine::CategoryMatch::Domain(value.to_owned())
+                    }
+                    Some(("regex", value)) => {
+                        ruscello_engine::CategoryMatch::Regex(value.to_owned())
+                    }
+                    Some(("extension", value)) => {
+                        ruscello_engine::CategoryMatch::Extension(value.to_owned())
+                    }
+                    _ => ruscello_engine::CategoryMatch::Extension(rule.to_owned()),
+                };
+                categories
+                    .rules
+                    .push(ruscello_engine::CategoryRule { matcher, category });
+                self.category_draft.rule.clear();
+                return self.save_categories(categories);
+            }
+            Message::RemoveCategoryRule(index) => {
+                let mut categories = self.queue.categories.clone();
+                if index < categories.rules.len() {
+                    categories.rules.remove(index);
+                    return self.save_categories(categories);
+                }
             }
             _ => {}
         }
         Task::none()
     }
 
+    fn save_categories(&self, categories: ruscello_engine::CategorySettings) -> Task<Message> {
+        self.engine.clone().map_or_else(Task::none, |engine| {
+            Task::perform(
+                async move { engine.set_categories(categories).await.is_ok() },
+                Message::ActionResult,
+            )
+        })
+    }
+
     pub(crate) fn system_download_folder(&self) -> &std::path::Path {
         &self.default_destination
+    }
+
+    pub(crate) fn lan_url(&self) -> Option<String> {
+        self.lan_address
+            .map(|ip| format!("http://{ip}:{}", self.preferences.lan_port))
     }
 
     fn refresh_add(&mut self) -> Task<Message> {
@@ -862,6 +1076,8 @@ impl App {
         };
         let urls = dialog.refresh();
         let paths = dialog.new_text_lists();
+        self.pending_probes
+            .retain(|url| dialog.previews.contains_key(url));
         self.pending_probes.extend(urls);
         let import = if paths.is_empty() {
             Task::none()
@@ -1060,7 +1276,7 @@ impl App {
     }
 
     pub(crate) fn alternate_speed(&self) -> bool {
-        self.alternate_previous.is_some()
+        self.alternate_speed
     }
 
     pub(crate) fn can_pause_all(&self) -> bool {

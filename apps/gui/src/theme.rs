@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use iced::{
     Color, Theme, color,
     theme::Palette,
@@ -7,9 +9,8 @@ use iced::{
 use crate::preferences::Appearance;
 
 pub(crate) fn theme(appearance: Appearance) -> Option<Theme> {
-    Some(match appearance {
-        Appearance::System => return None,
-        Appearance::Light => Theme::custom(
+    static LIGHT: LazyLock<Theme> = LazyLock::new(|| {
+        Theme::custom(
             "Ruscello Light",
             Palette {
                 background: color!(0xf6f5f3),
@@ -19,8 +20,10 @@ pub(crate) fn theme(appearance: Appearance) -> Option<Theme> {
                 warning: color!(0x8b5800),
                 danger: color!(0xb22935),
             },
-        ),
-        Appearance::Dark => Theme::custom(
+        )
+    });
+    static DARK: LazyLock<Theme> = LazyLock::new(|| {
+        Theme::custom(
             "Ruscello Dark",
             Palette {
                 background: color!(0x242523),
@@ -30,7 +33,12 @@ pub(crate) fn theme(appearance: Appearance) -> Option<Theme> {
                 warning: color!(0xf0bb65),
                 danger: color!(0xff9c9c),
             },
-        ),
+        )
+    });
+    Some(match appearance {
+        Appearance::System => return None,
+        Appearance::Light => LIGHT.clone(),
+        Appearance::Dark => DARK.clone(),
     })
 }
 
