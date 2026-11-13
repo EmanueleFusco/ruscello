@@ -700,11 +700,27 @@ impl TorrentManager {
             }
         };
 
+        let latest_only_files = {
+            self.lock_entries()
+                .get(&id)
+                .and_then(|entry| entry.only_files.clone())
+        };
+        let effective_only_files = if latest_only_files != only_files {
+            if let Some(ref updated) = latest_only_files {
+                let set: HashSet<usize> = updated.iter().copied().collect();
+                apply_only_files_with_wait(&session, &handle, &set).await?;
+            }
+            latest_only_files
+        } else {
+            only_files
+        };
+
         let single_file = inspection.files.len() <= 1;
         let first_rel_path = inspection.files.first().map(|f| f.path.clone());
         let completed_path =
             compute_completed_path(&output_folder, single_file, first_rel_path.as_deref());
-        let selected_bytes = compute_selected_bytes(&inspection.files, only_files.as_deref());
+        let selected_bytes =
+            compute_selected_bytes(&inspection.files, effective_only_files.as_deref());
 
         {
             let mut entries = self.lock_entries();
@@ -713,7 +729,7 @@ impl TorrentManager {
                 entry.info_hash = Some(inspection.info_hash.clone());
                 entry.name = Some(inspection.name.clone());
                 entry.output_folder = Some(output_folder.clone());
-                entry.only_files = only_files.clone();
+                entry.only_files = effective_only_files.clone();
                 entry.torrent_bytes = Some(torrent_bytes.clone());
                 entry.is_single_file = Some(single_file);
                 entry.single_file_rel_path = first_rel_path;
@@ -728,7 +744,7 @@ impl TorrentManager {
             total_bytes: selected_bytes,
             output_folder,
             completed_path,
-            only_files,
+            only_files: effective_only_files,
             torrent_bytes,
         })
     }
@@ -830,10 +846,7 @@ impl TorrentManager {
 
         if let Some(handle) = handle {
             let was_paused = handle.is_paused();
-            session
-                .update_only_files(&handle, &set)
-                .await
-                .map_err(|error| TorrentError::Session(error.to_string()))?;
+            apply_only_files_with_wait(&session, &handle, &set).await?;
 
             // Wait: if torrent was already finished seeding (`finished == true`), pause and unpause so
             // `librqbit` opens newly selected files and begins requesting their pieces immediately.
@@ -1859,4 +1872,30 @@ async fn remove_dir_or_file_if_exists(
         }
     }
     Ok(())
+}
+
+async fn apply_only_files_with_wait(
+    session: &Arc<Session>,
+    handle: &ManagedTorrentHandle,
+    only_files: &HashSet<usize>,
+) -> Result<(), TorrentError> {
+    // Wait briefly if `librqbit` is still running initial file-existence checks (`Initializing`).
+    for attempt in 0..40_u8 {
+        match session.update_only_files(handle, only_files).await {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt < 39
+                    && error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("initializing") =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(error) => return Err(TorrentError::Session(error.to_string())),
+        }
+    }
+    Err(TorrentError::Session(
+        "timed out waiting for torrent initialization".into(),
+    ))
 }
