@@ -191,8 +191,8 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [x] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
       **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations & Remote Control (LAN Web UI toggle, port, optional password, QR code; browser extension; `yt-dlp`/`ffmpeg`), Advanced.
-      Desktop controls for the Torrent, LAN, extension, sidecar, and updater services follow their backend milestones
-      (M4, M7, M8, and M10.5).
+      Desktop controls for the LAN, extension, sidecar, and updater services follow their backend milestones
+      (M7, M8, and M10.5); BitTorrent controls are connected in M4.
       On Windows, the NVIDIA fixed-refresh option can preserve hardware rendering on affected VRR displays
       (see [ADR-0008](adr/0008-nvidia-fixed-refresh.md)).
 - [x] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
@@ -210,15 +210,15 @@ English and Italian, and experience ~0% idle CPU with zero UI thread blocking.
 
 ## M4 — BitTorrent (crate `ruscello-torrent`)
 
-- [ ] **M4.1** Integrate `librqbit` as a single session managed by the engine (DHT, PEX, trackers,
+- [x] **M4.1** Integrate `librqbit` as a single session managed by the engine (DHT, PEX, trackers,
       UPnP/NAT-PMP, configurable listening port, `librqbit` fastresume persistence in data dir).
-- [ ] **M4.2** Add from magnet / `.torrent` file / `.torrent` URL; pre-add dialog with file tree,
+- [x] **M4.2** Add from magnet / `.torrent` file / `.torrent` URL; pre-add dialog with file tree,
       file selection, total size, destination folder; metadata fetching state ("Fetching metadata") for magnets.
-- [ ] **M4.3** Limits: upload/download speed, seed ratio and seeding time limits (with automatic stop), max peers.
-- [ ] **M4.4** Details tabs: files with priorities, peers, trackers, piece map bar, speeds; "Force recheck".
-- [ ] **M4.5** Map `librqbit` states → common `Status`; torrents appear in the unified list alongside other
+- [x] **M4.3** Limits: upload/download speed, seed ratio and seeding time limits (with automatic stop), max peers.
+- [x] **M4.4** Details tabs: files with priorities, peers, trackers, piece map bar, speeds; "Force recheck".
+- [x] **M4.5** Map `librqbit` states → common `Status`; torrents appear in the unified list alongside other
       downloads (File Type "Torrents", assignable to user Categories like any other download).
-- [ ] **M4.6** Optional: network interface binding (VPN kill-switch binding), IP filter list (eMule/P2P format).
+- [x] **M4.6** Optional: network interface binding (VPN kill-switch binding), IP filter list (eMule/P2P format).
 
 ### Definition of Done — M4
 Tests using local tracker + seeder (`librqbit` can create and serve torrents locally) downloading a multi-file

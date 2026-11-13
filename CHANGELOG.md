@@ -6,6 +6,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- M4.1–M4.6: Full BitTorrent support powered by a single `librqbit` session (`ruscello-torrent`) using
+  `rust-tls`, DHT/PEX/LSD/UPnP/trackers, fastresume state in the data directory, pre-add `.torrent`/magnet
+  inspection with file selection, download/upload/seed-ratio/seed-time/max-peers limits, network interface
+  binding and eMule/P2P IP blocklist filtering, force piece recheck, unified queue & SQLite persistence, and
+  contextual GUI details tabs (`Pieces`, `Files`, `Peers`, `Trackers`), status bar DHT telemetry, and
+  BitTorrent settings (localized in English and Italian).
 - Optional per-app NVIDIA fixed refresh on Windows, with existing-profile detection and restore, for VRR flicker
   while using the hardware renderer.
 - M3.1 and M3.7: Native desktop queue with virtualized rows, search, filters, persisted details and columns,
