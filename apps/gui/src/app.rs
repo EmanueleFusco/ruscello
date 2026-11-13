@@ -931,20 +931,7 @@ impl App {
                 return clipboard::write(settings::diagnostics(self.renderer));
             }
             Message::OpenLogs => {
-                return Task::perform(
-                    async {
-                        tokio::task::spawn_blocking(|| {
-                            ruscello_platform::paths::AppPaths::discover()
-                                .ok()
-                                .is_some_and(|paths| {
-                                    open::that_detached(paths.logs().join("ruscello")).is_ok()
-                                })
-                        })
-                        .await
-                        .unwrap_or(false)
-                    },
-                    Message::ActionResult,
-                );
+                return Task::perform(settings::open_latest_log(), Message::ActionResult);
             }
             Message::TorrentOption(option, value) => {
                 match option {

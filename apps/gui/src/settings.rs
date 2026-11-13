@@ -250,6 +250,30 @@ pub(crate) fn diagnostics(renderer: crate::preferences::Renderer) -> String {
     )
 }
 
+pub(crate) async fn open_latest_log() -> bool {
+    tokio::task::spawn_blocking(|| {
+        let result = (|| -> anyhow::Result<()> {
+            let paths = ruscello_platform::paths::AppPaths::discover()?;
+            let latest = std::fs::read_dir(paths.logs().join("ruscello"))?
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_type().is_ok_and(|kind| kind.is_file())
+                        && entry
+                            .path()
+                            .extension()
+                            .is_some_and(|extension| extension == "log")
+                })
+                .max_by_key(std::fs::DirEntry::file_name)
+                .ok_or_else(|| anyhow::anyhow!("No desktop log file found"))?;
+            open::that_detached(latest.path())?;
+            Ok(())
+        })();
+        result.is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

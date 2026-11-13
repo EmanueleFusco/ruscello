@@ -12,7 +12,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
   selection, named batches, per-download connection and bandwidth limits, expected checksums, and
   multi-selection actions with keyboard shortcuts.
 - M3.4: Settings navigation, persistent GPU/software renderer selection, download paths and speed limits,
-  LAN preferences with QR code, diagnostic details, and GitHub release checks and notes.
+  LAN preferences with a QR code and an OS-keyring password, diagnostic details, and GitHub release
+  checks and notes.
 - M3.5 and M3.6: System tray, desktop notifications, login launch, single-instance forwarding, and
   per-user magnet, Torrent, and DLC associations on Windows and Linux.
 - M3.8: Headless desktop workflow tests and view snapshots using iced_test and the software renderer.
