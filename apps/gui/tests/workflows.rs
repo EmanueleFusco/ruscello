@@ -3,17 +3,30 @@ use iced_test::{
     Simulator,
     runtime::{Action, task},
 };
-use ruscello_core::{Download, DownloadId, Source, Status};
-use ruscello_engine::{EngineHandle, EngineOptions};
+use ruscello_core::{Download, DownloadId, Source, Status, TorrentSource};
+use ruscello_engine::{
+    EngineEvent, EngineHandle, EngineOptions, TorrentDetailsSnapshot, TorrentFilePriority,
+    TorrentFileProgress, TorrentPeerInfo, TorrentPeerState, TorrentPeerTransport, TorrentPieceMap,
+    TorrentRuntimeProgress, TorrentSessionTelemetry, TorrentSettings, TorrentTrackerInfo,
+    TorrentTrackerStatus,
+};
 use ruscello_testkit::{FileSpec, TestServer};
 
 use crate::{
     actions::Action as RowAction,
+<<<<<<< HEAD
     app::{App, DETAILS_COLLAPSED_HEIGHT, DetailTab, Message},
     desktop::{Receiver, Startup},
     i18n::Strings,
     preferences::{Locale, Preferences},
     settings::Page,
+=======
+    app::{App, DetailTab, Message},
+    desktop::{Receiver, Startup},
+    i18n::Strings,
+    preferences::{Locale, Preferences},
+    settings::{Page, TorrentField},
+>>>>>>> f5c1baa (feat(gui): integrate BitTorrent pre-add preview, details tabs, and settings)
 };
 
 fn receiver<T>() -> Receiver<T> {
@@ -423,5 +436,296 @@ fn preserves_forwarded_links_while_submitting_the_previous_batch() -> anyhow::Re
         .ok_or_else(|| anyhow::anyhow!("Forwarded link did not open"))?;
     assert_eq!(dialog.text, url);
     assert!(!dialog.submitting);
+    Ok(())
+}
+
+#[tokio::test]
+async fn inspects_selects_files_adds_torrent_and_saves_bittorrent_settings() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let seed_dir = temp.path().join("seed-source").join("bundle");
+    std::fs::create_dir_all(&seed_dir)?;
+    std::fs::write(seed_dir.join("one.bin"), vec![0x11_u8; 64 * 1024])?;
+    std::fs::write(seed_dir.join("two.bin"), vec![0x22_u8; 32 * 1024])?;
+
+    let mut seeder_options =
+        EngineOptions::new(temp.path().join("seeder.db"), temp.path().join("seeder-dl"));
+    seeder_options.data_dir = Some(temp.path().join("seeder-data"));
+    seeder_options.torrent = TorrentSettings::offline_ephemeral();
+    let seeder = EngineHandle::start(seeder_options).await?;
+    let (torrent_bytes, _, _) = seeder
+        .create_and_serve_local_torrent(&seed_dir, Vec::new(), Some(16 * 1024))
+        .await?;
+    let torrent_path = temp.path().join("bundle.torrent");
+    std::fs::write(&torrent_path, &torrent_bytes)?;
+
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    let mut client_options =
+        EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    client_options.data_dir = Some(temp.path().join("client-data"));
+    client_options.torrent = TorrentSettings::offline_ephemeral();
+    let engine = EngineHandle::start(client_options).await?;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+
+    let open = click(&app, "Add")?;
+    let _ = app.update(open);
+    let edit = app.update(Message::EditAdd(text_editor::Action::Edit(
+        text_editor::Edit::Paste(std::sync::Arc::new(
+            torrent_path.to_string_lossy().into_owned(),
+        )),
+    )));
+    for message in task_messages(edit).await {
+        apply(&mut app, message).await;
+    }
+
+    assert!(simulator(&app).find("one.bin").is_ok());
+    assert!(simulator(&app).find("two.bin").is_ok());
+
+    let none_msg = click(&app, "Select none")?;
+    apply(&mut app, none_msg).await;
+    assert!(
+        !app.add
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing add dialog"))?
+            .can_submit()
+    );
+
+    let all_msg = click(&app, "Select all")?;
+    apply(&mut app, all_msg).await;
+    let two_msg = click(&app, "two.bin")?;
+    apply(&mut app, two_msg).await;
+
+    let add_msg = click(&app, "Add")?;
+    apply(&mut app, add_msg).await;
+    let snapshot = engine.snapshot().await?;
+    let id = snapshot
+        .downloads
+        .first()
+        .map(|download| download.id)
+        .ok_or_else(|| anyhow::anyhow!("Torrent download was not queued"))?;
+    apply(&mut app, Message::Snapshot(Some(snapshot))).await;
+    apply(&mut app, Message::Select(id)).await;
+
+    let details = engine
+        .torrent_details(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Expected torrent details for queued torrent"))?;
+    assert_eq!(details.files.len(), 2);
+    let one = details
+        .files
+        .iter()
+        .find(|f| f.path.to_string_lossy().ends_with("one.bin"))
+        .ok_or_else(|| anyhow::anyhow!("Expected one.bin in torrent details"))?;
+    let two = details
+        .files
+        .iter()
+        .find(|f| f.path.to_string_lossy().ends_with("two.bin"))
+        .ok_or_else(|| anyhow::anyhow!("Expected two.bin in torrent details"))?;
+    let two_index = two.index;
+    assert_eq!(one.priority, TorrentFilePriority::Download);
+    assert_eq!(two.priority, TorrentFilePriority::Skip);
+
+    let files_tab = click(&app, "Files")?;
+    apply(&mut app, files_tab).await;
+    assert!(simulator(&app).find("two.bin").is_ok());
+    apply(
+        &mut app,
+        Message::SetTorrentFilePriority(id, two_index, true),
+    )
+    .await;
+    assert!(app.banner.is_none());
+    let updated_details = engine
+        .torrent_details(id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Expected updated torrent details"))?;
+    let updated_two = updated_details
+        .files
+        .iter()
+        .find(|f| f.index == two_index)
+        .ok_or_else(|| anyhow::anyhow!("Expected two.bin in updated torrent details"))?;
+    assert_eq!(updated_two.priority, TorrentFilePriority::Download);
+
+    apply(&mut app, Message::Settings(true)).await;
+    apply(&mut app, Message::SettingsPage(Page::Torrent)).await;
+    assert!(simulator(&app).find("Enable DHT").is_ok());
+    apply(
+        &mut app,
+        Message::TorrentField(TorrentField::Port, "invalid".into()),
+    )
+    .await;
+    let save_bad = click(&app, "Save")?;
+    apply(&mut app, save_bad).await;
+    assert!(
+        simulator(&app)
+            .find("Check the numeric settings and try again.")
+            .is_ok()
+    );
+    apply(&mut app, Message::Dismiss).await;
+    apply(
+        &mut app,
+        Message::TorrentField(TorrentField::Port, "0".into()),
+    )
+    .await;
+    apply(
+        &mut app,
+        Message::TorrentField(TorrentField::MaxPeers, "24".into()),
+    )
+    .await;
+    let save_ok = click(&app, "Save")?;
+    apply(&mut app, save_ok).await;
+    assert!(app.banner.is_none());
+
+    engine.shutdown().await?;
+    seeder.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn displays_torrent_status_telemetry_and_contextual_details_tabs() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+
+    let torrent_id = DownloadId(10);
+    let mut torrent = Download::new(
+        torrent_id,
+        Source::Torrent(TorrentSource::Magnet(
+            "magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567&dn=SampleISO".into(),
+        )),
+        temp.path().to_owned(),
+    );
+    torrent.filename = Some("SampleISO".into());
+    torrent.total_bytes = Some(1_048_576);
+    let _ = torrent.transition(Status::Resolving);
+
+    let http_id = DownloadId(11);
+    let mut http = Download::new(
+        http_id,
+        Source::Http {
+            url: "https://example.test/archive.zip".into(),
+        },
+        temp.path().to_owned(),
+    );
+    http.filename = Some("archive.zip".into());
+
+    app.queue.order.extend([torrent_id, http_id]);
+    app.queue.downloads.insert(torrent_id, torrent);
+    app.queue.downloads.insert(http_id, http);
+    app.queue.rebuild();
+
+    assert!(simulator(&app).find("Fetching metadata").is_ok());
+
+    apply(
+        &mut app,
+        Message::Event(EngineEvent::TorrentTelemetry(TorrentSessionTelemetry {
+            download_speed_bps: 0,
+            upload_speed_bps: 4096,
+            dht_nodes: Some(42),
+            listen_port: Some(6881),
+        })),
+    )
+    .await;
+    apply(
+        &mut app,
+        Message::Event(EngineEvent::TorrentProgress(vec![TorrentRuntimeProgress {
+            id: torrent_id,
+            download_rate_bps: 1024,
+            upload_rate_bps: 4096,
+            uploaded_bytes: 8192,
+            seed_ratio: 1.5,
+            seed_elapsed_secs: 60,
+            peers_connected: 3,
+            peers_total: 8,
+            seeders_connected: 2,
+            eta_secs: Some(12),
+            piece_count: 16,
+        }])),
+    )
+    .await;
+    assert!(simulator(&app).find("DHT: 42 nodes").is_ok());
+
+    apply(&mut app, Message::Select(torrent_id)).await;
+    apply(
+        &mut app,
+        Message::TorrentDetails(
+            torrent_id,
+            Some(TorrentDetailsSnapshot {
+                info_hash: "0123456789abcdef0123456789abcdef01234567".into(),
+                is_private: false,
+                seed_ratio: 1.5,
+                seed_elapsed_secs: 60,
+                uploaded_bytes: 8192,
+                download_speed_bps: 1024,
+                upload_speed_bps: 4096,
+                piece_map: Some(TorrentPieceMap {
+                    piece_count: 8,
+                    piece_length: 131_072,
+                    have_count: 4,
+                    have_bitmap: vec![0xF0],
+                }),
+                files: vec![TorrentFileProgress {
+                    index: 0,
+                    path: std::path::PathBuf::from("sample.iso"),
+                    length: 1_048_576,
+                    downloaded_bytes: 524_288,
+                    priority: TorrentFilePriority::Download,
+                }],
+                peers: vec![TorrentPeerInfo {
+                    address: "198.51.100.7:51413".into(),
+                    client: Some("RuscelloTest/1.0".into()),
+                    transport: Some(TorrentPeerTransport::Tcp),
+                    state: TorrentPeerState::Live,
+                    downloaded_bytes: 524_288,
+                    uploaded_bytes: 8192,
+                    download_speed_bps: 1024,
+                    upload_speed_bps: 4096,
+                    errors: 0,
+                }],
+                trackers: vec![TorrentTrackerInfo {
+                    url: "http://tracker.local:6969/announce".into(),
+                    protocol: "http".into(),
+                    status: TorrentTrackerStatus::Announcing,
+                }],
+            }),
+        ),
+    )
+    .await;
+
+    assert!(simulator(&app).find("Segments").is_err());
+    assert!(simulator(&app).find("Pieces").is_ok());
+    assert!(simulator(&app).find("Files").is_ok());
+    assert!(simulator(&app).find("Peers").is_ok());
+    assert!(simulator(&app).find("Trackers").is_ok());
+
+    apply(&mut app, Message::DetailTab(DetailTab::Pieces)).await;
+    assert!(simulator(&app).find("4 / 8 pieces (128.0 KiB)").is_ok());
+    apply(&mut app, Message::DetailTab(DetailTab::Files)).await;
+    assert!(simulator(&app).find("sample.iso").is_ok());
+    apply(&mut app, Message::DetailTab(DetailTab::Peers)).await;
+    assert!(simulator(&app).find("198.51.100.7:51413").is_ok());
+    apply(&mut app, Message::DetailTab(DetailTab::Trackers)).await;
+    assert!(
+        simulator(&app)
+            .find("http://tracker.local:6969/announce")
+            .is_ok()
+    );
+
+    apply(&mut app, Message::Menu(torrent_id)).await;
+    assert!(simulator(&app).find("Force recheck").is_err());
+
+    if let Some(entry) = app.queue.downloads.get_mut(&torrent_id) {
+        let _ = entry.transition(Status::Downloading);
+    }
+    app.queue.rebuild();
+    assert!(simulator(&app).find("Force recheck").is_ok());
+
+    apply(&mut app, Message::Select(http_id)).await;
+    assert_eq!(app.detail_tab, DetailTab::General);
+    assert!(simulator(&app).find("Segments").is_ok());
+    assert!(simulator(&app).find("Peers").is_err());
+    apply(&mut app, Message::Menu(http_id)).await;
+    assert!(simulator(&app).find("Force recheck").is_err());
+
     Ok(())
 }

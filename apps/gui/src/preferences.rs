@@ -1,8 +1,10 @@
 use std::{
     fs, io,
-    num::{NonZeroU16, NonZeroU64},
+    num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     path::{Path, PathBuf},
 };
+
+use ruscello_engine::TorrentSettings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -11,9 +13,14 @@ pub(crate) struct TorrentPreferences {
     pub(crate) dht: bool,
     pub(crate) pex: bool,
     pub(crate) upnp: bool,
+    pub(crate) lsd: bool,
+    pub(crate) download_limit: String,
+    pub(crate) upload_limit: String,
     pub(crate) seed_ratio: String,
     pub(crate) seed_minutes: String,
+    pub(crate) max_peers: String,
     pub(crate) interface: String,
+    pub(crate) blocklist: String,
 }
 
 impl Default for TorrentPreferences {
@@ -23,11 +30,94 @@ impl Default for TorrentPreferences {
             dht: true,
             pex: true,
             upnp: true,
+            lsd: true,
+            download_limit: String::new(),
+            upload_limit: String::new(),
             seed_ratio: String::new(),
             seed_minutes: String::new(),
+            max_peers: String::new(),
             interface: String::new(),
+            blocklist: String::new(),
         }
     }
+}
+
+impl TorrentPreferences {
+    pub(crate) fn to_settings(&self) -> Option<TorrentSettings> {
+        let port = self.port.trim();
+        let listen_port = if port.is_empty() {
+            6881
+        } else {
+            port.parse::<u16>().ok()?
+        };
+        let download_limit_bps = parse_optional_nonzero_u64(&self.download_limit)?;
+        let upload_limit_bps = parse_optional_nonzero_u64(&self.upload_limit)?;
+        let seed_ratio_millis = parse_optional_ratio_millis(&self.seed_ratio)?;
+        let seed_time_limit_minutes = parse_optional_u64(&self.seed_minutes)?;
+        let max_peers_per_torrent = parse_optional_nonzero_usize(&self.max_peers)?;
+        let bind_interface = normalize_optional_str(&self.interface);
+        let blocklist_source = normalize_optional_str(&self.blocklist);
+        Some(TorrentSettings {
+            listen_port,
+            enable_dht: self.dht,
+            enable_pex: self.pex,
+            enable_upnp: self.upnp,
+            enable_lsd: self.lsd,
+            fastresume: true,
+            download_limit_bps,
+            upload_limit_bps,
+            seed_ratio_millis,
+            seed_time_limit_minutes,
+            max_peers_per_torrent,
+            bind_interface,
+            blocklist_source,
+            dht_bootstrap_addrs: None,
+        })
+    }
+}
+
+fn parse_optional_nonzero_u64(raw: &str) -> Option<Option<NonZeroU64>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Some(None)
+    } else {
+        trimmed.parse::<NonZeroU64>().ok().map(Some)
+    }
+}
+
+fn parse_optional_nonzero_usize(raw: &str) -> Option<Option<NonZeroUsize>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Some(None)
+    } else {
+        trimmed.parse::<NonZeroUsize>().ok().map(Some)
+    }
+}
+
+fn parse_optional_u64(raw: &str) -> Option<Option<u64>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Some(None)
+    } else {
+        trimmed.parse::<u64>().ok().map(Some)
+    }
+}
+
+fn parse_optional_ratio_millis(raw: &str) -> Option<Option<u32>> {
+    let trimmed = raw.trim().replace(',', ".");
+    if trimmed.is_empty() {
+        return Some(None);
+    }
+    let ratio = trimmed.parse::<f64>().ok()?;
+    if !ratio.is_finite() || ratio < 0.0 || ratio > 1_000_000.0 {
+        return None;
+    }
+    Some(Some((ratio * 1000.0).round() as u32))
+}
+
+fn normalize_optional_str(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 use ruscello_platform::language::Language;

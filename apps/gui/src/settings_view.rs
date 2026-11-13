@@ -251,11 +251,19 @@ fn speed(app: &App) -> Element<'_, Message> {
 fn torrent(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
     let preferences = &app.preferences.torrent;
-    let mut controls = column![text(l.get("torrent-unavailable"))].spacing(10);
+    let mut controls = column![].spacing(10);
+    if let Some(port) = app.queue.torrent_session.listen_port {
+        controls = controls.push(
+            text(l.with("torrent-listen-active", [("port", port.to_string())]))
+                .size(13)
+                .style(muted),
+        );
+    }
     for (key, value, choice) in [
         ("torrent-dht", preferences.dht, TorrentOption::Dht),
         ("torrent-pex", preferences.pex, TorrentOption::Pex),
         ("torrent-upnp", preferences.upnp, TorrentOption::Upnp),
+        ("torrent-lsd", preferences.lsd, TorrentOption::Lsd),
     ] {
         controls = controls.push(
             theme::check(value)
@@ -263,8 +271,19 @@ fn torrent(app: &App) -> Element<'_, Message> {
                 .on_toggle(move |value| Message::TorrentOption(choice, value)),
         );
     }
+    controls = controls.push(rule::horizontal(1).style(theme::separator));
     for (key, value, field) in [
         ("torrent-port", &preferences.port, TorrentField::Port),
+        (
+            "torrent-download-limit",
+            &preferences.download_limit,
+            TorrentField::DownloadLimit,
+        ),
+        (
+            "torrent-upload-limit",
+            &preferences.upload_limit,
+            TorrentField::UploadLimit,
+        ),
         (
             "torrent-ratio",
             &preferences.seed_ratio,
@@ -274,6 +293,11 @@ fn torrent(app: &App) -> Element<'_, Message> {
             "torrent-minutes",
             &preferences.seed_minutes,
             TorrentField::Minutes,
+        ),
+        (
+            "torrent-max-peers",
+            &preferences.max_peers,
+            TorrentField::MaxPeers,
         ),
         (
             "torrent-interface",
@@ -293,6 +317,23 @@ fn torrent(app: &App) -> Element<'_, Message> {
             .spacing(8),
         );
     }
+    let blocklist_label = l.get("torrent-blocklist");
+    controls = controls.push(
+        row![
+            text(blocklist_label.clone()).width(260),
+            theme::field(&blocklist_label, &preferences.blocklist)
+                .on_input(|value| Message::TorrentField(TorrentField::Blocklist, value))
+                .width(Fill),
+            theme::action(text(l.get("choose-files"))).on_press(Message::PickBlocklist),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    );
+    controls = controls.push(
+        theme::action(text(l.get("save")))
+            .style(theme::primary)
+            .on_press(Message::SaveTorrentSettings),
+    );
     controls.into()
 }
 

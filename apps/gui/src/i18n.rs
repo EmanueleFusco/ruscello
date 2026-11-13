@@ -75,6 +75,7 @@ impl Strings {
 
 fn bundle(locale: &str, source: &str) -> anyhow::Result<FluentBundle<FluentResource>> {
     let mut bundle = FluentBundle::new_concurrent(vec![locale.parse()?]);
+    bundle.set_use_isolating(false);
     let resource = FluentResource::try_new(source.to_owned())
         .map_err(|(_, errors)| anyhow::anyhow!("Invalid Fluent resource: {errors:?}"))?;
     bundle
