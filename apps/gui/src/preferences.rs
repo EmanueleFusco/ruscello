@@ -1,4 +1,8 @@
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    num::{NonZeroU16, NonZeroU64},
+    path::{Path, PathBuf},
+};
 
 use ruscello_platform::language::Language;
 use serde::{Deserialize, Serialize};
@@ -47,13 +51,37 @@ impl Appearance {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Renderer {
+    #[default]
+    Hardware,
+    Software,
+}
+
+impl Renderer {
+    pub(crate) fn backend(self) -> &'static str {
+        match self {
+            Self::Hardware => "wgpu",
+            Self::Software => "tiny-skia",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Preferences {
     pub(crate) locale: Locale,
     pub(crate) appearance: Appearance,
     pub(crate) details: bool,
     pub(crate) columns: u8,
+    pub(crate) renderer: Renderer,
+    pub(crate) default_folder: Option<PathBuf>,
+    pub(crate) temporary_folder: Option<PathBuf>,
+    pub(crate) alternate_bandwidth: NonZeroU64,
+    pub(crate) lan_enabled: bool,
+    pub(crate) lan_port: NonZeroU16,
+    pub(crate) lan_auth: bool,
+    pub(crate) check_updates: bool,
 }
 
 impl Default for Preferences {
@@ -63,6 +91,14 @@ impl Default for Preferences {
             appearance: Appearance::System,
             details: true,
             columns: 0b1_1111,
+            renderer: Renderer::Hardware,
+            default_folder: None,
+            temporary_folder: None,
+            alternate_bandwidth: NonZeroU64::MIN.saturating_add(1024 * 1024 - 1),
+            lan_enabled: false,
+            lan_port: NonZeroU16::MIN.saturating_add(9665),
+            lan_auth: true,
+            check_updates: true,
         }
     }
 }

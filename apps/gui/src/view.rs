@@ -14,9 +14,9 @@ use crate::{
     app::{App, Column, DetailTab, Message},
     i18n::{self, Strings},
     icons::{self, icon},
-    preferences::{Appearance, Locale},
     queue::{self, FILE_TYPES, ListRow, ROW_HEIGHT, StatusFilter},
-    theme,
+    settings::{Page, UpdateStatus},
+    settings_view, theme,
 };
 
 pub(crate) fn queue_id() -> widget::Id {
@@ -37,7 +37,7 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
     } else if let Some((ids, delete)) = &app.remove {
         remove_dialog(app, ids.len(), *delete)
     } else if app.settings {
-        settings(app)
+        settings_view::view(app)
     } else {
         column![
             toolbar(app),
@@ -66,7 +66,7 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
 
 fn toolbar(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
-    row![
+    let mut toolbar = row![
         button(
             row![icon('\u{e13d}'), text(l.get("add"))]
                 .align_y(Alignment::Center)
@@ -114,8 +114,18 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         ),
     ]
     .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
+    .align_y(Alignment::Center);
+    if let UpdateStatus::Available(release) = &app.update_status {
+        toolbar = toolbar.push(
+            button(text(l.with(
+                "update-available",
+                [("version", release.tag_name.clone())],
+            )))
+            .style(button::secondary)
+            .on_press(Message::SettingsPage(Page::About)),
+        );
+    }
+    toolbar.into()
 }
 
 pub(crate) fn icon_button(
@@ -549,53 +559,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn settings(app: &App) -> Element<'_, Message> {
-    let l = &app.strings;
-    let locale = [Locale::System, Locale::English, Locale::Italian]
-        .into_iter()
-        .fold(row![].spacing(6), |row, locale| {
-            row.push(option(
-                l.get(locale.key()),
-                app.preferences.locale == locale,
-                Message::Locale(locale),
-            ))
-        });
-    let appearance = [Appearance::System, Appearance::Light, Appearance::Dark]
-        .into_iter()
-        .fold(row![].spacing(6), |row, appearance| {
-            row.push(option(
-                l.get(appearance.key()),
-                app.preferences.appearance == appearance,
-                Message::Appearance(appearance),
-            ))
-        });
-    column![
-        row![
-            button(text(l.get("back"))).on_press(Message::Settings(false)),
-            text(l.get("settings")).size(22)
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-        container(
-            column![
-                text(l.get("general")).size(18),
-                text(l.get("language")),
-                locale,
-                text(l.get("appearance")),
-                appearance,
-            ]
-            .spacing(10)
-        )
-        .style(theme::panel)
-        .padding(16)
-        .width(Fill),
-        space::vertical().height(Fill),
-    ]
-    .spacing(12)
-    .into()
-}
-
-fn option(label: String, selected: bool, message: Message) -> Element<'static, Message> {
+pub(crate) fn option(label: String, selected: bool, message: Message) -> Element<'static, Message> {
     button(text(label))
         .on_press(message)
         .style(move |theme: &Theme, state| {

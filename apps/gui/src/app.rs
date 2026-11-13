@@ -20,8 +20,9 @@ use crate::{
     actions::{self, Action, Command, Shortcut},
     add::{self, Dialog, Input},
     i18n::Strings,
-    preferences::{Appearance, Locale, Preferences},
+    preferences::{Appearance, Locale, Preferences, Renderer},
     queue::{self, Queue, StatusFilter},
+    settings::{self, Draft, Folder, Number, Page, UpdateStatus},
     theme, view,
 };
 
@@ -128,6 +129,22 @@ pub(crate) enum Message {
     PauseAll,
     AlternateSpeed,
     ActionResult(bool),
+    SettingsPage(Page),
+    Renderer(Renderer),
+    SettingNumber(Number, String),
+    SaveLimits,
+    ChooseFolder(Folder),
+    SettingsFolder(Folder, Option<PathBuf>),
+    ClearTemporary,
+    LanEnabled(bool),
+    LanAuth(bool),
+    LanAddress(Option<std::net::IpAddr>),
+    CheckAutomatically(bool),
+    CheckUpdates,
+    UpdateChecked(UpdateStatus),
+    OpenRelease,
+    CopyDiagnostics,
+    OpenLogs,
 }
 
 pub(crate) struct App {
@@ -159,6 +176,12 @@ pub(crate) struct App {
     pub(crate) menu: Option<DownloadId>,
     pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
     alternate_previous: Option<ruscello_engine::Limits>,
+    pub(crate) page: Page,
+    pub(crate) settings_draft: Draft,
+    pub(crate) renderer: Renderer,
+    pub(crate) lan_address: Option<std::net::IpAddr>,
+    pub(crate) update_status: UpdateStatus,
+    default_destination: PathBuf,
 }
 
 impl App {
@@ -176,12 +199,19 @@ impl App {
             exit_on_close_request: false,
             ..window::Settings::default()
         });
-        let options = EngineOptions::new(database, destination.clone());
+        let default_destination = destination;
+        let destination = preferences
+            .default_folder
+            .clone()
+            .unwrap_or_else(|| default_destination.clone());
+        let mut options = EngineOptions::new(database, destination.clone());
+        options.temporary_directory = preferences.temporary_folder.clone();
         let app = Self {
             window,
             engine: None,
             queue: Queue::default(),
             strings,
+            renderer: preferences.renderer,
             preferences,
             config,
             destination,
@@ -206,6 +236,11 @@ impl App {
             menu: None,
             remove: None,
             alternate_previous: None,
+            page: Page::General,
+            settings_draft: Draft::default(),
+            lan_address: None,
+            update_status: UpdateStatus::Idle,
+            default_destination,
         };
         let start = Task::perform(
             async {
@@ -273,7 +308,12 @@ impl App {
                 return if self.closing && !self.booting {
                     self.finish_close()
                 } else {
-                    self.check_disk()
+                    let check = if self.preferences.check_updates && !self.closing {
+                        self.update_settings(Message::CheckUpdates)
+                    } else {
+                        Task::none()
+                    };
+                    Task::batch([self.check_disk(), check])
                 };
             }
             Message::Snapshot(snapshot) => {
@@ -361,6 +401,13 @@ impl App {
             Message::DetailTab(tab) => self.detail_tab = tab,
             Message::Settings(open) => {
                 self.settings = open;
+                if open {
+                    self.settings_draft = Draft::new(
+                        self.alternate_previous.unwrap_or(self.queue.limits),
+                        self.preferences.alternate_bandwidth,
+                        self.preferences.lan_port,
+                    );
+                }
                 return self.reset_scroll();
             }
             Message::Locale(locale) => {
@@ -586,7 +633,7 @@ impl App {
                         limits = previous;
                     } else {
                         self.alternate_previous = Some(limits);
-                        limits.bandwidth = std::num::NonZeroU64::new(1024 * 1024);
+                        limits.bandwidth = Some(self.preferences.alternate_bandwidth);
                     }
                     return Task::perform(
                         async move { engine.set_limits(limits).await.is_ok() },
@@ -595,9 +642,122 @@ impl App {
                 }
             }
             Message::ActionResult(false) => self.banner = Some("action-failed"),
+            other => return self.update_settings(other),
+        }
+        Task::none()
+    }
+
+    fn update_settings(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::SettingsPage(page) => {
+                if !self.settings {
+                    let _ = self.update(Message::Settings(true));
+                }
+                self.page = page;
+                if page == Page::Integrations {
+                    return Task::perform(settings::lan_address(), Message::LanAddress);
+                }
+            }
+            Message::Renderer(renderer) => {
+                self.preferences.renderer = renderer;
+                return self.save_preferences();
+            }
+            Message::SettingNumber(field, value) => {
+                self.settings_draft.fields[field.index()] = value
+            }
+            Message::SaveLimits => {
+                let limits = self.alternate_previous.unwrap_or(self.queue.limits);
+                let Some((mut limits, alternate, port)) = self.settings_draft.parse(limits) else {
+                    self.banner = Some("invalid-settings");
+                    return Task::none();
+                };
+                self.preferences.alternate_bandwidth = alternate;
+                self.preferences.lan_port = port;
+                if self.alternate_previous.is_some() {
+                    self.alternate_previous = Some(limits);
+                    limits.bandwidth = Some(alternate);
+                }
+                let change = self.engine.clone().map_or_else(Task::none, |engine| {
+                    Task::perform(
+                        async move { engine.set_limits(limits).await.is_ok() },
+                        Message::ActionResult,
+                    )
+                });
+                return Task::batch([change, self.save_preferences()]);
+            }
+            Message::ChooseFolder(folder) => {
+                return Task::perform(settings::pick_folder(), move |path| {
+                    Message::SettingsFolder(folder, path)
+                });
+            }
+            Message::SettingsFolder(folder, Some(path)) => {
+                match folder {
+                    Folder::Default => self.preferences.default_folder = Some(path),
+                    Folder::Temporary => self.preferences.temporary_folder = Some(path),
+                }
+                return self.save_preferences();
+            }
+            Message::ClearTemporary => {
+                self.preferences.temporary_folder = None;
+                return self.save_preferences();
+            }
+            Message::LanEnabled(value) => {
+                self.preferences.lan_enabled = value;
+                return self.save_preferences();
+            }
+            Message::LanAuth(value) => {
+                self.preferences.lan_auth = value;
+                return self.save_preferences();
+            }
+            Message::LanAddress(address) => self.lan_address = address,
+            Message::CheckAutomatically(value) => {
+                self.preferences.check_updates = value;
+                return self.save_preferences();
+            }
+            Message::CheckUpdates if !matches!(self.update_status, UpdateStatus::Checking) => {
+                self.update_status = UpdateStatus::Checking;
+                return Task::perform(settings::check_updates(), Message::UpdateChecked);
+            }
+            Message::UpdateChecked(status) => self.update_status = status,
+            Message::OpenRelease => {
+                if let UpdateStatus::Available(release) = &self.update_status {
+                    let url = release.html_url.clone();
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || open::that_detached(url).is_ok())
+                                .await
+                                .unwrap_or(false)
+                        },
+                        Message::ActionResult,
+                    );
+                }
+            }
+            Message::CopyDiagnostics => {
+                return clipboard::write(settings::diagnostics(self.renderer));
+            }
+            Message::OpenLogs => {
+                return Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(|| {
+                            ruscello_platform::paths::AppPaths::discover()
+                                .ok()
+                                .is_some_and(|paths| {
+                                    open::that_detached(paths.logs().join("ruscello")).is_ok()
+                                })
+                        })
+                        .await
+                        .unwrap_or(false)
+                    },
+                    Message::ActionResult,
+                );
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    pub(crate) fn system_download_folder(&self) -> &std::path::Path {
+        &self.default_destination
     }
 
     fn refresh_add(&mut self) -> Task<Message> {
@@ -859,7 +1019,7 @@ impl App {
         }
         self.saving = true;
         self.dirty = false;
-        let preferences = self.preferences;
+        let preferences = self.preferences.clone();
         let path = self.config.clone();
         Task::perform(
             async move {
