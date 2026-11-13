@@ -38,12 +38,22 @@ fn main() -> ExitCode {
             let restore_failed = loaded.is_err();
             let preferences = loaded.unwrap_or_default();
             let backend = preferences.renderer.backend();
-            if std::env::var("ICED_BACKEND").as_deref() != Ok(backend) {
+            let gpu = preferences.renderer == preferences::Renderer::Hardware;
+            let backend_matches = std::env::var("ICED_BACKEND").as_deref() == Ok(backend);
+            let present_matches =
+                !gpu || std::env::var("ICED_PRESENT_MODE").as_deref() == Ok("fifo");
+            if !backend_matches || !present_matches {
                 // Pass the selected backend to the desktop process before iced starts.
                 let mut command = std::process::Command::new(std::env::current_exe()?);
                 command
                     .args(std::env::args_os().skip(1))
                     .env("ICED_BACKEND", backend);
+                if gpu {
+                    command.env("ICED_PRESENT_MODE", "fifo");
+                    if cfg!(target_os = "windows") && std::env::var_os("WGPU_BACKEND").is_none() {
+                        command.env("WGPU_BACKEND", "dx12");
+                    }
+                }
                 return start_desktop(command);
             }
             run(paths, config, preferences, restore_failed)

@@ -4007,15 +4007,15 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "ruscello-api"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ruscello-browser"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ruscello-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ruscello-engine",
@@ -4030,7 +4030,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -4038,7 +4038,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fs4",
  "getrandom 0.4.3",
@@ -4061,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -4093,7 +4093,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-http"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -4119,11 +4119,11 @@ dependencies = [
 
 [[package]]
 name = "ruscello-media"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ruscello-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "directories",
  "ruscello-core",
@@ -4136,11 +4136,11 @@ dependencies = [
 
 [[package]]
 name = "ruscello-resolver"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ruscello-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ruscello-core",
  "rusqlite",
@@ -4154,7 +4154,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -4165,11 +4165,11 @@ dependencies = [
 
 [[package]]
 name = "ruscello-torrent"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ruscello-webview"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ruscello-platform",
