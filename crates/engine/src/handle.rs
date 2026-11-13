@@ -5,7 +5,8 @@ use std::{
 };
 
 use ruscello_core::{
-    CategoryId, Download, DownloadId, FailureReason, PackageId, Priority, Source, Status, Tag,
+    CategoryId, Download, DownloadId, FailureReason, Package, PackageId, Priority, Source, Status,
+    Tag,
 };
 use ruscello_storage::{DatabaseRecovery, Storage, StorageError};
 use serde::{Deserialize, Serialize};
@@ -96,6 +97,7 @@ impl AddDownload {
 #[derive(Debug, Clone)]
 pub struct EngineSnapshot {
     pub downloads: Vec<Download>,
+    pub packages: Vec<Package>,
     pub limits: Limits,
     pub recovery: DatabaseRecovery,
     pub categories: CategorySettings,
@@ -170,7 +172,7 @@ pub enum EngineError {
 pub(super) type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
 
 pub(super) enum Command {
-    Add(Vec<AddDownload>, Reply<Vec<DownloadId>>),
+    Add(Vec<AddDownload>, Option<String>, Reply<Vec<DownloadId>>),
     Update(Update, Reply<()>),
     Snapshot(Reply<EngineSnapshot>),
     Shutdown(Reply<()>),
@@ -226,7 +228,7 @@ impl EngineHandle {
         let (events, _) = broadcast::channel(256);
         let scheduler = Scheduler::new(
             storage,
-            snapshot.queue,
+            snapshot,
             recovery,
             options,
             categories,
@@ -257,7 +259,18 @@ impl EngineHandle {
         &self,
         requests: Vec<AddDownload>,
     ) -> Result<Vec<DownloadId>, EngineError> {
-        self.request(|reply| Command::Add(requests, reply)).await
+        self.request(|reply| Command::Add(requests, None, reply))
+            .await
+    }
+
+    /// Adds a named group and its downloads in the same queue transaction.
+    pub async fn add_package(
+        &self,
+        name: String,
+        requests: Vec<AddDownload>,
+    ) -> Result<Vec<DownloadId>, EngineError> {
+        self.request(|reply| Command::Add(requests, Some(name), reply))
+            .await
     }
 
     pub async fn pause(&self, id: DownloadId) -> Result<(), EngineError> {

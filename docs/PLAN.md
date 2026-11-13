@@ -186,7 +186,7 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
       collapsible details panel, status bar (total speed ↓↑, active limit, free disk space).
 - [ ] **M3.2** Unified smart "Add Download" dialog: paste one or more URLs / magnets / `.torrent` / `.dlc` paths;
       automatic type detection; category and destination folder picker; drag & drop of files (`.torrent`, `.dlc`, `.txt`) and links.
-- [ ] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
+- [x] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
       copy link, priority, reorder; multi-selection; keyboard shortcuts.
 - [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
       **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),

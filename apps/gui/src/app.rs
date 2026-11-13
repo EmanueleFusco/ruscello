@@ -1,20 +1,24 @@
 use std::{
+    collections::{BTreeSet, VecDeque},
     hash::{Hash, Hasher},
     path::PathBuf,
     time::Instant,
 };
 
 use iced::{
-    Element, Size, Subscription, Task,
+    Element, Size, Subscription, Task, clipboard, event,
     futures::{Stream, stream},
-    widget::{operation, scrollable::AbsoluteOffset},
+    keyboard,
+    widget::{operation, scrollable::AbsoluteOffset, text_editor},
     window,
 };
-use ruscello_core::{CategoryId, DownloadId, FileType, PackageId};
-use ruscello_engine::{EngineEvent, EngineHandle, EngineOptions, EngineSnapshot};
+use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Status};
+use ruscello_engine::{EngineEvent, EngineHandle, EngineOptions, EngineSnapshot, Url};
 use tokio::sync::broadcast;
 
 use crate::{
+    actions::{self, Action, Command, Shortcut},
+    add::{self, Dialog, Input},
     i18n::Strings,
     preferences::{Appearance, Locale, Preferences},
     queue::{self, Queue, StatusFilter},
@@ -99,6 +103,31 @@ pub(crate) enum Message {
     Dismiss,
     ToggleColumns,
     ToggleColumn(Column),
+    OpenAdd,
+    CloseAdd,
+    Clipboard(Option<String>),
+    EditAdd(text_editor::Action),
+    Files(Vec<PathBuf>),
+    FilesLoaded(Vec<Input>),
+    PickFiles,
+    PickDestination,
+    Destination(Option<PathBuf>),
+    AddCategory(Option<CategoryId>),
+    StartImmediately(bool),
+    Probe(Url, add::Probe),
+    SubmitAdd,
+    Added(bool),
+    Modifiers(keyboard::Modifiers),
+    Shortcut(Shortcut),
+    Menu(DownloadId),
+    RowAction(Action),
+    SingleAction(DownloadId, Action),
+    DeleteFiles(bool),
+    ConfirmRemove,
+    CancelRemove,
+    PauseAll,
+    AlternateSpeed,
+    ActionResult(bool),
 }
 
 pub(crate) struct App {
@@ -121,6 +150,15 @@ pub(crate) struct App {
     pub(crate) banner: Option<&'static str>,
     pub(crate) show_columns: bool,
     system_theme: iced::theme::Mode,
+    pub(crate) add: Option<Dialog>,
+    pub(crate) editor: text_editor::Content,
+    pending_probes: VecDeque<Url>,
+    in_flight: usize,
+    pub(crate) selection: BTreeSet<DownloadId>,
+    modifiers: keyboard::Modifiers,
+    pub(crate) menu: Option<DownloadId>,
+    pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
+    alternate_previous: Option<ruscello_engine::Limits>,
 }
 
 impl App {
@@ -159,6 +197,15 @@ impl App {
             banner: restore_failed.then_some("restore-failed"),
             show_columns: false,
             system_theme: iced::theme::Mode::default(),
+            add: None,
+            editor: text_editor::Content::new(),
+            pending_probes: VecDeque::new(),
+            in_flight: 0,
+            selection: BTreeSet::new(),
+            modifiers: keyboard::Modifiers::default(),
+            menu: None,
+            remove: None,
+            alternate_previous: None,
         };
         let start = Task::perform(
             async {
@@ -210,6 +257,7 @@ impl App {
             window::close_requests().map(|_| Message::Close),
             window::resize_events().map(|(_, size)| Message::Resize(size)),
             iced::system::theme_changes().map(Message::SystemTheme),
+            event::listen_with(actions::event),
         ])
     }
 
@@ -232,6 +280,8 @@ impl App {
                 self.booting = false;
                 if let Some(snapshot) = snapshot {
                     self.queue.replace(snapshot);
+                    self.selection
+                        .retain(|id| self.queue.downloads.contains_key(id));
                     if self.closing {
                         return self.finish_close();
                     }
@@ -291,7 +341,7 @@ impl App {
                 self.queue.category = category;
                 return self.filter_changed();
             }
-            Message::Select(id) => self.queue.selected = Some(id),
+            Message::Select(id) => self.select(id),
             Message::Package(id) => {
                 if !self.queue.collapsed.remove(&id) {
                     self.queue.collapsed.insert(id);
@@ -340,8 +390,428 @@ impl App {
                 self.preferences.columns ^= column.mask();
                 return self.save_preferences();
             }
+            message => return self.interaction(message),
         }
         Task::none()
+    }
+
+    fn interaction(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OpenAdd => {
+                self.settings = false;
+                self.menu = None;
+                self.add.get_or_insert_with(Dialog::default);
+                return Task::batch([
+                    clipboard::read().map(Message::Clipboard),
+                    operation::focus(view::add_id()),
+                ]);
+            }
+            Message::CloseAdd => {
+                self.add = None;
+                self.editor = text_editor::Content::new();
+                self.pending_probes.clear();
+            }
+            Message::Clipboard(Some(value)) => {
+                if let Some(dialog) = &mut self.add
+                    && dialog.text.is_empty()
+                    && add::parse(&value)
+                        .iter()
+                        .any(|input| matches!(input, Input::Http(_) | Input::Torrent(_)))
+                {
+                    self.editor = text_editor::Content::with_text(&value);
+                    dialog.text = value;
+                    return self.refresh_add();
+                }
+            }
+            Message::EditAdd(action) => {
+                if let Some(dialog) = &mut self.add {
+                    let edited = action.is_edit();
+                    self.editor.perform(action);
+                    if edited {
+                        dialog.text = self.editor.text();
+                        return self.refresh_add();
+                    }
+                }
+            }
+            Message::Files(paths) => {
+                if paths.is_empty() {
+                    return Task::none();
+                }
+                self.settings = false;
+                self.add.get_or_insert_with(Dialog::default);
+                return Task::perform(add::load_files(paths), Message::FilesLoaded);
+            }
+            Message::FilesLoaded(inputs) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.files.extend(inputs);
+                    return self.refresh_add();
+                }
+            }
+            Message::PickFiles => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("Torrent / DLC / TXT", &["torrent", "dlc", "txt"])
+                            .pick_files()
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|file| file.path().to_path_buf())
+                            .collect()
+                    },
+                    Message::Files,
+                );
+            }
+            Message::PickDestination => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .pick_folder()
+                            .await
+                            .map(|folder| folder.path().to_path_buf())
+                    },
+                    Message::Destination,
+                );
+            }
+            Message::Destination(path) => {
+                if let (Some(dialog), Some(path)) = (&mut self.add, path) {
+                    dialog.destination = Some(path);
+                }
+            }
+            Message::AddCategory(category) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.category = category;
+                }
+            }
+            Message::StartImmediately(start) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.paused = !start;
+                }
+            }
+            Message::Probe(url, preview) => {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                if let Some(dialog) = &mut self.add
+                    && dialog.previews.contains_key(&url)
+                {
+                    dialog.previews.insert(url, preview);
+                }
+                return self.run_probes();
+            }
+            Message::SubmitAdd => {
+                if let (Some(engine), Some(dialog)) = (self.engine.clone(), &mut self.add) {
+                    let requests = dialog.requests();
+                    if !requests.is_empty() && !dialog.submitting {
+                        dialog.submitting = true;
+                        let package = self.strings.get("imported-links");
+                        return Task::perform(
+                            async move {
+                                let result = if requests.len() > 1 {
+                                    engine.add_package(package, requests).await
+                                } else {
+                                    engine.add_many(requests).await
+                                };
+                                result
+                                    .inspect_err(|_| {
+                                        tracing::debug!("Could not queue imported downloads")
+                                    })
+                                    .is_ok()
+                            },
+                            Message::Added,
+                        );
+                    }
+                }
+            }
+            Message::Added(success) => {
+                if success {
+                    return self.interaction(Message::CloseAdd);
+                }
+                if let Some(dialog) = &mut self.add {
+                    dialog.submitting = false;
+                }
+                self.banner = Some("add-failed");
+            }
+            Message::Modifiers(modifiers) => self.modifiers = modifiers,
+            Message::Shortcut(shortcut) => return self.shortcut(shortcut),
+            Message::Menu(id) => {
+                if !self.selection.contains(&id) {
+                    self.selection.clear();
+                    self.selection.insert(id);
+                }
+                self.queue.selected = Some(id);
+                self.menu = (self.menu != Some(id)).then_some(id);
+            }
+            Message::RowAction(action) => return self.row_action(action),
+            Message::SingleAction(id, action) => {
+                self.selection.clear();
+                self.selection.insert(id);
+                self.queue.selected = Some(id);
+                return self.row_action(action);
+            }
+            Message::DeleteFiles(delete) => {
+                if let Some((_, choice)) = &mut self.remove {
+                    *choice = delete;
+                }
+            }
+            Message::ConfirmRemove => {
+                if let Some((ids, delete)) = self.remove.take() {
+                    return self.command(
+                        ids.into_iter()
+                            .map(|id| Command::Remove(id, delete))
+                            .collect(),
+                    );
+                }
+            }
+            Message::CancelRemove => self.remove = None,
+            Message::PauseAll => {
+                let downloads = self.queue.downloads.values();
+                let pause = self.can_pause_all();
+                return self.command(
+                    downloads
+                        .filter_map(|download| {
+                            if pause && actions::can_pause(download.status()) {
+                                Some(Command::Pause(download.id))
+                            } else if !pause && download.status() == Status::Paused {
+                                Some(Command::Resume(download.id))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                );
+            }
+            Message::AlternateSpeed => {
+                if let Some(engine) = self.engine.clone() {
+                    let mut limits = self.queue.limits;
+                    if let Some(previous) = self.alternate_previous.take() {
+                        limits = previous;
+                    } else {
+                        self.alternate_previous = Some(limits);
+                        limits.bandwidth = std::num::NonZeroU64::new(1024 * 1024);
+                    }
+                    return Task::perform(
+                        async move { engine.set_limits(limits).await.is_ok() },
+                        Message::ActionResult,
+                    );
+                }
+            }
+            Message::ActionResult(false) => self.banner = Some("action-failed"),
+            _ => {}
+        }
+        Task::none()
+    }
+
+    fn refresh_add(&mut self) -> Task<Message> {
+        let Some(dialog) = &mut self.add else {
+            return Task::none();
+        };
+        let urls = dialog.refresh();
+        let paths = dialog.new_text_lists();
+        self.pending_probes.extend(urls);
+        let import = if paths.is_empty() {
+            Task::none()
+        } else {
+            Task::perform(add::load_files(paths), Message::FilesLoaded)
+        };
+        Task::batch([self.run_probes(), import])
+    }
+
+    fn run_probes(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        while self.in_flight < 4 {
+            let Some(url) = self.pending_probes.pop_front() else {
+                break;
+            };
+            self.in_flight += 1;
+            tasks.push(Task::perform(
+                async move {
+                    let preview = add::probe(url.clone()).await;
+                    (url, preview)
+                },
+                |(url, preview)| Message::Probe(url, preview),
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    fn select(&mut self, id: DownloadId) {
+        self.menu = None;
+        if self.modifiers.shift()
+            && let Some(anchor) = self.queue.selected
+        {
+            let range = self
+                .queue
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    queue::ListRow::Download(id) => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if let (Some(first), Some(last)) = (
+                range.iter().position(|item| *item == anchor),
+                range.iter().position(|item| *item == id),
+            ) {
+                if !self.modifiers.command() && !self.modifiers.control() {
+                    self.selection.clear();
+                }
+                self.selection
+                    .extend(range[first.min(last)..=first.max(last)].iter().copied());
+            }
+        } else if self.modifiers.command() || self.modifiers.control() {
+            if !self.selection.remove(&id) {
+                self.selection.insert(id);
+            }
+        } else {
+            self.selection.clear();
+            self.selection.insert(id);
+        }
+        self.queue.selected = self
+            .selection
+            .contains(&id)
+            .then_some(id)
+            .or_else(|| self.selection.iter().next().copied());
+    }
+
+    fn shortcut(&mut self, shortcut: Shortcut) -> Task<Message> {
+        match shortcut {
+            Shortcut::Escape if self.remove.is_some() => self.interaction(Message::CancelRemove),
+            Shortcut::Escape if self.add.is_some() => self.interaction(Message::CloseAdd),
+            Shortcut::Escape if self.menu.take().is_some() => Task::none(),
+            Shortcut::Escape if self.settings => self.update(Message::Settings(false)),
+            Shortcut::Add if self.remove.is_none() => self.interaction(Message::OpenAdd),
+            Shortcut::Paste if !self.settings && self.add.is_none() && self.remove.is_none() => {
+                self.interaction(Message::OpenAdd)
+            }
+            Shortcut::Search if !self.settings && self.add.is_none() && self.remove.is_none() => {
+                operation::focus(view::search_id())
+            }
+            Shortcut::Settings if self.add.is_none() && self.remove.is_none() => {
+                self.update(Message::Settings(true))
+            }
+            Shortcut::Action(action)
+                if !self.settings && self.add.is_none() && self.remove.is_none() =>
+            {
+                self.row_action(action)
+            }
+            Shortcut::All if !self.settings && self.add.is_none() && self.remove.is_none() => {
+                self.selection = self
+                    .queue
+                    .rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        queue::ListRow::Download(id) => Some(*id),
+                        _ => None,
+                    })
+                    .collect();
+                self.queue.selected = self.selection.iter().next().copied();
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn row_action(&mut self, action: Action) -> Task<Message> {
+        self.menu = None;
+        if self.selection.is_empty() {
+            return Task::none();
+        }
+        let selected = self
+            .selection
+            .iter()
+            .filter_map(|id| self.queue.downloads.get(id));
+        match action {
+            Action::Cancel => self.remove = Some((self.selection.iter().copied().collect(), false)),
+            Action::OpenFile | Action::OpenFolder => {
+                let paths: BTreeSet<_> = selected
+                    .filter_map(|download| match action {
+                        Action::OpenFile => download.completed_path.clone(),
+                        _ => Some(download.destination.clone()),
+                    })
+                    .collect();
+                return Task::perform(
+                    actions::open(paths.into_iter().collect()),
+                    Message::ActionResult,
+                );
+            }
+            Action::CopyLink => {
+                let contents = selected
+                    .map(|download| queue::source_text(&download.source))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return clipboard::write(contents);
+            }
+            Action::TogglePause => {
+                return self.command(
+                    selected
+                        .filter_map(|download| {
+                            if actions::can_pause(download.status()) {
+                                Some(Command::Pause(download.id))
+                            } else if actions::can_resume(download.status()) {
+                                Some(Command::Resume(download.id))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                );
+            }
+            Action::Priority(priority) => {
+                return self.command(
+                    selected
+                        .map(|download| Command::Priority(download.id, priority))
+                        .collect(),
+                );
+            }
+            Action::MoveUp | Action::MoveDown => {
+                let mut order = self.queue.order.clone();
+                let mut commands = Vec::new();
+                for offset in 0..order.len().saturating_sub(1) {
+                    let index = if matches!(action, Action::MoveUp) {
+                        offset
+                    } else {
+                        order.len() - 2 - offset
+                    };
+                    let (left, right) = (order[index], order[index + 1]);
+                    match (
+                        self.selection.contains(&left),
+                        self.selection.contains(&right),
+                        action,
+                    ) {
+                        (false, true, Action::MoveUp) => {
+                            commands.push(Command::Move(right, Some(left)))
+                        }
+                        (true, false, Action::MoveDown) => {
+                            commands.push(Command::Move(left, order.get(index + 2).copied()))
+                        }
+                        _ => continue,
+                    }
+                    order.swap(index, index + 1);
+                }
+                return self.command(commands);
+            }
+        }
+        Task::none()
+    }
+
+    fn command(&self, commands: Vec<Command>) -> Task<Message> {
+        if let Some(engine) = self.engine.clone()
+            && !commands.is_empty()
+        {
+            Task::perform(actions::run(engine, commands), Message::ActionResult)
+        } else {
+            Task::none()
+        }
+    }
+
+    pub(crate) fn alternate_speed(&self) -> bool {
+        self.alternate_previous.is_some()
+    }
+
+    pub(crate) fn can_pause_all(&self) -> bool {
+        self.queue
+            .downloads
+            .values()
+            .any(|download| actions::can_pause(download.status()))
     }
 
     fn finish_close(&mut self) -> Task<Message> {

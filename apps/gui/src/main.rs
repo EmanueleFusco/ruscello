@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod actions;
+mod add;
 mod app;
 mod i18n;
 mod icons;
