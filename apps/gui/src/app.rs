@@ -207,6 +207,7 @@ pub(crate) struct App {
     pub(crate) hovered: Option<DownloadId>,
     pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
     alternate_speed: bool,
+    alternate_pending: bool,
     pub(crate) page: Page,
     pub(crate) settings_draft: Draft,
     pub(crate) renderer: Renderer,
@@ -274,6 +275,7 @@ impl App {
             hovered: None,
             remove: None,
             alternate_speed: false,
+            alternate_pending: false,
             page: Page::General,
             settings_draft: Draft::default(),
             lan_address: None,
@@ -772,7 +774,10 @@ impl App {
                 );
             }
             Message::AlternateSpeed => {
-                if let Some(engine) = self.engine.clone() {
+                if !self.alternate_pending
+                    && let Some(engine) = self.engine.clone()
+                {
+                    self.alternate_pending = true;
                     let enabled = !self.alternate_speed;
                     let rate = enabled.then_some(self.preferences.alternate_bandwidth);
                     return Task::perform(
@@ -781,8 +786,14 @@ impl App {
                     );
                 }
             }
-            Message::AlternateApplied(enabled, true) => self.alternate_speed = enabled,
-            Message::AlternateApplied(_, false) => self.banner = Some("action-failed"),
+            Message::AlternateApplied(enabled, success) => {
+                self.alternate_pending = false;
+                if success {
+                    self.alternate_speed = enabled;
+                } else {
+                    self.banner = Some("action-failed");
+                }
+            }
             Message::ActionResult(false) => self.banner = Some("action-failed"),
             other => return self.update_settings(other),
         }
