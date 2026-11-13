@@ -129,6 +129,7 @@ pub(crate) enum Message {
     Modifiers(keyboard::Modifiers),
     Shortcut(Shortcut),
     Menu(DownloadId),
+    Hover(Option<DownloadId>),
     RowAction(Action),
     SingleAction(DownloadId, Action),
     DeleteFiles(bool),
@@ -203,6 +204,7 @@ pub(crate) struct App {
     pub(crate) selection: BTreeSet<DownloadId>,
     modifiers: keyboard::Modifiers,
     pub(crate) menu: Option<DownloadId>,
+    pub(crate) hovered: Option<DownloadId>,
     pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
     alternate_speed: bool,
     pub(crate) page: Page,
@@ -269,6 +271,7 @@ impl App {
             selection: BTreeSet::new(),
             modifiers: keyboard::Modifiers::default(),
             menu: None,
+            hovered: None,
             remove: None,
             alternate_speed: false,
             page: Page::General,
@@ -729,6 +732,7 @@ impl App {
                 self.menu = (self.menu != Some(id)).then_some(id);
             }
             Message::RowAction(action) => return self.row_action(action),
+            Message::Hover(id) => self.hovered = id,
             Message::SingleAction(id, action) => {
                 self.selection.clear();
                 self.selection.insert(id);

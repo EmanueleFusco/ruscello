@@ -248,6 +248,7 @@ fn header(app: &App) -> Element<'_, Message> {
                 .width(column.width()),
         );
     }
+    cells = cells.push(space::horizontal().width(96));
     let header = container(cells)
         .width(Fill)
         .padding([7, 12])
@@ -433,9 +434,8 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
     } else {
         space::horizontal().width(32).into()
     };
-    mouse_area(
+    let controls: Element<'_, Message> = if selected || app.hovered == Some(id) {
         row![
-            row_button,
             pause,
             icon_button(
                 '\u{e247}',
@@ -445,8 +445,17 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             icon_button('\u{e0b6}', l.get("actions"), Message::Menu(id)),
         ]
         .align_y(Alignment::Center)
-        .height(ROW_HEIGHT),
+        .into()
+    } else {
+        space::horizontal().width(96).into()
+    };
+    mouse_area(
+        row![row_button, controls]
+            .align_y(Alignment::Center)
+            .height(ROW_HEIGHT),
     )
+    .on_enter(Message::Hover(Some(id)))
+    .on_exit(Message::Hover(None))
     .on_right_press(Message::Menu(id))
     .into()
 }

@@ -4,7 +4,7 @@ use std::{
     net::{Ipv4Addr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -119,9 +119,11 @@ fn primary(lock: File, path: PathBuf) -> anyhow::Result<Primary> {
                     break;
                 }
                 let handled = (|| -> anyhow::Result<()> {
-                    connection.set_read_timeout(Some(IO_TIMEOUT))?;
                     connection.set_write_timeout(Some(IO_TIMEOUT))?;
-                    let request: Request = serde_json::from_slice(&read_frame(&mut connection)?)?;
+                    let request: Request = serde_json::from_slice(&read_frame(&mut TimedRead {
+                        stream: &mut connection,
+                        deadline: Instant::now() + IO_TIMEOUT,
+                    })?)?;
                     anyhow::ensure!(
                         request.token == token && request.inputs.len() <= 1000,
                         "Invalid IPC request"
@@ -174,6 +176,22 @@ fn read_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0; size];
     stream.read_exact(&mut bytes)?;
     Ok(bytes)
+}
+
+struct TimedRead<'a> {
+    stream: &'a mut TcpStream,
+    deadline: Instant,
+}
+
+impl Read for TimedRead<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(bytes)
+    }
 }
 
 #[cfg(test)]
