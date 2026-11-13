@@ -200,6 +200,7 @@ impl Dialog {
 
     pub(crate) fn can_submit(&self) -> bool {
         !self.submitting
+            && !self.entries.iter().any(|input| matches!(input, Input::Http(url) if matches!(self.previews.get(url), None | Some(Probe::Pending))))
             && self.entries.iter().any(|input| match input {
                 Input::Http(url) => self.is_ready(url),
                 _ => false,
@@ -211,6 +212,8 @@ impl Dialog {
         let mut unique = HashSet::new();
         self.entries.extend(self.files.iter().cloned());
         self.entries.retain(|item| unique.insert(item.clone()));
+        self.previews
+            .retain(|url, _| unique.contains(&Input::Http(url.clone())));
         let mut urls = Vec::new();
         for entry in &self.entries {
             if let Input::Http(url) = entry

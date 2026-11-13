@@ -4,6 +4,32 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct TorrentPreferences {
+    pub(crate) port: String,
+    pub(crate) dht: bool,
+    pub(crate) pex: bool,
+    pub(crate) upnp: bool,
+    pub(crate) seed_ratio: String,
+    pub(crate) seed_minutes: String,
+    pub(crate) interface: String,
+}
+
+impl Default for TorrentPreferences {
+    fn default() -> Self {
+        Self {
+            port: "6881".into(),
+            dht: true,
+            pex: true,
+            upnp: true,
+            seed_ratio: String::new(),
+            seed_minutes: String::new(),
+            interface: String::new(),
+        }
+    }
+}
+
 use ruscello_platform::language::Language;
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +111,7 @@ pub(crate) struct Preferences {
     pub(crate) close_to_tray: bool,
     pub(crate) notifications: bool,
     pub(crate) autostart: bool,
+    pub(crate) torrent: TorrentPreferences,
 }
 
 impl Default for Preferences {
@@ -105,6 +132,7 @@ impl Default for Preferences {
             close_to_tray: false,
             notifications: true,
             autostart: false,
+            torrent: TorrentPreferences::default(),
         }
     }
 }

@@ -149,6 +149,13 @@ pub(crate) enum Message {
     OpenRelease,
     CopyDiagnostics,
     OpenLogs,
+    TorrentOption(settings::TorrentOption, bool),
+    TorrentField(settings::TorrentField, String),
+    CategoryEdit(settings::CategoryEdit, String),
+    CategoryTarget(ruscello_core::CategoryId),
+    AddCategoryRule,
+    CreateCategory,
+    RemoveCategoryRule(usize),
     SetupTray,
     Tray(desktop::Event),
     Incoming(Vec<String>),
@@ -194,6 +201,7 @@ pub(crate) struct App {
     pub(crate) renderer: Renderer,
     pub(crate) lan_address: Option<std::net::IpAddr>,
     pub(crate) update_status: UpdateStatus,
+    pub(crate) category_draft: settings::CategoryDraft,
     default_destination: PathBuf,
     tray: Option<tray_icon::TrayIcon>,
     tray_events: desktop::Receiver<desktop::Event>,
@@ -257,6 +265,7 @@ impl App {
             settings_draft: Draft::default(),
             lan_address: None,
             update_status: UpdateStatus::Idle,
+            category_draft: settings::CategoryDraft::default(),
             default_destination,
             tray: None,
             tray_events: desktop.tray,
@@ -506,7 +515,9 @@ impl App {
             Message::Locale(locale) => {
                 self.preferences.locale = locale;
                 self.strings.set_locale(locale);
-                if let Ok(tray) = desktop::tray(&self.strings) {
+                if self.tray.is_some()
+                    && let Ok(tray) = desktop::tray(&self.strings)
+                {
                     self.tray = Some(tray);
                 }
                 return self.save_preferences();
@@ -642,6 +653,9 @@ impl App {
             }
             Message::SubmitAdd => {
                 if let (Some(engine), Some(dialog)) = (self.engine.clone(), &mut self.add) {
+                    if !dialog.can_submit() {
+                        return Task::none();
+                    }
                     let requests = dialog.requests();
                     if !requests.is_empty() && !dialog.submitting {
                         dialog.submitting = true;
@@ -847,9 +861,102 @@ impl App {
                     Message::ActionResult,
                 );
             }
+            Message::TorrentOption(option, value) => {
+                match option {
+                    settings::TorrentOption::Dht => self.preferences.torrent.dht = value,
+                    settings::TorrentOption::Pex => self.preferences.torrent.pex = value,
+                    settings::TorrentOption::Upnp => self.preferences.torrent.upnp = value,
+                }
+                return self.save_preferences();
+            }
+            Message::TorrentField(field, value) => {
+                match field {
+                    settings::TorrentField::Port => self.preferences.torrent.port = value,
+                    settings::TorrentField::Ratio => self.preferences.torrent.seed_ratio = value,
+                    settings::TorrentField::Minutes => {
+                        self.preferences.torrent.seed_minutes = value
+                    }
+                    settings::TorrentField::Interface => self.preferences.torrent.interface = value,
+                }
+                return self.save_preferences();
+            }
+            Message::CategoryEdit(field, value) => match field {
+                settings::CategoryEdit::Name => self.category_draft.name = value,
+                settings::CategoryEdit::Rule => self.category_draft.rule = value,
+            },
+            Message::CategoryTarget(id) => self.category_draft.category = Some(id),
+            Message::CreateCategory => {
+                let name = self.category_draft.name.trim();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                let mut categories = self.queue.categories.clone();
+                let ids = categories
+                    .categories
+                    .iter()
+                    .map(|policy| policy.category.id)
+                    .collect::<BTreeSet<_>>();
+                let id = (1..).map(CategoryId).find(|id| !ids.contains(id));
+                let Some(id) = id else {
+                    return Task::none();
+                };
+                categories.categories.push(ruscello_engine::CategoryPolicy {
+                    category: ruscello_core::Category {
+                        id,
+                        name: name.to_owned(),
+                        destination: None,
+                    },
+                    limits: ruscello_engine::CategoryLimits::default(),
+                });
+                self.category_draft.name.clear();
+                return self.save_categories(categories);
+            }
+            Message::AddCategoryRule => {
+                let mut categories = self.queue.categories.clone();
+                let Some(category) = self.category_draft.category else {
+                    return Task::none();
+                };
+                let rule = self.category_draft.rule.trim();
+                if rule.is_empty() {
+                    return Task::none();
+                }
+                let matcher = match rule.split_once(':') {
+                    Some(("domain", value)) => {
+                        ruscello_engine::CategoryMatch::Domain(value.to_owned())
+                    }
+                    Some(("regex", value)) => {
+                        ruscello_engine::CategoryMatch::Regex(value.to_owned())
+                    }
+                    Some(("extension", value)) => {
+                        ruscello_engine::CategoryMatch::Extension(value.to_owned())
+                    }
+                    _ => ruscello_engine::CategoryMatch::Extension(rule.to_owned()),
+                };
+                categories
+                    .rules
+                    .push(ruscello_engine::CategoryRule { matcher, category });
+                self.category_draft.rule.clear();
+                return self.save_categories(categories);
+            }
+            Message::RemoveCategoryRule(index) => {
+                let mut categories = self.queue.categories.clone();
+                if index < categories.rules.len() {
+                    categories.rules.remove(index);
+                    return self.save_categories(categories);
+                }
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    fn save_categories(&self, categories: ruscello_engine::CategorySettings) -> Task<Message> {
+        self.engine.clone().map_or_else(Task::none, |engine| {
+            Task::perform(
+                async move { engine.set_categories(categories).await.is_ok() },
+                Message::ActionResult,
+            )
+        })
     }
 
     pub(crate) fn system_download_folder(&self) -> &std::path::Path {
@@ -862,6 +969,8 @@ impl App {
         };
         let urls = dialog.refresh();
         let paths = dialog.new_text_lists();
+        self.pending_probes
+            .retain(|url| dialog.previews.contains_key(url));
         self.pending_probes.extend(urls);
         let import = if paths.is_empty() {
             Task::none()

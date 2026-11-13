@@ -121,6 +121,34 @@ pub(crate) enum Folder {
     Temporary,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TorrentOption {
+    Dht,
+    Pex,
+    Upnp,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TorrentField {
+    Port,
+    Ratio,
+    Minutes,
+    Interface,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CategoryDraft {
+    pub(crate) name: String,
+    pub(crate) rule: String,
+    pub(crate) category: Option<ruscello_core::CategoryId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CategoryEdit {
+    Name,
+    Rule,
+}
+
 pub(crate) async fn pick_folder() -> Option<PathBuf> {
     rfd::AsyncFileDialog::new()
         .pick_folder()
