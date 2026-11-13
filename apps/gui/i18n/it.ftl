@@ -191,3 +191,7 @@ add-rule = Aggiungi regola
 expected-checksum = Checksum previsto (algoritmo:esadecimale)
 download-bandwidth = Limite di velocità (byte/s)
 install-update = Scarica e installa aggiornamento
+lan-password = Password dell’interfaccia web sulla LAN
+save-password = Salva password
+lan-password-saved = Password salvata nel portachiavi di sistema.
+lan-password-failed = Ruscello non ha potuto salvare la password nel portachiavi di sistema.

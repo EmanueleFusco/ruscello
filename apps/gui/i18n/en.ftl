@@ -191,3 +191,7 @@ add-rule = Add rule
 expected-checksum = Expected checksum (algorithm:hex)
 download-bandwidth = Speed limit (bytes/s)
 install-update = Download and install update
+lan-password = LAN Web UI password
+save-password = Save password
+lan-password-saved = Password saved in the system keyring.
+lan-password-failed = Ruscello could not save the password in the system keyring.

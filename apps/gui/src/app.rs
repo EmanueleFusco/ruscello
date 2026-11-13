@@ -147,6 +147,10 @@ pub(crate) enum Message {
     LanEnabled(bool),
     LanAuth(bool),
     LanAddress(Option<std::net::IpAddr>),
+    LanPassword(settings::LanPassword),
+    SaveLanPassword,
+    LanPasswordSaved(bool),
+    CopyLanUrl,
     CheckAutomatically(bool),
     CheckUpdates,
     UpdateChecked(UpdateStatus),
@@ -204,6 +208,7 @@ pub(crate) struct App {
     pub(crate) settings_draft: Draft,
     pub(crate) renderer: Renderer,
     pub(crate) lan_address: Option<std::net::IpAddr>,
+    pub(crate) lan_password: settings::LanPassword,
     pub(crate) update_status: UpdateStatus,
     pub(crate) category_draft: settings::CategoryDraft,
     default_destination: PathBuf,
@@ -268,6 +273,7 @@ impl App {
             page: Page::General,
             settings_draft: Draft::default(),
             lan_address: None,
+            lan_password: settings::LanPassword(String::new()),
             update_status: UpdateStatus::Idle,
             category_draft: settings::CategoryDraft::default(),
             default_destination,
@@ -828,6 +834,18 @@ impl App {
                 match folder {
                     Folder::Default => self.preferences.default_folder = Some(path),
                     Folder::Temporary => self.preferences.temporary_folder = Some(path),
+                    Folder::Category(id) => {
+                        let mut categories = self.queue.categories.clone();
+                        if let Some(policy) = categories
+                            .categories
+                            .iter_mut()
+                            .find(|policy| policy.category.id == id)
+                        {
+                            policy.category.destination = Some(path);
+                            return self.save_categories(categories);
+                        }
+                        return Task::none();
+                    }
                 }
                 return self.save_preferences();
             }
@@ -844,6 +862,29 @@ impl App {
                 return self.save_preferences();
             }
             Message::LanAddress(address) => self.lan_address = address,
+            Message::LanPassword(password) => self.lan_password = password,
+            Message::SaveLanPassword => {
+                if self.lan_password.0.is_empty() {
+                    return Task::none();
+                }
+                let password = settings::LanPassword(std::mem::take(&mut self.lan_password.0));
+                return Task::perform(
+                    settings::save_lan_password(password),
+                    Message::LanPasswordSaved,
+                );
+            }
+            Message::LanPasswordSaved(saved) => {
+                self.banner = Some(if saved {
+                    "lan-password-saved"
+                } else {
+                    "lan-password-failed"
+                });
+            }
+            Message::CopyLanUrl => {
+                if let Some(url) = self.lan_url() {
+                    return clipboard::write(url);
+                }
+            }
             Message::CheckAutomatically(value) => {
                 self.preferences.check_updates = value;
                 return self.save_preferences();
@@ -985,6 +1026,11 @@ impl App {
 
     pub(crate) fn system_download_folder(&self) -> &std::path::Path {
         &self.default_destination
+    }
+
+    pub(crate) fn lan_url(&self) -> Option<String> {
+        self.lan_address
+            .map(|ip| format!("http://{ip}:{}", self.preferences.lan_port))
     }
 
     fn refresh_add(&mut self) -> Task<Message> {

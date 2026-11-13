@@ -21,6 +21,7 @@ fluent-bundle.workspace = true
 fs4.workspace = true
 getrandom.workspace = true
 iced.workspace = true
+keyring.workspace = true
 notify-rust.workspace = true
 open.workspace = true
 qrcode.workspace = true

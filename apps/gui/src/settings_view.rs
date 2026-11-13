@@ -2,7 +2,6 @@ use iced::{
     Alignment, Element, Fill, Point, Rectangle, Renderer as IcedRenderer, Size, Theme, mouse,
     widget::{button, canvas, checkbox, column, container, row, scrollable, text, text_input},
 };
-use ruscello_engine::Url;
 
 use crate::{
     app::{App, Message},
@@ -218,8 +217,16 @@ fn categories(app: &App) -> Element<'_, Message> {
             .destination
             .as_ref()
             .map_or_else(|| l.get("automatic"), |path| path.display().to_string());
-        categories =
-            categories.push(row![text(l.category(category)).width(180), text(folder)].spacing(10));
+        categories = categories.push(
+            row![
+                text(l.category(category)).width(180),
+                text(folder).width(Fill),
+                button(text(l.get("choose-folder")))
+                    .on_press(Message::ChooseFolder(Folder::Category(category.id))),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        );
         choices = choices.push(option(
             l.category(category),
             app.category_draft.category == Some(category.id),
@@ -300,17 +307,28 @@ fn integrations(app: &App) -> Element<'_, Message> {
         save(app),
     ]
     .spacing(10);
+    if app.preferences.lan_auth {
+        controls = controls.push(
+            row![
+                text_input(&l.get("lan-password"), &app.lan_password.0)
+                    .secure(true)
+                    .on_input(
+                        |password| Message::LanPassword(crate::settings::LanPassword(password))
+                    ),
+                button(text(l.get("save-password"))).on_press_maybe(
+                    (!app.lan_password.0.is_empty()).then_some(Message::SaveLanPassword)
+                ),
+            ]
+            .spacing(8),
+        );
+    }
     if app.preferences.lan_enabled
-        && let Some(ip) = app.lan_address
+        && let Some(url) = app.lan_url()
+        && let Ok(code) = qrcode::QrCode::new(&url)
     {
-        let url = format!("http://{ip}:{}", app.preferences.lan_port);
-        if Url::parse(&url).is_ok()
-            && let Ok(code) = qrcode::QrCode::new(&url)
-        {
-            controls = controls
-                .push(text(url))
-                .push(canvas(Qr(code)).width(160).height(160));
-        }
+        controls = controls
+            .push(button(text(url)).on_press(Message::CopyLanUrl))
+            .push(canvas(Qr(code)).width(160).height(160));
     }
     controls
         .push(text(l.get("browser-extension")))

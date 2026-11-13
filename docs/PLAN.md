@@ -188,9 +188,11 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
       automatic type detection; category and destination folder picker; drag & drop of files (`.torrent`, `.dlc`, `.txt`) and links.
 - [x] **M3.3** Actions: pause/resume/cancel (with confirmation and "delete files" checkbox), open file/folder,
       copy link, priority, reorder; multi-selection; keyboard shortcuts.
-- [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
+- [x] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
       **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations & Remote Control (LAN Web UI toggle, port, optional password, QR code; browser extension; `yt-dlp`/`ffmpeg`), Advanced.
+      Desktop controls for the Torrent, LAN, extension, sidecar, and updater services follow their backend milestones
+      (M4, M7, M8, and M10.5).
 - [x] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets/`.torrent`/`.dlc` files to the running instance).
 - [x] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).

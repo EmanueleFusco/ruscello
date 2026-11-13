@@ -119,6 +119,7 @@ impl Draft {
 pub(crate) enum Folder {
     Default,
     Temporary,
+    Category(ruscello_core::CategoryId),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -165,6 +166,25 @@ pub(crate) async fn lan_address() -> Option<IpAddr> {
     .await
     .ok()
     .flatten()
+}
+
+#[derive(Clone)]
+pub(crate) struct LanPassword(pub(crate) String);
+
+impl std::fmt::Debug for LanPassword {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LanPassword([redacted])")
+    }
+}
+
+pub(crate) async fn save_lan_password(password: LanPassword) -> bool {
+    tokio::task::spawn_blocking(move || {
+        keyring::Entry::new("Ruscello LAN Web UI", "remote-control")
+            .and_then(|entry| entry.set_password(&password.0))
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Deserialize)]
