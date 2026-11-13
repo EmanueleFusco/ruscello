@@ -1390,7 +1390,7 @@ impl Scheduler {
                 if matches!(error, TorrentError::Cancelled) && closing {
                     return;
                 }
-                tracing::debug!(id = id.0, %error, "Torrent start failed");
+                tracing::warn!(id = id.0, %error, "Torrent start failed");
                 let reason = error.failure_reason();
                 if let Err(err) = self.fail(entry, reason).await {
                     self.storage_error(Some(id), &err);
