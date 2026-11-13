@@ -621,7 +621,10 @@ impl App {
                 return Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
-                            .add_filter("Torrent / DLC / TXT", &["torrent", "dlc", "txt"])
+                            .add_filter(
+                                "Torrent / DLC / TXT / URL",
+                                &["torrent", "dlc", "txt", "url"],
+                            )
                             .pick_files()
                             .await
                             .unwrap_or_default()

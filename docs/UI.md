@@ -59,6 +59,8 @@ rather than cluttering toolbars.
 1. Multi-line input box: paste URLs, magnet links, free-form text containing links, or drag & drop `.torrent` / `.dlc` / `.txt`
    files (or pick them via file dialog). Pre-populated from clipboard if valid URLs are detected (never auto-started without
    confirmation unless an auto-accept rule matches).
+   The GUI accepts dropped link shortcuts when the window system delivers them as files. On native Wayland, use paste
+   or the file picker until iced exposes drop events.
 2. Immediate background probing (per-row spinner): each entry resolves into a detected type (*Direct File*,
    *Hoster «name»*, *Container `.dlc` (decrypted Package)*, *Torrent*, *Media Stream*, or *Web Page → LinkGrabber*).
 3. For web pages: switches to the **LinkGrabber** view (see `PLAN.md` M5.5) with collapsible groups:
