@@ -118,6 +118,9 @@ pub(crate) enum Message {
     PickDestination,
     Destination(Option<PathBuf>),
     AddCategory(Option<CategoryId>),
+    AddAdvanced,
+    AddConnections(String),
+    AddChecksum(String),
     StartImmediately(bool),
     Probe(Url, add::Probe),
     SubmitAdd,
@@ -635,6 +638,21 @@ impl App {
             Message::AddCategory(category) => {
                 if let Some(dialog) = &mut self.add {
                     dialog.category = category;
+                }
+            }
+            Message::AddAdvanced => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.advanced = !dialog.advanced;
+                }
+            }
+            Message::AddConnections(value) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.connections = value;
+                }
+            }
+            Message::AddChecksum(value) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.checksum = value;
                 }
             }
             Message::StartImmediately(start) => {

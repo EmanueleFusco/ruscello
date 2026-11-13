@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{num::NonZeroUsize, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -146,6 +146,11 @@ pub struct Download {
     pub completed_path: Option<PathBuf>,
     #[serde(default)]
     pub file_type: Option<FileType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<NonZeroUsize>,
+    /// An optional algorithm name and expected hexadecimal digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<Box<str>>,
     status: Status,
 }
 
@@ -164,6 +169,8 @@ impl Download {
             downloaded_bytes: 0,
             completed_path: None,
             file_type: None,
+            max_connections: None,
+            checksum: None,
             status: Status::Queued,
         }
     }

@@ -214,6 +214,9 @@ impl Scheduler {
             .map_or(0, |max| max.saturating_add(1));
         for (offset, request) in requests.into_iter().enumerate() {
             let url = source_url(&request.source)?;
+            if let Some(checksum) = &request.checksum {
+                crate::parse_checksum(checksum)?;
+            }
             let id = self.allocate_id(&mut ids)?;
             let category = self.categories.assign(
                 request.category,
@@ -241,6 +244,8 @@ impl Scheduler {
             download.filename = request.filename_hint;
             download.tags = request.tags;
             download.priority = request.priority;
+            download.max_connections = request.max_connections;
+            download.checksum = request.checksum.map(String::into_boxed_str);
             if !request.start_immediately {
                 download.transition(Status::Paused)?;
             }
@@ -262,7 +267,7 @@ impl Scheduler {
         let mut ids = Vec::with_capacity(entries.len());
         for entry in entries {
             let id = entry.download.id;
-            self.emit(EngineEvent::Added(entry.download.clone()));
+            self.emit(EngineEvent::Added(Box::new(entry.download.clone())));
             self.queue.insert(id, entry);
             ids.push(id);
         }

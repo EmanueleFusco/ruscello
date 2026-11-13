@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, error::Error, fs, num::NonZeroUsize, time::Duration};
 
-use ruscello_core::{DownloadId, Priority, Source, Status};
+use ruscello_core::{DownloadId, FailureReason, Priority, Source, Status};
 use ruscello_engine::{
     AddDownload, EngineEvent, EngineHandle, EngineOptions, Limits, RECOVERY_FOLDER,
 };
@@ -11,6 +11,50 @@ use tokio::{sync::broadcast, time::timeout};
 type TestResult = Result<(), Box<dyn Error>>;
 const SIZE: u64 = 384 * 1024;
 const THREE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(2);
+
+#[tokio::test]
+async fn persists_expected_checksum_and_rejects_mismatched_output() -> TestResult {
+    let server = TestServer::start().await?;
+    let file = server.file(FileSpec::random(4, SIZE));
+    let temp = tempfile::tempdir()?;
+    let options = EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    let engine = EngineHandle::start(options.clone()).await?;
+    let mut request = add(file.url());
+    request.start_immediately = false;
+    request.checksum = Some(format!("sha256:{}", "0".repeat(64)));
+    let id = engine.add(request).await?;
+    engine.shutdown().await?;
+    let engine = EngineHandle::start(options).await?;
+    let mut events = engine.subscribe();
+    engine.resume(id).await?;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if let EngineEvent::StatusChanged {
+                id: changed,
+                status,
+            } = events.recv().await?
+                && changed == id
+                && matches!(status, Status::Completed | Status::Failed { .. })
+            {
+                assert_eq!(
+                    status,
+                    Status::Failed {
+                        reason: FailureReason::IntegrityCheck
+                    }
+                );
+                return Ok::<_, broadcast::error::RecvError>(());
+            }
+        }
+    })
+    .await??;
+    assert!(
+        engine.snapshot().await?.downloads[0]
+            .completed_path
+            .is_none()
+    );
+    engine.shutdown().await?;
+    Ok(())
+}
 
 fn add(url: &str) -> AddDownload {
     AddDownload::new(Source::Http { url: url.into() })

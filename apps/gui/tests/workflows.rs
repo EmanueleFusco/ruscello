@@ -110,6 +110,7 @@ async fn adds_pauses_resumes_and_removes_a_loopback_download() -> anyhow::Result
         apply(&mut app, message).await;
     }
     let _ = app.update(Message::StartImmediately(false));
+    let _ = app.update(Message::AddConnections("2".into()));
     let message = click(&app, "Add")?;
     apply(&mut app, message).await;
     let snapshot = engine.snapshot().await?;
@@ -119,6 +120,12 @@ async fn adds_pauses_resumes_and_removes_a_loopback_download() -> anyhow::Result
         .map(|download| download.id)
         .ok_or_else(|| anyhow::anyhow!("Download was not queued"))?;
     assert_eq!(snapshot.downloads[0].status(), Status::Paused);
+    assert_eq!(
+        snapshot.downloads[0]
+            .max_connections
+            .map(std::num::NonZeroUsize::get),
+        Some(2)
+    );
     apply(&mut app, Message::Snapshot(Some(snapshot))).await;
     let name = crate::queue::display_name(&engine.snapshot().await?.downloads[0]);
     assert!(simulator(&app).find(name.as_str()).is_ok());

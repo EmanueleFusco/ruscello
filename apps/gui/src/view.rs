@@ -667,6 +667,23 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         .as_ref()
         .map_or_else(|| l.get("automatic"), |path| path.display().to_string());
     let can_submit = !app.booting && dialog.can_submit();
+    let mut advanced = column![
+        button(text(l.get("advanced")))
+            .on_press(Message::AddAdvanced)
+            .style(button::secondary)
+    ]
+    .spacing(5);
+    if dialog.advanced {
+        advanced = advanced.push(
+            row![
+                text_input(&l.get("limit-download"), &dialog.connections)
+                    .on_input(Message::AddConnections),
+                text_input(&l.get("expected-checksum"), &dialog.checksum)
+                    .on_input(Message::AddChecksum),
+            ]
+            .spacing(8),
+        );
+    }
     container(
         column![
             row![
@@ -700,6 +717,7 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
             ]
             .align_y(Alignment::Center)
             .spacing(8),
+            advanced,
             row![
                 checkbox(!dialog.paused)
                     .label(l.get("start-immediately"))

@@ -77,6 +77,8 @@ pub struct AddDownload {
     pub tags: Vec<Tag>,
     pub priority: Priority,
     pub start_immediately: bool,
+    pub max_connections: Option<NonZeroUsize>,
+    pub checksum: Option<String>,
 }
 
 impl AddDownload {
@@ -90,6 +92,8 @@ impl AddDownload {
             tags: Vec::new(),
             priority: Priority::default(),
             start_immediately: true,
+            max_connections: None,
+            checksum: None,
         }
     }
 }
@@ -119,7 +123,7 @@ pub enum EngineLog {
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
-    Added(Download),
+    Added(Box<Download>),
     Removed(DownloadId),
     Progress(Vec<ProgressUpdate>),
     StatusChanged {
@@ -151,6 +155,8 @@ pub enum EngineError {
     UnsupportedSource,
     #[error("the HTTP source is not a valid URL")]
     InvalidUrl,
+    #[error("the expected checksum is invalid")]
+    InvalidChecksum(#[from] crate::ChecksumError),
     #[error("the engine could not allocate a download ID")]
     Identifier,
     #[error("a download file operation failed")]

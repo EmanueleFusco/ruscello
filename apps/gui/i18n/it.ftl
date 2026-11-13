@@ -188,3 +188,4 @@ category-name = Nome della categoria
 create-category = Crea categoria
 rule-pattern = Regola (domain:example.com, extension:zip o regex:espressione)
 add-rule = Aggiungi regola
+expected-checksum = Checksum previsto (algoritmo:esadecimale)

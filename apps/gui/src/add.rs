@@ -188,6 +188,9 @@ pub(crate) struct Dialog {
     pub(crate) destination: Option<PathBuf>,
     pub(crate) paused: bool,
     pub(crate) submitting: bool,
+    pub(crate) advanced: bool,
+    pub(crate) connections: String,
+    pub(crate) checksum: String,
 }
 
 impl Dialog {
@@ -200,11 +203,19 @@ impl Dialog {
 
     pub(crate) fn can_submit(&self) -> bool {
         !self.submitting
+            && self.valid_options()
             && !self.entries.iter().any(|input| matches!(input, Input::Http(url) if matches!(self.previews.get(url), None | Some(Probe::Pending))))
             && self.entries.iter().any(|input| match input {
                 Input::Http(url) => self.is_ready(url),
                 _ => false,
             })
+    }
+
+    fn valid_options(&self) -> bool {
+        let connections = self.connections.trim();
+        let checksum = self.checksum.trim();
+        (connections.is_empty() || connections.parse::<std::num::NonZeroUsize>().is_ok())
+            && (checksum.is_empty() || ruscello_engine::parse_checksum(checksum).is_ok())
     }
 
     pub(crate) fn refresh(&mut self) -> Vec<Url> {
@@ -252,6 +263,9 @@ impl Dialog {
                 request.destination = self.destination.clone();
                 request.category = self.category;
                 request.start_immediately = !self.paused;
+                request.max_connections = self.connections.trim().parse().ok();
+                request.checksum =
+                    (!self.checksum.trim().is_empty()).then(|| self.checksum.trim().to_owned());
                 if let Some(Probe::File(filename, _)) = self.previews.get(url) {
                     request.filename_hint = Some(filename.clone());
                 }
