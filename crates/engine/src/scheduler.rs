@@ -34,6 +34,7 @@ pub(super) struct Scheduler {
     disk: DiskPolicy,
     categories: CategoryBook,
     limits: Limits,
+    temporary_bandwidth: Option<std::num::NonZeroU64>,
     events: broadcast::Sender<EngineEvent>,
     hosts: HostConnections,
     http: HttpDownloader,
@@ -79,6 +80,7 @@ impl Scheduler {
             disk: options.disk,
             categories,
             limits,
+            temporary_bandwidth: None,
             events,
             hosts,
             http,
@@ -320,7 +322,17 @@ impl Scheduler {
                     .await?;
                 self.limits = limits;
                 self.hosts.set_limit(limits.connections_per_host);
-                self.http.global_bandwidth().set_rate(limits.bandwidth);
+                self.http
+                    .global_bandwidth()
+                    .set_rate(self.temporary_bandwidth.or(limits.bandwidth));
+                self.emit(EngineEvent::QueueChanged);
+                Ok(())
+            }
+            Update::TemporaryBandwidth(rate) => {
+                self.temporary_bandwidth = rate;
+                self.http
+                    .global_bandwidth()
+                    .set_rate(rate.or(self.limits.bandwidth));
                 self.emit(EngineEvent::QueueChanged);
                 Ok(())
             }

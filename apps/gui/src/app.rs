@@ -136,6 +136,7 @@ pub(crate) enum Message {
     CancelRemove,
     PauseAll,
     AlternateSpeed,
+    AlternateApplied(bool, bool),
     ActionResult(bool),
     SettingsPage(Page),
     Renderer(Renderer),
@@ -203,7 +204,7 @@ pub(crate) struct App {
     modifiers: keyboard::Modifiers,
     pub(crate) menu: Option<DownloadId>,
     pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
-    alternate_previous: Option<ruscello_engine::Limits>,
+    alternate_speed: bool,
     pub(crate) page: Page,
     pub(crate) settings_draft: Draft,
     pub(crate) renderer: Renderer,
@@ -269,7 +270,7 @@ impl App {
             modifiers: keyboard::Modifiers::default(),
             menu: None,
             remove: None,
-            alternate_previous: None,
+            alternate_speed: false,
             page: Page::General,
             settings_draft: Draft::default(),
             lan_address: None,
@@ -515,7 +516,7 @@ impl App {
                 self.settings = open;
                 if open {
                     self.settings_draft = Draft::new(
-                        self.alternate_previous.unwrap_or(self.queue.limits),
+                        self.queue.limits,
                         self.preferences.alternate_bandwidth,
                         self.preferences.lan_port,
                     );
@@ -768,19 +769,16 @@ impl App {
             }
             Message::AlternateSpeed => {
                 if let Some(engine) = self.engine.clone() {
-                    let mut limits = self.queue.limits;
-                    if let Some(previous) = self.alternate_previous.take() {
-                        limits = previous;
-                    } else {
-                        self.alternate_previous = Some(limits);
-                        limits.bandwidth = Some(self.preferences.alternate_bandwidth);
-                    }
+                    let enabled = !self.alternate_speed;
+                    let rate = enabled.then_some(self.preferences.alternate_bandwidth);
                     return Task::perform(
-                        async move { engine.set_limits(limits).await.is_ok() },
-                        Message::ActionResult,
+                        async move { engine.set_temporary_bandwidth(rate).await.is_ok() },
+                        move |success| Message::AlternateApplied(enabled, success),
                     );
                 }
             }
+            Message::AlternateApplied(enabled, true) => self.alternate_speed = enabled,
+            Message::AlternateApplied(_, false) => self.banner = Some("action-failed"),
             Message::ActionResult(false) => self.banner = Some("action-failed"),
             other => return self.update_settings(other),
         }
@@ -806,20 +804,24 @@ impl App {
                 self.settings_draft.fields[field.index()] = value
             }
             Message::SaveLimits => {
-                let limits = self.alternate_previous.unwrap_or(self.queue.limits);
-                let Some((mut limits, alternate, port)) = self.settings_draft.parse(limits) else {
+                let Some((limits, alternate, port)) = self.settings_draft.parse(self.queue.limits)
+                else {
                     self.banner = Some("invalid-settings");
                     return Task::none();
                 };
                 self.preferences.alternate_bandwidth = alternate;
                 self.preferences.lan_port = port;
-                if self.alternate_previous.is_some() {
-                    self.alternate_previous = Some(limits);
-                    limits.bandwidth = Some(alternate);
-                }
+                let enabled = self.alternate_speed;
                 let change = self.engine.clone().map_or_else(Task::none, |engine| {
                     Task::perform(
-                        async move { engine.set_limits(limits).await.is_ok() },
+                        async move {
+                            engine.set_limits(limits).await.is_ok()
+                                && (!enabled
+                                    || engine
+                                        .set_temporary_bandwidth(Some(alternate))
+                                        .await
+                                        .is_ok())
+                        },
                         Message::ActionResult,
                     )
                 });
@@ -1239,7 +1241,7 @@ impl App {
     }
 
     pub(crate) fn alternate_speed(&self) -> bool {
-        self.alternate_previous.is_some()
+        self.alternate_speed
     }
 
     pub(crate) fn can_pause_all(&self) -> bool {

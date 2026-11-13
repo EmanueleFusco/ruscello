@@ -567,7 +567,12 @@ fn field(label: String, value: String) -> Element<'static, Message> {
 fn status_bar(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
     let q = &app.queue;
-    let speed = q.limits.bandwidth.map_or_else(
+    let limit = if app.alternate_speed() {
+        Some(app.preferences.alternate_bandwidth)
+    } else {
+        q.limits.bandwidth
+    };
+    let speed = limit.map_or_else(
         || l.get("limit-off"),
         |limit| l.with("speed-limit", [("speed", rate(l, limit.get()))]),
     );

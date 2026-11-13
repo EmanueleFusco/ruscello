@@ -194,6 +194,7 @@ pub(super) enum Update {
     Priority(DownloadId, Priority),
     Move(DownloadId, Option<DownloadId>),
     Limits(Limits),
+    TemporaryBandwidth(Option<NonZeroU64>),
     Categories(CategorySettings),
 }
 
@@ -317,6 +318,14 @@ impl EngineHandle {
 
     pub async fn set_limits(&self, limits: Limits) -> Result<(), EngineError> {
         self.update(Update::Limits(limits)).await
+    }
+
+    /// Overrides the effective global bandwidth limit for this engine session.
+    pub async fn set_temporary_bandwidth(
+        &self,
+        rate: Option<NonZeroU64>,
+    ) -> Result<(), EngineError> {
+        self.update(Update::TemporaryBandwidth(rate)).await
     }
 
     pub async fn set_categories(&self, settings: CategorySettings) -> Result<(), EngineError> {
