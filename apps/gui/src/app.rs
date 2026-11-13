@@ -19,6 +19,7 @@ use tokio::sync::broadcast;
 use crate::{
     actions::{self, Action, Command, Shortcut},
     add::{self, Dialog, Input},
+    desktop,
     i18n::Strings,
     preferences::{Appearance, Locale, Preferences, Renderer},
     queue::{self, Queue, StatusFilter},
@@ -92,7 +93,10 @@ pub(crate) enum Message {
     Category(Option<CategoryId>),
     Select(DownloadId),
     Package(PackageId),
-    Scrolled { offset: f32, height: f32 },
+    Scrolled {
+        offset: f32,
+        height: f32,
+    },
     Resize(Size),
     SystemTheme(iced::theme::Mode),
     ToggleDetails,
@@ -145,6 +149,15 @@ pub(crate) enum Message {
     OpenRelease,
     CopyDiagnostics,
     OpenLogs,
+    SetupTray,
+    Tray(desktop::Event),
+    Incoming(Vec<String>),
+    CloseToTray(bool),
+    Notifications(bool),
+    Autostart(bool),
+    AutostartApplied(bool, bool),
+    #[cfg(any(windows, target_os = "linux"))]
+    RegisterAssociations,
 }
 
 pub(crate) struct App {
@@ -182,6 +195,9 @@ pub(crate) struct App {
     pub(crate) lan_address: Option<std::net::IpAddr>,
     pub(crate) update_status: UpdateStatus,
     default_destination: PathBuf,
+    tray: Option<tray_icon::TrayIcon>,
+    tray_events: desktop::Receiver<desktop::Event>,
+    ipc_events: desktop::Receiver<Vec<String>>,
 }
 
 impl App {
@@ -192,6 +208,7 @@ impl App {
         destination: PathBuf,
         restore_failed: bool,
         strings: Strings,
+        desktop: desktop::Startup,
     ) -> (Self, Task<Message>) {
         let (window, open) = window::open(window::Settings {
             size: Size::new(1120.0, 720.0),
@@ -241,6 +258,9 @@ impl App {
             lan_address: None,
             update_status: UpdateStatus::Idle,
             default_destination,
+            tray: None,
+            tray_events: desktop.tray,
+            ipc_events: desktop.ipc,
         };
         let start = Task::perform(
             async {
@@ -254,9 +274,10 @@ impl App {
         (
             app,
             Task::batch([
-                open.map(|_| Message::Noop),
+                open.map(|_| Message::SetupTray),
                 start,
                 iced::system::theme().map(Message::SystemTheme),
+                Task::done(Message::Incoming(desktop.inputs)),
             ]),
         )
     }
@@ -293,6 +314,14 @@ impl App {
             window::resize_events().map(|(_, size)| Message::Resize(size)),
             iced::system::theme_changes().map(Message::SystemTheme),
             event::listen_with(actions::event),
+            Subscription::run_with(
+                DesktopSubscription(self.window, self.tray_events.clone()),
+                tray_events,
+            ),
+            Subscription::run_with(
+                DesktopSubscription(self.window, self.ipc_events.clone()),
+                ipc_events,
+            ),
         ])
     }
 
@@ -345,17 +374,81 @@ impl App {
             Message::Event(EngineEvent::Log { id: None, message }) => {
                 self.banner = Some(view::log_key(message))
             }
-            Message::Event(EngineEvent::StatusChanged { .. } | EngineEvent::Removed(_)) => {
-                return self.check_disk();
+            Message::Event(EngineEvent::StatusChanged { id, status }) => {
+                let notice = if self.preferences.notifications
+                    && matches!(
+                        status,
+                        Status::Completed | Status::Failed { .. } | Status::WaitingUser
+                    ) {
+                    let title = self.strings.get(i18n_status_key(status));
+                    let body = self
+                        .queue
+                        .downloads
+                        .get(&id)
+                        .map_or_else(|| self.strings.get("app-name"), queue::display_name);
+                    Task::future(desktop::notify(title, body))
+                } else {
+                    Task::none()
+                };
+                return Task::batch([notice, self.check_disk()]);
             }
+            Message::Event(EngineEvent::Removed(_)) => return self.check_disk(),
             Message::Event(_) => {}
             Message::DiskSpace(bytes) => self.disk_space = bytes,
             Message::Close => {
-                if self.closing {
+                if self.preferences.close_to_tray && self.tray.is_some() {
+                    return window::set_mode(self.window, window::Mode::Hidden);
+                }
+                return self.quit();
+            }
+            Message::Tray(desktop::Event::Quit) => return self.quit(),
+            Message::Tray(desktop::Event::Show) => return self.show_window(),
+            Message::Tray(desktop::Event::PauseAll) => return self.interaction(Message::PauseAll),
+            Message::SetupTray => {
+                self.tray = desktop::tray(&self.strings)
+                    .inspect_err(|_| tracing::debug!("System tray unavailable"))
+                    .ok();
+            }
+            Message::Incoming(inputs) => {
+                if !inputs.is_empty() {
+                    self.settings = false;
+                    let dialog = self.add.get_or_insert_with(Dialog::default);
+                    if !dialog.text.is_empty() {
+                        dialog.text.push('\n');
+                    }
+                    dialog.text.push_str(&inputs.join("\n"));
+                    self.editor = text_editor::Content::with_text(&dialog.text);
+                    return Task::batch([self.refresh_add(), self.show_window()]);
+                }
+                return self.show_window();
+            }
+            Message::CloseToTray(enabled) => {
+                if enabled && self.tray.is_none() {
+                    self.banner = Some("tray-unavailable");
                     return Task::none();
                 }
-                self.closing = true;
-                return self.finish_close();
+                self.preferences.close_to_tray = enabled;
+                return self.save_preferences();
+            }
+            Message::Notifications(enabled) => {
+                self.preferences.notifications = enabled;
+                return self.save_preferences();
+            }
+            Message::Autostart(enabled) => {
+                return Task::perform(desktop::autostart(enabled), move |success| {
+                    Message::AutostartApplied(enabled, success)
+                });
+            }
+            Message::AutostartApplied(enabled, success) => {
+                if success {
+                    self.preferences.autostart = enabled;
+                    return self.save_preferences();
+                }
+                self.banner = Some("action-failed");
+            }
+            #[cfg(any(windows, target_os = "linux"))]
+            Message::RegisterAssociations => {
+                return Task::perform(desktop::associations(), Message::ActionResult);
             }
             Message::Stopped(saved) => {
                 self.engine = None;
@@ -413,6 +506,9 @@ impl App {
             Message::Locale(locale) => {
                 self.preferences.locale = locale;
                 self.strings.set_locale(locale);
+                if let Ok(tray) = desktop::tray(&self.strings) {
+                    self.tray = Some(tray);
+                }
                 return self.save_preferences();
             }
             Message::Appearance(appearance) => {
@@ -995,6 +1091,20 @@ impl App {
         iced::exit()
     }
 
+    fn quit(&mut self) -> Task<Message> {
+        if self.closing {
+            return Task::none();
+        }
+        self.closing = true;
+        self.finish_close()
+    }
+
+    fn show_window(&self) -> Task<Message> {
+        window::set_mode(self.window, window::Mode::Windowed)
+            .chain(window::minimize(self.window, false))
+            .chain(window::gain_focus(self.window))
+    }
+
     fn check_disk(&self) -> Task<Message> {
         Task::perform(
             queue::disk_space(self.destination.clone()),
@@ -1034,6 +1144,30 @@ impl App {
     pub(crate) fn view(&self, _: window::Id) -> Element<'_, Message> {
         view::main(self)
     }
+}
+
+fn i18n_status_key(status: Status) -> &'static str {
+    crate::i18n::status(status)
+}
+
+struct DesktopSubscription<T>(window::Id, desktop::Receiver<T>);
+
+impl<T> Hash for DesktopSubscription<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+fn tray_events(
+    source: &DesktopSubscription<desktop::Event>,
+) -> impl Stream<Item = Message> + use<> {
+    use iced::futures::StreamExt;
+    desktop::events(&source.1).map(Message::Tray)
+}
+
+fn ipc_events(source: &DesktopSubscription<Vec<String>>) -> impl Stream<Item = Message> + use<> {
+    use iced::futures::StreamExt;
+    desktop::events(&source.1).map(Message::Incoming)
 }
 
 struct QueueSubscription {

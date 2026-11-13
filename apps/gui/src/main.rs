@@ -3,8 +3,10 @@
 mod actions;
 mod add;
 mod app;
+mod desktop;
 mod i18n;
 mod icons;
+mod instance;
 mod preferences;
 mod queue;
 mod settings;
@@ -34,12 +36,11 @@ fn main() -> ExitCode {
             let backend = preferences.renderer.backend();
             if std::env::var("ICED_BACKEND").as_deref() != Ok(backend) {
                 // Pass the selected backend to the desktop process before iced starts.
-                let status = std::process::Command::new(std::env::current_exe()?)
+                let mut command = std::process::Command::new(std::env::current_exe()?);
+                command
                     .args(std::env::args_os().skip(1))
-                    .env("ICED_BACKEND", backend)
-                    .status()?;
-                anyhow::ensure!(status.success(), "Desktop process failed");
-                return Ok(());
+                    .env("ICED_BACKEND", backend);
+                return start_desktop(command);
             }
             run(paths, config, preferences, restore_failed)
         });
@@ -55,6 +56,18 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(unix)]
+fn start_desktop(mut command: std::process::Command) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    Err(command.exec().into())
+}
+
+#[cfg(windows)]
+fn start_desktop(mut command: std::process::Command) -> anyhow::Result<()> {
+    anyhow::ensure!(command.status()?.success(), "Desktop process failed");
+    Ok(())
+}
+
 fn run(
     paths: AppPaths,
     config: std::path::PathBuf,
@@ -62,6 +75,15 @@ fn run(
     restore_failed: bool,
 ) -> anyhow::Result<()> {
     let _log = logging::init("ruscello")?;
+    let inputs = std::env::args_os()
+        .skip(1)
+        .filter(|arg| arg != "--startup")
+        .map(|arg| instance::normalize(&arg))
+        .collect::<Vec<_>>();
+    let Some(primary) = instance::start(paths.data(), inputs.clone())? else {
+        return Ok(());
+    };
+    let events = desktop::event_bridge();
     let strings = Strings::new(preferences.locale)?;
     let default_destination = directories::UserDirs::new()
         .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf))
@@ -75,6 +97,11 @@ fn run(
             default_destination.clone(),
             restore_failed,
             strings.clone(),
+            desktop::Startup {
+                tray: events.clone(),
+                ipc: primary.receiver(),
+                inputs: inputs.clone(),
+            },
         )
     };
     iced::daemon(boot, App::update, App::view)

@@ -14,10 +14,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+auto-launch.workspace = true
 directories.workspace = true
 fluent-bundle.workspace = true
 fs4.workspace = true
+getrandom.workspace = true
 iced.workspace = true
+notify-rust.workspace = true
 open.workspace = true
 qrcode.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
@@ -31,6 +34,10 @@ serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tray-icon.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg.workspace = true
 
 [lints]
 workspace = true

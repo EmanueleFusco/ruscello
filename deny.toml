@@ -43,6 +43,12 @@ allow = [
 [licenses.private]
 ignore = true
 
+[[licenses.exceptions]]
+# The FSF identifies the Unlicense as GPL-compatible.
+# https://www.gnu.org/licenses/license-list.html#Unlicense
+allow = ["Unlicense"]
+crate = "ksni@0.3.7"
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
