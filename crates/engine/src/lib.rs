@@ -22,6 +22,7 @@ pub use categories::{
     CategoryLimits, CategoryMatch, CategoryPolicy, CategoryRule, CategorySettings,
 };
 pub use disk::{DiskPolicy, DiskSpaceProbe};
+pub use file_types::file_type_hint;
 /// Direct HTTP entry point for developer commands and benchmarks.
 pub use ruscello_http::{
     ChecksumAlgorithm, DownloadOptions, DownloadProgress, ErrorClass, ExpectedChecksum,

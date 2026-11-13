@@ -194,7 +194,7 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [ ] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets/`.torrent`/`.dlc` files to the running instance).
 - [ ] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
-- [ ] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
+- [x] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
       **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
 - [ ] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
 

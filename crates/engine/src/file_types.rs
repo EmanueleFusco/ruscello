@@ -11,18 +11,6 @@ pub(super) fn detect(path: &Path, mime: Option<&str>, source: SourceKind) -> Fil
         .and_then(|extension| extension.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let from_extension = match extension.as_str() {
-        "torrent" => Some(FileType::Torrents),
-        "7z" | "rar" | "zip" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "tar" | "iso" => {
-            Some(FileType::Archives)
-        }
-        "exe" | "msi" | "msix" | "appimage" | "app" | "apk" | "dmg" | "deb" | "rpm" | "pkg" => {
-            Some(FileType::Programs)
-        }
-        _ => mime_guess::from_path(path)
-            .first_raw()
-            .and_then(classify_mime),
-    };
     let from_header = mime.and_then(classify_mime);
     let mut prefix = Vec::new();
     let magic = File::open(path)
@@ -38,8 +26,28 @@ pub(super) fn detect(path: &Path, mime: Option<&str>, source: SourceKind) -> Fil
     magic
         .and_then(classify_mime)
         .or(from_header)
-        .or(from_extension)
-        .unwrap_or(FileType::Other)
+        .unwrap_or_else(|| file_type_hint(path))
+}
+
+/// Predicts a file type from its extension without reading the filesystem.
+pub fn file_type_hint(path: &Path) -> FileType {
+    let extension = path
+        .extension()
+        .and_then(|part| part.to_str())
+        .unwrap_or_default();
+    match extension.to_ascii_lowercase().as_str() {
+        "torrent" => FileType::Torrents,
+        "7z" | "rar" | "zip" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "tar" | "iso" => {
+            FileType::Archives
+        }
+        "exe" | "msi" | "msix" | "appimage" | "app" | "apk" | "dmg" | "deb" | "rpm" | "pkg" => {
+            FileType::Programs
+        }
+        _ => mime_guess::from_path(path)
+            .first_raw()
+            .and_then(classify_mime)
+            .unwrap_or(FileType::Other),
+    }
 }
 
 fn is_office_extension(extension: &str) -> bool {
