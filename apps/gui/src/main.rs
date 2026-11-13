@@ -14,6 +14,10 @@ mod settings_view;
 mod theme;
 mod view;
 
+#[cfg(test)]
+#[path = "../tests/workflows.rs"]
+mod workflows;
+
 use std::process::ExitCode;
 
 use ruscello_platform::{logging, paths::AppPaths};

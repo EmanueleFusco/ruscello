@@ -14,6 +14,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
   LAN preferences with QR code, diagnostic details, and GitHub release checks and notes.
 - M3.5 and M3.6: System tray, desktop notifications, login launch, single-instance forwarding, and
   per-user magnet, Torrent, and DLC associations on Windows and Linux.
+- M3.8: Headless desktop workflow tests and view snapshots using iced_test and the software renderer.
 - M0: Cargo workspace structure (crates `core`, `http`, `torrent`, `media`, `resolver`, `browser`,
   `storage`, `engine`, `api`, `testkit`; apps `gui`, `cli`, `webview`), work plan, ADRs, UI and testing
   specifications, GitHub Actions CI, `cargo-deny` configuration, and `AGENTS.md`.

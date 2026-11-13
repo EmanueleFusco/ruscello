@@ -13,6 +13,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  ICED_TEST_BACKEND: tiny-skia
   RUST_BACKTRACE: 1
 
 jobs:

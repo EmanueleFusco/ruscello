@@ -196,7 +196,7 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [x] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
 - [x] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
       **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
-- [ ] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
+- [x] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
 
 ### Definition of Done — M3
 Users can add, monitor, pause, resume, and cancel HTTP downloads from the GUI, switch UI language between
