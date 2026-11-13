@@ -14,19 +14,11 @@ use ruscello_testkit::{FileSpec, TestServer};
 
 use crate::{
     actions::Action as RowAction,
-<<<<<<< HEAD
     app::{App, DETAILS_COLLAPSED_HEIGHT, DetailTab, Message},
     desktop::{Receiver, Startup},
     i18n::Strings,
     preferences::{Locale, Preferences},
-    settings::Page,
-=======
-    app::{App, DetailTab, Message},
-    desktop::{Receiver, Startup},
-    i18n::Strings,
-    preferences::{Locale, Preferences},
     settings::{Page, TorrentField},
->>>>>>> f5c1baa (feat(gui): integrate BitTorrent pre-add preview, details tabs, and settings)
 };
 
 fn receiver<T>() -> Receiver<T> {
@@ -312,7 +304,7 @@ fn details_header_collapses_and_reopens_even_with_an_empty_queue() -> anyhow::Re
     let mut app = app(&temp)?;
     app.booting = false;
     let expanded = app.details_height();
-    let start = Instant::now() + Duration::from_secs(1);
+    let start = Instant::now() + Duration::from_secs(60);
     let _ = app.update(Message::AnimationFrame(start));
     let message = click(&app, "Details")?;
     assert!(matches!(message, Message::ToggleDetails));

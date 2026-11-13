@@ -1107,8 +1107,10 @@ fn torrent_preview_row<'a>(
                 details = details.push(
                     row![
                         theme::action(text(l.get("select-all")).size(11))
+                            .padding([4, 8])
                             .on_press(Message::ToggleAllTorrentFiles(all_key, true)),
                         theme::action(text(l.get("select-none")).size(11))
+                            .padding([4, 8])
                             .on_press(Message::ToggleAllTorrentFiles(none_key, false)),
                     ]
                     .spacing(6),
@@ -1134,7 +1136,10 @@ fn torrent_preview_row<'a>(
     }
     container(
         row![
-            text(l.get("torrent-input")).size(12).style(muted).width(152),
+            text(l.get("torrent-input"))
+                .size(12)
+                .style(muted)
+                .width(152),
             details.width(Fill),
         ]
         .spacing(8),
@@ -1211,7 +1216,19 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         .spacing(9)
         .into()
     } else {
-        theme::vertical(previews).spacing(6).height(90).into()
+        let preview_height = if dialog
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, Input::Torrent(_)))
+        {
+            148
+        } else {
+            90
+        };
+        theme::vertical(previews)
+            .spacing(6)
+            .height(preview_height)
+            .into()
     };
     let mut advanced = column![
         button(
