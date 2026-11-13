@@ -26,7 +26,7 @@ pub use file_types::file_type_hint;
 /// Direct HTTP entry point for developer commands and benchmarks.
 pub use ruscello_http::{
     ChecksumAlgorithm, ChecksumError, DownloadOptions, DownloadProgress, ErrorClass,
-    ExpectedChecksum, HttpDownloader, HttpError, Probe, Url, WriterError,
+    ExpectedChecksum, HttpDownloader, HttpError, Probe, SegmentProgress, Url, WriterError,
 };
 
 /// Probes a candidate URL with the same metadata logic used by downloads.

@@ -141,6 +141,26 @@ impl SegmentAllocator {
         self.completed
     }
 
+    /// Maps the remaining and active ranges onto 64 equal-width display cells.
+    pub(crate) fn display_map(&self) -> (u64, u64) {
+        let mask = |range: &Range<u64>| {
+            if self.size == 0 || range.is_empty() {
+                return 0;
+            }
+            let cell = |offset: u64| (u128::from(offset) * 64 / u128::from(self.size)) as u32;
+            let first = cell(range.start);
+            let last = cell(range.end - 1);
+            (u64::MAX << first) & (u64::MAX >> (63 - last))
+        };
+        let active = self
+            .active
+            .values()
+            .map(mask)
+            .fold(0, |set, item| set | item);
+        let ready = self.ready.iter().map(mask).fold(0, |set, item| set | item);
+        (!(active | ready), active)
+    }
+
     pub fn is_complete(&self) -> bool {
         self.completed == self.size
     }
@@ -213,6 +233,18 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn display_map_distinguishes_active_pending_and_completed_ranges() -> Result<(), SegmentError> {
+        let two = NonZeroUsize::MIN.saturating_add(1);
+        let mut allocator = SegmentAllocator::new(64, two, NonZeroU64::MIN);
+        assert_eq!(allocator.display_map(), (0, 0));
+        let work = allocator.assign().ok_or(SegmentError::UnknownWork)?;
+        assert_eq!(allocator.display_map(), (0, 0x0000_0000_ffff_ffff));
+        allocator.advance(work.id, 32)?;
+        assert_eq!(allocator.display_map(), (0x0000_0000_ffff_ffff, 0));
+        Ok(())
+    }
 
     #[test]
     fn steals_from_slow_connection_after_the_other_finishes() -> Result<(), SegmentError> {

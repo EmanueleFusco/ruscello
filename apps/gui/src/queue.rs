@@ -106,6 +106,7 @@ struct Telemetry {
     speed: u64,
     resumable: bool,
     offline: bool,
+    segments: Option<ruscello_engine::SegmentProgress>,
 }
 
 impl Queue {
@@ -247,6 +248,7 @@ impl Queue {
                     speed,
                     resumable: update.progress.resumable,
                     offline: update.progress.waiting_for_network,
+                    segments: update.progress.segments,
                 },
             );
         }
@@ -269,6 +271,10 @@ impl Queue {
 
     pub(crate) fn offline(&self, id: DownloadId) -> bool {
         self.telemetry.get(&id).is_some_and(|sample| sample.offline)
+    }
+
+    pub(crate) fn segments(&self, id: DownloadId) -> Option<ruscello_engine::SegmentProgress> {
+        self.telemetry.get(&id).and_then(|sample| sample.segments)
     }
 
     pub(crate) fn log(&mut self, id: DownloadId, message: EngineLog) {

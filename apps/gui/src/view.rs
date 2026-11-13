@@ -493,9 +493,18 @@ fn details(app: &App) -> Element<'_, Message> {
             if app.queue.resumable(download.id) == Some(false) {
                 fields = fields.push(text(l.get("not-resumable")));
             }
+            if let Some(checksum) = &download.checksum {
+                fields = fields.push(field(l.get("checksum"), checksum.to_string()));
+            }
             fields.into()
         }
-        (Some(_), DetailTab::Segments) => text(l.get("no-segments")).into(),
+        (Some(download), DetailTab::Segments) => {
+            if let Some(segments) = app.queue.segments(download.id) {
+                segment_map(l, segments)
+            } else {
+                text(l.get("no-segments")).into()
+            }
+        }
         (Some(download), DetailTab::Log) => {
             if let Some(logs) = app.queue.logs.get(&download.id) {
                 column(
@@ -516,6 +525,37 @@ fn details(app: &App) -> Element<'_, Message> {
         .style(theme::panel)
         .padding(10)
         .into()
+}
+
+fn segment_map(
+    l: &Strings,
+    segments: ruscello_engine::SegmentProgress,
+) -> Element<'static, Message> {
+    let cells = (0..64).fold(row![].spacing(2), |cells, index| {
+        let mask = 1 << index;
+        cells.push(container(space::horizontal()).width(Fill).height(12).style(
+            move |theme: &Theme| {
+                let palette = theme.extended_palette();
+                let color = if segments.active & mask != 0 {
+                    palette.primary.base.color
+                } else if segments.complete & mask != 0 {
+                    palette.success.base.color
+                } else {
+                    palette.background.strong.color
+                };
+                container::Style::default().background(color)
+            },
+        ))
+    });
+    column![
+        cells,
+        text(l.with(
+            "segment-connections",
+            [("count", segments.connections.to_string())]
+        ))
+    ]
+    .spacing(8)
+    .into()
 }
 
 fn field(label: String, value: String) -> Element<'static, Message> {

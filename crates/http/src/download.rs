@@ -114,6 +114,26 @@ pub struct DownloadProgress {
     pub resumable: bool,
     pub restarted: bool,
     pub waiting_for_network: bool,
+    pub segments: Option<SegmentProgress>,
+}
+
+/// A bounded display map for the segmented transfer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SegmentProgress {
+    pub complete: u64,
+    pub active: u64,
+    pub connections: usize,
+}
+
+impl SegmentProgress {
+    fn sample(allocator: &SegmentAllocator, connections: usize) -> Self {
+        let (complete, active) = allocator.display_map();
+        Self {
+            complete,
+            active,
+            connections,
+        }
+    }
 }
 
 /// Shares HTTP connections across downloads.
@@ -269,6 +289,7 @@ impl HttpDownloader {
                 &completed,
             );
             progress.completed = allocator.completed();
+            progress.segments = Some(SegmentProgress::sample(&allocator, 0));
             options.report(progress);
             if allocator.is_complete() {
                 source.check_complete(&options.cancellation).await
@@ -277,6 +298,7 @@ impl HttpDownloader {
                 let mut segmented = Segmented::new(source, mirrors, allocator, state.cap);
                 let result = segmented.run(&mut writer, options, progress).await;
                 progress.completed = segmented.allocator.completed();
+                progress.segments = Some(SegmentProgress::sample(&segmented.allocator, 0));
                 state.retry.record_progress(progress.completed);
                 if result.as_ref().is_err_and(|error| error.congested()) {
                     state.cap = NonZeroUsize::new(segmented.connections.congested())
@@ -681,6 +703,7 @@ impl Segmented {
                     sample_bytes = completed;
                     if now - reported >= RATE_INTERVAL {
                         progress.completed = completed;
+                        progress.segments = Some(SegmentProgress::sample(&self.allocator, self.active.len()));
                         options.report(progress);
                         reported = now;
                     }

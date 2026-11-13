@@ -15,7 +15,9 @@ mod transport;
 mod writer;
 
 pub use checksum::{ChecksumAlgorithm, ChecksumError, ExpectedChecksum};
-pub use download::{DownloadOptions, DownloadPreparation, DownloadProgress, HttpDownloader};
+pub use download::{
+    DownloadOptions, DownloadPreparation, DownloadProgress, HttpDownloader, SegmentProgress,
+};
 pub use limit::BandwidthLimit;
 pub use probe::{HttpError, Probe, Validators, client, probe};
 pub use reqwest::Url;

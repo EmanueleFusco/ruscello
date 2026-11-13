@@ -195,3 +195,5 @@ lan-password = LAN Web UI password
 save-password = Save password
 lan-password-saved = Password saved in the system keyring.
 lan-password-failed = Ruscello could not save the password in the system keyring.
+segment-connections = Active connections { $count }
+checksum = Checksum

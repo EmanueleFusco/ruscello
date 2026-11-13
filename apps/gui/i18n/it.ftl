@@ -195,3 +195,5 @@ lan-password = Password dell’interfaccia web sulla LAN
 save-password = Salva password
 lan-password-saved = Password salvata nel portachiavi di sistema.
 lan-password-failed = Ruscello non ha potuto salvare la password nel portachiavi di sistema.
+segment-connections = Connessioni attive { $count }
+checksum = Checksum
