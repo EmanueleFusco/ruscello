@@ -182,7 +182,7 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 
 ## M3 — GUI v1 (`apps/gui`, iced) — see `docs/UI.md`
 
-- [ ] **M3.1** Main window shell: sidebar (Status / File Types / Categories), virtualized download list,
+- [x] **M3.1** Main window shell: sidebar (Status / File Types / Categories), virtualized download list,
       collapsible details panel, status bar (total speed ↓↑, active limit, free disk space).
 - [ ] **M3.2** Unified smart "Add Download" dialog: paste one or more URLs / magnets / `.torrent` / `.dlc` paths;
       automatic type detection; category and destination folder picker; drag & drop of files (`.torrent`, `.dlc`, `.txt`) and links.

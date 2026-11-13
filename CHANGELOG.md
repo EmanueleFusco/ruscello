@@ -10,6 +10,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
   system-aware light and dark themes, bundled Inter and Lucide fonts, and live English and Italian switching.
 - M3.2 and M3.3: Add dialog with HTTP previews, clipboard and text-file imports, destination and category
   selection, named batches, and multi-selection actions with keyboard shortcuts.
+- M3.4: Settings navigation, persistent GPU/software renderer selection, download paths and speed limits,
+  LAN preferences with QR code, diagnostic details, and GitHub release checks and notes.
 - M0: Cargo workspace structure (crates `core`, `http`, `torrent`, `media`, `resolver`, `browser`,
   `storage`, `engine`, `api`, `testkit`; apps `gui`, `cli`, `webview`), work plan, ADRs, UI and testing
   specifications, GitHub Actions CI, `cargo-deny` configuration, and `AGENTS.md`.
