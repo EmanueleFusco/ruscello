@@ -18,11 +18,12 @@ regex.workspace = true
 ruscello-core.workspace = true
 ruscello-http.workspace = true
 ruscello-storage.workspace = true
+ruscello-torrent.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["fs", "sync"] }
 tokio-util.workspace = true
 tracing.workspace = true
 

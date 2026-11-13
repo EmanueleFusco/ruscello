@@ -1,12 +1,12 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     io::Read,
     path::PathBuf,
     time::Duration,
 };
 
-use ruscello_core::{CategoryId, Source};
-use ruscello_engine::{AddDownload, Url};
+use ruscello_core::{CategoryId, Source, TorrentSource};
+use ruscello_engine::{AddDownload, TorrentInspection, Url};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Input {
@@ -221,6 +221,25 @@ pub(crate) async fn load_files(paths: Vec<PathBuf>) -> Vec<Input> {
     .unwrap_or_default()
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum TorrentPreview {
+    Pending,
+    Ready(Box<TorrentInspection>),
+    Failed(String),
+}
+
+pub(crate) fn torrent_source(value: &str) -> TorrentSource {
+    if value.starts_with("magnet:") {
+        TorrentSource::Magnet(value.to_owned())
+    } else if Url::parse(value)
+        .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+    {
+        TorrentSource::Url(value.to_owned())
+    } else {
+        TorrentSource::File(PathBuf::from(value))
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Dialog {
     pub(crate) text: String,
@@ -228,6 +247,8 @@ pub(crate) struct Dialog {
     pub(crate) files: Vec<Input>,
     pub(crate) text_lists: HashSet<PathBuf>,
     pub(crate) previews: HashMap<Url, Probe>,
+    pub(crate) torrent_previews: HashMap<String, TorrentPreview>,
+    pub(crate) torrent_files: HashMap<String, BTreeSet<usize>>,
     pub(crate) category: Option<CategoryId>,
     pub(crate) destination: Option<PathBuf>,
     pub(crate) paused: bool,
@@ -246,12 +267,41 @@ impl Dialog {
         )
     }
 
+    fn is_torrent_submittable(&self, key: &str) -> bool {
+        match self.torrent_previews.get(key) {
+            Some(TorrentPreview::Ready(info)) => {
+                info.files.is_empty()
+                    || self
+                        .torrent_files
+                        .get(key)
+                        .is_some_and(|selected| !selected.is_empty())
+            }
+            Some(TorrentPreview::Failed(_)) => {
+                !matches!(torrent_source(key), TorrentSource::File(_))
+            }
+            Some(TorrentPreview::Pending) | None => {
+                matches!(torrent_source(key), TorrentSource::Magnet(_))
+            }
+        }
+    }
+
     pub(crate) fn can_submit(&self) -> bool {
         !self.submitting
             && self.valid_options()
-            && !self.entries.iter().any(|input| matches!(input, Input::Http(url) if matches!(self.previews.get(url), None | Some(Probe::Pending))))
+            && !self.entries.iter().any(|input| match input {
+                Input::Http(url) => matches!(self.previews.get(url), None | Some(Probe::Pending)),
+                Input::Torrent(key) => {
+                    !matches!(torrent_source(key), TorrentSource::Magnet(_))
+                        && matches!(
+                            self.torrent_previews.get(key),
+                            None | Some(TorrentPreview::Pending)
+                        )
+                }
+                _ => false,
+            })
             && self.entries.iter().any(|input| match input {
                 Input::Http(url) => self.is_ready(url),
+                Input::Torrent(key) => self.is_torrent_submittable(key),
                 _ => false,
             })
     }
@@ -265,23 +315,82 @@ impl Dialog {
             && (checksum.is_empty() || ruscello_engine::parse_checksum(checksum).is_ok())
     }
 
-    pub(crate) fn refresh(&mut self) -> Vec<Url> {
+    pub(crate) fn refresh(&mut self) -> (Vec<Url>, Vec<String>) {
         self.entries = parse(&self.text);
         let mut unique = HashSet::new();
         self.entries.extend(self.files.iter().cloned());
         self.entries.retain(|item| unique.insert(item.clone()));
         self.previews
             .retain(|url, _| unique.contains(&Input::Http(url.clone())));
+        self.torrent_previews
+            .retain(|key, _| unique.contains(&Input::Torrent(key.clone())));
+        self.torrent_files
+            .retain(|key, _| self.torrent_previews.contains_key(key));
         let mut urls = Vec::new();
+        let mut torrents = Vec::new();
         for entry in &self.entries {
-            if let Input::Http(url) = entry
-                && !self.previews.contains_key(url)
-            {
-                self.previews.insert(url.clone(), Probe::Pending);
-                urls.push(url.clone());
+            match entry {
+                Input::Http(url) if !self.previews.contains_key(url) => {
+                    self.previews.insert(url.clone(), Probe::Pending);
+                    urls.push(url.clone());
+                }
+                Input::Torrent(key) if !self.torrent_previews.contains_key(key) => {
+                    self.torrent_previews
+                        .insert(key.clone(), TorrentPreview::Pending);
+                    torrents.push(key.clone());
+                }
+                _ => {}
             }
         }
-        urls
+        (urls, torrents)
+    }
+
+    pub(crate) fn apply_torrent_inspection(
+        &mut self,
+        key: String,
+        result: Result<TorrentInspection, String>,
+    ) {
+        if !self.torrent_previews.contains_key(&key) {
+            return;
+        }
+        match result {
+            Ok(info) => {
+                self.torrent_files.entry(key.clone()).or_insert_with(|| {
+                    info.files
+                        .iter()
+                        .filter(|file| file.selected)
+                        .map(|file| file.index)
+                        .collect()
+                });
+                self.torrent_previews
+                    .insert(key, TorrentPreview::Ready(Box::new(info)));
+            }
+            Err(error) => {
+                self.torrent_previews
+                    .insert(key, TorrentPreview::Failed(error));
+            }
+        }
+    }
+
+    pub(crate) fn toggle_torrent_file(&mut self, key: &str, index: usize) {
+        let Some(selected) = self.torrent_files.get_mut(key) else {
+            return;
+        };
+        if !selected.remove(&index) {
+            selected.insert(index);
+        }
+    }
+
+    pub(crate) fn toggle_all_torrent_files(&mut self, key: &str, select_all: bool) {
+        let Some(TorrentPreview::Ready(info)) = self.torrent_previews.get(key) else {
+            return;
+        };
+        let entry = self.torrent_files.entry(key.to_owned()).or_default();
+        if select_all {
+            *entry = info.files.iter().map(|file| file.index).collect();
+        } else {
+            entry.clear();
+        }
     }
 
     pub(crate) fn new_text_lists(&mut self) -> Vec<PathBuf> {
@@ -297,27 +406,48 @@ impl Dialog {
     pub(crate) fn requests(&self) -> Vec<AddDownload> {
         self.entries
             .iter()
-            .filter_map(|entry| {
-                let Input::Http(url) = entry else {
-                    return None;
-                };
-                if !self.is_ready(url) {
-                    return None;
+            .filter_map(|entry| match entry {
+                Input::Http(url) => {
+                    if !self.is_ready(url) {
+                        return None;
+                    }
+                    let mut request = AddDownload::new(Source::Http {
+                        url: url.to_string(),
+                    });
+                    request.destination = self.destination.clone();
+                    request.category = self.category;
+                    request.start_immediately = !self.paused;
+                    request.max_connections = self.connections.trim().parse().ok();
+                    request.bandwidth = self.bandwidth.trim().parse().ok();
+                    request.checksum =
+                        (!self.checksum.trim().is_empty()).then(|| self.checksum.trim().to_owned());
+                    if let Some(Probe::File(filename, _)) = self.previews.get(url) {
+                        request.filename_hint = Some(filename.clone());
+                    }
+                    Some(request)
                 }
-                let mut request = AddDownload::new(Source::Http {
-                    url: url.to_string(),
-                });
-                request.destination = self.destination.clone();
-                request.category = self.category;
-                request.start_immediately = !self.paused;
-                request.max_connections = self.connections.trim().parse().ok();
-                request.bandwidth = self.bandwidth.trim().parse().ok();
-                request.checksum =
-                    (!self.checksum.trim().is_empty()).then(|| self.checksum.trim().to_owned());
-                if let Some(Probe::File(filename, _)) = self.previews.get(url) {
-                    request.filename_hint = Some(filename.clone());
+                Input::Torrent(key) => {
+                    if !self.is_torrent_submittable(key) {
+                        return None;
+                    }
+                    let mut request = AddDownload::new(Source::Torrent(torrent_source(key)));
+                    request.destination = self.destination.clone();
+                    request.category = self.category;
+                    request.start_immediately = !self.paused;
+                    request.bandwidth = self.bandwidth.trim().parse().ok();
+                    if let Some(TorrentPreview::Ready(info)) = self.torrent_previews.get(key) {
+                        request.filename_hint = Some(info.name.clone());
+                        request.cached_torrent_bytes = info.torrent_bytes.clone();
+                        if !info.files.is_empty()
+                            && let Some(selected) = self.torrent_files.get(key)
+                            && selected.len() < info.files.len()
+                        {
+                            request.only_files = Some(selected.iter().copied().collect());
+                        }
+                    }
+                    Some(request)
                 }
-                Some(request)
+                _ => None,
             })
             .collect()
     }

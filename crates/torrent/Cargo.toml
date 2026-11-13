@@ -9,6 +9,20 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+bytes.workspace = true
+librqbit.workspace = true
+reqwest = { workspace = true, features = ["rustls"] }
+ruscello-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "sync"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+ruscello-testkit.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

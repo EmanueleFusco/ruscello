@@ -127,14 +127,19 @@ pub(crate) enum TorrentOption {
     Dht,
     Pex,
     Upnp,
+    Lsd,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TorrentField {
     Port,
+    DownloadLimit,
+    UploadLimit,
     Ratio,
     Minutes,
+    MaxPeers,
     Interface,
+    Blocklist,
 }
 
 #[derive(Debug, Default)]

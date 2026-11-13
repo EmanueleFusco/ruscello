@@ -13,6 +13,7 @@ use crate::app::Message;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Action {
     TogglePause,
+    ForceRecheck,
     Cancel,
     OpenFile,
     OpenFolder,
@@ -84,10 +85,16 @@ pub(crate) fn can_resume(status: Status) -> bool {
     matches!(status, Status::Paused | Status::Failed { .. })
 }
 
+pub(crate) fn can_recheck(download: &ruscello_core::Download) -> bool {
+    matches!(download.source, ruscello_core::Source::Torrent(_))
+        && !matches!(download.status(), Status::Resolving)
+}
+
 #[derive(Debug)]
 pub(crate) enum Command {
     Pause(DownloadId),
     Resume(DownloadId),
+    ForceRecheck(DownloadId),
     Remove(DownloadId, bool),
     Priority(DownloadId, Priority),
     Move(DownloadId, Option<DownloadId>),
@@ -99,6 +106,7 @@ pub(crate) async fn run(engine: EngineHandle, commands: Vec<Command>) -> bool {
         let result = match command {
             Command::Pause(id) => engine.pause(id).await,
             Command::Resume(id) => engine.resume(id).await,
+            Command::ForceRecheck(id) => engine.force_recheck(id).await,
             Command::Remove(id, delete) => engine.cancel(id, delete).await,
             Command::Priority(id, priority) => engine.set_priority(id, priority).await,
             Command::Move(id, before) => engine.move_before(id, before).await,

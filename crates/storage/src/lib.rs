@@ -35,11 +35,27 @@ pub enum StorageError {
     Batch(#[source] Arc<Self>),
 }
 
+/// Persisted BitTorrent metadata and cumulative seeding counters for a queue item.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TorrentQueueState {
+    pub info_hash: Option<String>,
+    pub output_folder: Option<PathBuf>,
+    pub only_files: Option<Vec<usize>>,
+    pub uploaded_bytes: u64,
+    pub seed_elapsed_secs: u64,
+    pub seed_ratio_millis: Option<u32>,
+    pub seed_time_limit_minutes: Option<u64>,
+    pub initial_peers: Vec<std::net::SocketAddr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueEntry {
     pub download: Download,
     pub position: u64,
     pub working_directory: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<TorrentQueueState>,
 }
 
 #[derive(Debug, Default)]

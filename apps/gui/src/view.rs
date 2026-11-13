@@ -5,12 +5,15 @@ use iced::{
         text_editor, tooltip,
     },
 };
-use ruscello_core::{Download, Status};
-use ruscello_engine::EngineLog;
+use ruscello_core::{Download, Source, Status, TorrentSource};
+use ruscello_engine::{
+    EngineLog, PieceBucketState, TorrentDetailsSnapshot, TorrentFilePriority, TorrentPeerState,
+    TorrentPeerTransport, TorrentPieceMap, TorrentTrackerStatus,
+};
 
 use crate::{
     actions::Action,
-    add::{Input, Probe},
+    add::{Input, Probe, TorrentPreview},
     app::{App, Column, DetailTab, Message},
     i18n::{self, Strings},
     icons::{self, icon},
@@ -447,6 +450,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
     let status = download.status();
     let id = download.id;
     let speed = q.speed(id);
+    let upload = q.upload_speed(id);
     let name = queue::display_name(download);
     let selected = app.selection.contains(&id);
     let mut cells = row![
@@ -498,34 +502,27 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
                 .spacing(7)
                 .into()
             }
-            Column::Speed => text(if speed > 0 {
+            Column::Speed => text(if speed > 0 && upload > 0 {
+                format!("↓ {} · ↑ {}", rate(l, speed), rate(l, upload))
+            } else if upload > 0 {
+                format!("↑ {}", rate(l, upload))
+            } else if speed > 0 {
                 rate(l, speed)
             } else {
                 l.get("unknown")
             })
             .into(),
-            Column::Eta => text(download.total_bytes.filter(|_| speed > 0).map_or_else(
-                || l.get("unknown"),
-                |total| {
-                    duration(
-                        l,
-                        total
-                            .saturating_sub(download.downloaded_bytes)
-                            .div_ceil(speed),
-                    )
-                },
-            ))
+            Column::Eta => text(
+                q.eta_secs(id)
+                    .map_or_else(|| l.get("unknown"), |secs| duration(l, secs)),
+            )
             .into(),
-            Column::Status => text(l.get(if q.offline(id) {
-                "offline"
-            } else {
-                i18n::status(status)
-            }))
-            .size(12)
-            .style(move |theme| text::Style {
-                color: Some(theme::status_color(theme, status)),
-            })
-            .into(),
+            Column::Status => text(l.get(status_key(q, download)))
+                .size(12)
+                .style(move |theme| text::Style {
+                    color: Some(theme::status_color(theme, status)),
+                })
+                .into(),
         };
         cells = cells.push(container(content).width(column.width()).clip(true));
     }
@@ -594,6 +591,17 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
     .into()
 }
 
+fn status_key(q: &queue::Queue, download: &Download) -> &'static str {
+    let status = download.status();
+    if q.offline(download.id) {
+        "offline"
+    } else if matches!(download.source, Source::Torrent(_)) && status == Status::Resolving {
+        "fetching-metadata"
+    } else {
+        i18n::status(status)
+    }
+}
+
 fn details(app: &App, height: f32) -> Element<'_, Message> {
     let l = &app.strings;
     let toggle = button(
@@ -629,13 +637,35 @@ fn details(app: &App, height: f32) -> Element<'_, Message> {
     if tabs_opacity == 0.0 {
         return panel(column![tabs]);
     }
+    let download = app
+        .queue
+        .selected
+        .and_then(|id| app.queue.downloads.get(&id));
+    let is_torrent = download.is_some_and(|item| matches!(item.source, Source::Torrent(_)));
+    let visible_tabs: Vec<(DetailTab, &'static str)> = if is_torrent {
+        vec![
+            (DetailTab::General, "general"),
+            (DetailTab::Pieces, "pieces"),
+            (DetailTab::Files, "files"),
+            (DetailTab::Peers, "peers"),
+            (DetailTab::Trackers, "trackers"),
+            (DetailTab::Log, "log"),
+        ]
+    } else {
+        vec![
+            (DetailTab::General, "general"),
+            (DetailTab::Segments, "segments"),
+            (DetailTab::Log, "log"),
+        ]
+    };
+    let active_tab = if app.detail_tab.allowed(is_torrent) {
+        app.detail_tab
+    } else {
+        DetailTab::General
+    };
     let selection_opacity = app.selection_opacity();
-    for (tab, key) in [
-        (DetailTab::General, "general"),
-        (DetailTab::Segments, "segments"),
-        (DetailTab::Log, "log"),
-    ] {
-        let selected = app.detail_tab == tab;
+    for (tab, key) in visible_tabs {
+        let selected = active_tab == tab;
         tabs = tabs.push(
             button(text(l.get(key)))
                 .on_press_maybe(app.preferences.details.then_some(Message::DetailTab(tab)))
@@ -650,23 +680,23 @@ fn details(app: &App, height: f32) -> Element<'_, Message> {
                 }),
         );
     }
-    let download = app
-        .queue
-        .selected
-        .and_then(|id| app.queue.downloads.get(&id));
-    let content: Element<'_, Message> = match (download, app.detail_tab) {
+    let torrent_details = download.and_then(|item| {
+        app.torrent_details
+            .as_ref()
+            .filter(|(id, _)| *id == item.id)
+            .map(|(_, snapshot)| snapshot)
+    });
+    let content: Element<'_, Message> = match (download, active_tab) {
         (None, _) => text(l.get("no-details")).style(muted).into(),
         (Some(download), DetailTab::General) => {
             let source = match &download.source {
-                ruscello_core::Source::Torrent(ruscello_core::TorrentSource::File(path)) => {
-                    path.to_string_lossy().into_owned()
-                }
+                Source::Torrent(TorrentSource::File(path)) => path.to_string_lossy().into_owned(),
                 source => queue::source_text(source).to_owned(),
             };
             let mut fields = column![
                 field(l.get("source"), source),
                 field(l.get("folder"), download.destination.display().to_string()),
-                field(l.get("status"), l.get(i18n::status(download.status()))),
+                field(l.get("status"), l.get(status_key(&app.queue, download))),
             ]
             .spacing(6);
             if app.queue.resumable(download.id) == Some(false) {
@@ -675,6 +705,18 @@ fn details(app: &App, height: f32) -> Element<'_, Message> {
             if let Some(checksum) = &download.checksum {
                 fields = fields.push(field(l.get("checksum"), checksum.to_string()));
             }
+            if let Some(info) = app.queue.torrent_info(download.id) {
+                fields = fields
+                    .push(field(
+                        l.get("peers-connected"),
+                        format!("{} / {}", info.peers_connected, info.peers_total),
+                    ))
+                    .push(field(l.get("uploaded"), size(l, info.uploaded_bytes)))
+                    .push(field(
+                        l.get("share-ratio"),
+                        format!("{:.2}", info.seed_ratio),
+                    ));
+            }
             fields.into()
         }
         (Some(download), DetailTab::Segments) => {
@@ -682,6 +724,42 @@ fn details(app: &App, height: f32) -> Element<'_, Message> {
                 segment_map(l, segments)
             } else {
                 text(l.get("no-segments")).into()
+            }
+        }
+        (Some(_), DetailTab::Pieces) => {
+            if let Some(details) = torrent_details
+                && let Some(map) = &details.piece_map
+            {
+                piece_map_view(l, map, details)
+            } else {
+                text(l.get("no-pieces")).into()
+            }
+        }
+        (Some(download), DetailTab::Files) => {
+            if let Some(details) = torrent_details
+                && !details.files.is_empty()
+            {
+                torrent_files_view(l, download.id, details)
+            } else {
+                text(l.get("no-files")).into()
+            }
+        }
+        (Some(_), DetailTab::Peers) => {
+            if let Some(details) = torrent_details
+                && !details.peers.is_empty()
+            {
+                torrent_peers_view(l, details)
+            } else {
+                text(l.get("no-peers")).into()
+            }
+        }
+        (Some(_), DetailTab::Trackers) => {
+            if let Some(details) = torrent_details
+                && !details.trackers.is_empty()
+            {
+                torrent_trackers_view(l, details)
+            } else {
+                text(l.get("no-trackers")).into()
             }
         }
         (Some(download), DetailTab::Log) => {
@@ -710,6 +788,138 @@ fn details(app: &App, height: f32) -> Element<'_, Message> {
         ]
         .spacing(8),
     )
+}
+
+fn piece_map_view(
+    l: &Strings,
+    map: &TorrentPieceMap,
+    details: &TorrentDetailsSnapshot,
+) -> Element<'static, Message> {
+    let cells = map
+        .buckets(64)
+        .into_iter()
+        .fold(row![].spacing(2), |cells, state| {
+            cells.push(container(space::horizontal()).width(Fill).height(12).style(
+                move |theme: &Theme| {
+                    let palette = theme.palette();
+                    let color = match state {
+                        PieceBucketState::Complete => palette.success,
+                        PieceBucketState::Partial => palette.warning,
+                        PieceBucketState::Missing => {
+                            theme.extended_palette().background.strong.color
+                        }
+                    };
+                    container::Style::default().background(color)
+                },
+            ))
+        });
+    column![
+        cells,
+        text(l.with(
+            "piece-summary",
+            [
+                ("have", map.have_count.to_string()),
+                ("total", map.piece_count.to_string()),
+                ("size", size(l, u64::from(map.piece_length))),
+            ]
+        ))
+        .size(12),
+        field(l.get("uploaded"), size(l, details.uploaded_bytes)),
+        field(l.get("share-ratio"), format!("{:.2}", details.seed_ratio)),
+    ]
+    .spacing(6)
+    .into()
+}
+
+fn torrent_files_view(
+    l: &Strings,
+    id: ruscello_core::DownloadId,
+    details: &TorrentDetailsSnapshot,
+) -> Element<'static, Message> {
+    let mut rows = column![].spacing(4);
+    for file in &details.files {
+        let index = file.index;
+        let include = file.priority == TorrentFilePriority::Download;
+        let label = file.path.to_string_lossy().into_owned();
+        rows = rows.push(
+            row![
+                theme::check(include)
+                    .label(label)
+                    .on_toggle(move |checked| Message::SetTorrentFilePriority(id, index, checked))
+                    .width(Fill),
+                text(format!(
+                    "{} / {}",
+                    size(l, file.downloaded_bytes),
+                    size(l, file.length)
+                ))
+                .size(12),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    rows.into()
+}
+
+fn torrent_peers_view(l: &Strings, details: &TorrentDetailsSnapshot) -> Element<'static, Message> {
+    let mut rows = column![].spacing(4);
+    for peer in &details.peers {
+        let client = peer.client.clone().unwrap_or_else(|| l.get("unknown"));
+        let transport = match peer.transport {
+            Some(TorrentPeerTransport::Tcp) => "TCP",
+            Some(TorrentPeerTransport::Utp) => "uTP",
+            Some(TorrentPeerTransport::Socks) => "SOCKS",
+            None => "—",
+        };
+        let state_key = match peer.state {
+            TorrentPeerState::Live => "peer-live",
+            TorrentPeerState::Connecting => "peer-connecting",
+            TorrentPeerState::Queued => "peer-queued",
+            TorrentPeerState::Dead => "peer-dead",
+            TorrentPeerState::NotNeeded => "peer-not-needed",
+        };
+        rows = rows.push(
+            row![
+                text(peer.address.clone()).width(180).size(12),
+                text(client).width(Fill).size(12),
+                text(transport).width(54).size(12),
+                text(l.get(state_key)).width(100).size(12),
+                text(format!(
+                    "↓ {} · ↑ {}",
+                    rate(l, peer.download_speed_bps),
+                    rate(l, peer.upload_speed_bps)
+                ))
+                .size(12),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    rows.into()
+}
+
+fn torrent_trackers_view(
+    l: &Strings,
+    details: &TorrentDetailsSnapshot,
+) -> Element<'static, Message> {
+    let mut rows = column![].spacing(4);
+    for tracker in &details.trackers {
+        let status_key = match tracker.status {
+            TorrentTrackerStatus::Announcing => "tracker-announcing",
+            TorrentTrackerStatus::Standby => "tracker-standby",
+            TorrentTrackerStatus::DisabledPrivate => "tracker-disabled-private",
+        };
+        rows = rows.push(
+            row![
+                text(tracker.url.clone()).width(Fill).size(12),
+                text(tracker.protocol.clone()).width(70).size(12),
+                text(l.get(status_key)).width(130).size(12),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    rows.into()
 }
 
 fn segment_map(
@@ -766,11 +976,11 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         || l.get("disk-unknown"),
         |bytes| l.with("disk-free", [("space", size(l, bytes))]),
     );
-    let status = row![
+    let mut status = row![
         icon('\u{e042}').size(14).style(muted),
         text(l.with("download-rate", [("speed", rate(l, q.total_speed()))])).size(12),
         icon('\u{e04a}').size(14).style(muted),
-        text(l.with("upload-rate", [("speed", rate(l, 0))])).size(12),
+        text(l.with("upload-rate", [("speed", rate(l, q.total_upload_speed()))])).size(12),
         rule::vertical(1).style(theme::separator),
         text(speed).size(12).style(muted),
         text(l.with(
@@ -782,13 +992,21 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         ))
         .size(12)
         .style(muted),
-        space::horizontal().width(Fill),
-        icon('\u{e0ed}').size(14).style(muted),
-        text(disk).size(12),
     ]
     .align_y(Alignment::Center)
     .spacing(9)
     .height(16);
+    if let Some(nodes) = q.torrent_session.dht_nodes {
+        status = status.push(
+            text(l.with("dht-nodes", [("count", nodes.to_string())]))
+                .size(12)
+                .style(muted),
+        );
+    }
+    status = status
+        .push(space::horizontal().width(Fill))
+        .push(icon('\u{e0ed}').size(14).style(muted))
+        .push(text(disk).size(12));
     container(status)
         .width(Fill)
         .padding([8, 12])
@@ -840,8 +1058,97 @@ pub(crate) fn log_key(message: EngineLog) -> &'static str {
         EngineLog::DatabaseWriteFailed => "log-database",
         EngineLog::CleanupFailed => "log-cleanup",
         EngineLog::DiskSpaceLow => "log-disk",
+        EngineLog::TorrentSessionInitFailed => "log-torrent-session",
     }
 }
+
+fn torrent_preview_row<'a>(
+    l: &'a Strings,
+    dialog: &'a crate::add::Dialog,
+    key: &'a str,
+) -> Element<'a, Message> {
+    let mut details = column![text(key.to_owned()).wrapping(text::Wrapping::None)].spacing(4);
+    match dialog.torrent_previews.get(key) {
+        Some(TorrentPreview::Pending) | None => {
+            details = details.push(text(l.get("probing")).size(12).style(muted));
+        }
+        Some(TorrentPreview::Failed(error)) => {
+            let note = if matches!(crate::add::torrent_source(key), TorrentSource::File(_)) {
+                format!("{}: {error}", l.get("torrent-invalid"))
+            } else {
+                l.get("torrent-metadata-pending")
+            };
+            details = details.push(text(note).size(12).style(muted));
+        }
+        Some(TorrentPreview::Ready(info)) => {
+            let selected = dialog.torrent_files.get(key);
+            let selected_bytes: u64 = info
+                .files
+                .iter()
+                .filter(|file| selected.is_some_and(|set| set.contains(&file.index)))
+                .map(|file| file.length)
+                .sum();
+            details = details.push(
+                text(l.with(
+                    "torrent-files-summary",
+                    [
+                        ("name", info.name.clone()),
+                        ("selected", size(l, selected_bytes)),
+                        ("total", size(l, info.total_bytes)),
+                        ("count", info.files.len().to_string()),
+                    ],
+                ))
+                .size(12)
+                .style(muted),
+            );
+            if info.files.len() > 1 {
+                let all_key = key.to_owned();
+                let none_key = key.to_owned();
+                details = details.push(
+                    row![
+                        theme::action(text(l.get("select-all")).size(11))
+                            .padding([4, 8])
+                            .on_press(Message::ToggleAllTorrentFiles(all_key, true)),
+                        theme::action(text(l.get("select-none")).size(11))
+                            .padding([4, 8])
+                            .on_press(Message::ToggleAllTorrentFiles(none_key, false)),
+                    ]
+                    .spacing(6),
+                );
+            }
+            for file in &info.files {
+                let included = selected.is_some_and(|set| set.contains(&file.index));
+                let file_key = key.to_owned();
+                let index = file.index;
+                details = details.push(
+                    row![
+                        theme::check(included)
+                            .label(file.path.to_string_lossy().into_owned())
+                            .on_toggle(move |_| Message::ToggleTorrentFile(file_key.clone(), index))
+                            .width(Fill),
+                        text(size(l, file.length)).size(11).style(muted),
+                    ]
+                    .align_y(Alignment::Center)
+                    .spacing(6),
+                );
+            }
+        }
+    }
+    container(
+        row![
+            text(l.get("torrent-input"))
+                .size(12)
+                .style(muted)
+                .width(152),
+            details.width(Fill),
+        ]
+        .spacing(8),
+    )
+    .clip(true)
+    .padding([6, 9])
+    .into()
+}
+
 fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, Message> {
     let l = &app.strings;
     let mut choices = row![option(
@@ -859,6 +1166,9 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         ));
     }
     let previews = column(dialog.entries.iter().map(|input| {
+        if let Input::Torrent(key) = input {
+            return torrent_preview_row(l, dialog, key);
+        }
         let (key, detail) = match input {
             Input::Http(url) => match dialog.previews.get(url) {
                 Some(Probe::File(name, bytes)) => (
@@ -873,7 +1183,6 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
                 Some(Probe::Unavailable) => ("probe-unavailable", String::new()),
                 Some(Probe::Pending) | None => ("probing", String::new()),
             },
-            Input::Torrent(_) => (input.key(), l.get("torrent-unavailable")),
             Input::Dlc(_) => (input.key(), l.get("resolver-unavailable")),
             _ => (input.key(), String::new()),
         };
@@ -907,7 +1216,19 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         .spacing(9)
         .into()
     } else {
-        theme::vertical(previews).spacing(6).height(90).into()
+        let preview_height = if dialog
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, Input::Torrent(_)))
+        {
+            148
+        } else {
+            90
+        };
+        theme::vertical(previews)
+            .spacing(6)
+            .height(preview_height)
+            .into()
     };
     let mut advanced = column![
         button(
@@ -1060,6 +1381,12 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
 fn context_menu(app: &App) -> Element<'_, Message> {
     use ruscello_core::Priority;
     let l = &app.strings;
+    let selected_torrent = app.selection.iter().any(|id| {
+        app.queue
+            .downloads
+            .get(id)
+            .is_some_and(crate::actions::can_recheck)
+    });
     let mut actions = row![].spacing(4);
     for (key, action) in [
         ("pause-resume", Action::TogglePause),
@@ -1080,6 +1407,12 @@ fn context_menu(app: &App) -> Element<'_, Message> {
                     Action::Cancel => theme::danger(theme, state),
                     _ => theme::secondary(theme, state),
                 }),
+        );
+    }
+    if selected_torrent {
+        actions = actions.push(
+            theme::action(text(l.get("force-recheck")).size(12))
+                .on_press(Message::RowAction(Action::ForceRecheck)),
         );
     }
     container(theme::horizontal(actions).width(Fill))

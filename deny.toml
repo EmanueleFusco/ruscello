@@ -13,6 +13,7 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "iced 0.14 uses this D-Bus crate through mundy for Linux system theme detection. Revisit when mundy upgrades to zbus 6." },
   { id = "RUSTSEC-2026-0371", reason = "iced 0.14 uses this D-Bus crate through mundy for Linux system theme detection. Revisit when mundy upgrades to zbus 6." },
   { id = "RUSTSEC-2026-0372", reason = "iced 0.14 uses this D-Bus macro through mundy for Linux system theme detection. Revisit when mundy upgrades to zbus 6." },
+  { id = "RUSTSEC-2026-0293", reason = "librqbit 9.1.0 requires librqbit-utp 0.7.0 which uses ringbuf 0.4.8 for u8 byte rings (no Drop panic possible in Consumer::skip/clear) and Ruscello configures ListenerMode::TcpOnly. Revisit when librqbit-utp upgrades ringbuf >= 0.5.2." },
 ]
 
 [licenses]

@@ -8,7 +8,10 @@ use std::{
 use ruscello_core::{
     CategoryId, Download, DownloadId, FileType, PackageId, Source, Status, TorrentSource,
 };
-use ruscello_engine::{CategorySettings, EngineLog, EngineSnapshot, Limits, ProgressUpdate, Url};
+use ruscello_engine::{
+    CategorySettings, EngineLog, EngineSnapshot, Limits, ProgressUpdate, TorrentRuntimeProgress,
+    TorrentSessionTelemetry, Url,
+};
 
 pub(crate) const ROW_HEIGHT: f32 = 34.0;
 
@@ -96,7 +99,9 @@ pub(crate) struct Queue {
     category_counts: BTreeMap<CategoryId, usize>,
     status_counts: [usize; StatusFilter::ALL.len()],
     pub(crate) active_count: usize,
+    pub(crate) torrent_session: TorrentSessionTelemetry,
     telemetry: HashMap<DownloadId, Telemetry>,
+    torrent: HashMap<DownloadId, TorrentRuntimeProgress>,
 }
 
 #[derive(Debug)]
@@ -123,6 +128,7 @@ impl Queue {
             .collect();
         self.limits = snapshot.limits;
         self.categories = snapshot.categories;
+        self.torrent_session = snapshot.telemetry;
         self.packages = snapshot
             .packages
             .into_iter()
@@ -157,6 +163,19 @@ impl Queue {
                         segments.complete = u64::MAX;
                     }
                 }
+            }
+            true
+        });
+        self.torrent.retain(|id, sample| {
+            let Some(download) = self.downloads.get(id) else {
+                return false;
+            };
+            if !download.status().is_active() {
+                sample.download_rate_bps = 0;
+                sample.upload_rate_bps = 0;
+                sample.peers_connected = 0;
+                sample.seeders_connected = 0;
+                sample.eta_secs = None;
             }
             true
         });
@@ -266,15 +285,66 @@ impl Queue {
         }
     }
 
+    pub(crate) fn torrent_progress(&mut self, updates: Vec<TorrentRuntimeProgress>) {
+        for update in updates {
+            self.torrent.insert(update.id, update);
+        }
+    }
+
+    pub(crate) fn torrent_telemetry(&mut self, telemetry: TorrentSessionTelemetry) {
+        self.torrent_session = telemetry;
+    }
+
     pub(crate) fn speed(&self, id: DownloadId) -> u64 {
-        self.telemetry.get(&id).map_or(0, |sample| sample.speed)
+        if self
+            .downloads
+            .get(&id)
+            .is_some_and(|download| matches!(download.source, Source::Torrent(_)))
+        {
+            self.torrent
+                .get(&id)
+                .map_or(0, |sample| sample.download_rate_bps)
+        } else {
+            self.telemetry.get(&id).map_or(0, |sample| sample.speed)
+        }
+    }
+
+    pub(crate) fn upload_speed(&self, id: DownloadId) -> u64 {
+        self.torrent
+            .get(&id)
+            .map_or(0, |sample| sample.upload_rate_bps)
     }
 
     pub(crate) fn total_speed(&self) -> u64 {
-        self.telemetry
-            .values()
-            .map(|sample| sample.speed)
+        self.downloads
+            .keys()
+            .map(|id| self.speed(*id))
             .fold(0, u64::saturating_add)
+    }
+
+    pub(crate) fn total_upload_speed(&self) -> u64 {
+        self.downloads
+            .keys()
+            .map(|id| self.upload_speed(*id))
+            .fold(0, u64::saturating_add)
+            .max(self.torrent_session.upload_speed_bps)
+    }
+
+    pub(crate) fn eta_secs(&self, id: DownloadId) -> Option<u64> {
+        let download = self.downloads.get(&id)?;
+        if matches!(download.source, Source::Torrent(_)) {
+            return self.torrent.get(&id).and_then(|sample| sample.eta_secs);
+        }
+        let speed = self.speed(id);
+        download.total_bytes.filter(|_| speed > 0).map(|total| {
+            total
+                .saturating_sub(download.downloaded_bytes)
+                .div_ceil(speed)
+        })
+    }
+
+    pub(crate) fn torrent_info(&self, id: DownloadId) -> Option<&TorrentRuntimeProgress> {
+        self.torrent.get(&id)
     }
 
     pub(crate) fn resumable(&self, id: DownloadId) -> Option<bool> {

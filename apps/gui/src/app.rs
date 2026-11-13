@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -12,9 +12,13 @@ use iced::{
     widget::{operation, scrollable::AbsoluteOffset, text_editor},
     window,
 };
-use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Status};
-use ruscello_engine::{EngineEvent, EngineHandle, EngineOptions, EngineSnapshot, Url};
+use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Source, Status, TorrentSource};
+use ruscello_engine::{
+    EngineEvent, EngineHandle, EngineOptions, EngineSnapshot, TorrentDetailsSnapshot,
+    TorrentFilePriority, TorrentInspection, TorrentSessionTelemetry, Url,
+};
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     actions::{self, Action, Command, Shortcut},
@@ -32,12 +36,26 @@ pub(crate) enum DetailTab {
     #[default]
     General,
     Segments,
+    Pieces,
+    Files,
+    Peers,
+    Trackers,
     Log,
 }
 
 const MOTION_DURATION: Duration = Duration::from_millis(144);
 pub(crate) const DETAILS_COLLAPSED_HEIGHT: f32 = 48.0;
 const DETAILS_HEIGHT: f32 = 158.0;
+
+impl DetailTab {
+    pub(crate) fn allowed(self, is_torrent: bool) -> bool {
+        match self {
+            Self::General | Self::Log => true,
+            Self::Segments => !is_torrent,
+            Self::Pieces | Self::Files | Self::Peers | Self::Trackers => is_torrent,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Column {
@@ -130,6 +148,9 @@ pub(crate) enum Message {
     AddChecksum(String),
     StartImmediately(bool),
     Probe(Url, add::Probe),
+    TorrentInspected(String, Result<TorrentInspection, String>),
+    ToggleTorrentFile(String, usize),
+    ToggleAllTorrentFiles(String, bool),
     SubmitAdd,
     Added(bool),
     Modifiers(keyboard::Modifiers),
@@ -171,6 +192,13 @@ pub(crate) enum Message {
     OpenLogs,
     TorrentOption(settings::TorrentOption, bool),
     TorrentField(settings::TorrentField, String),
+    SaveTorrentSettings,
+    PickBlocklist,
+    BlocklistPicked(Option<PathBuf>),
+    TorrentSettingsApplied(Option<TorrentSessionTelemetry>),
+    TorrentDetails(DownloadId, Option<TorrentDetailsSnapshot>),
+    SetTorrentFilePriority(DownloadId, usize, bool),
+    TorrentFilePriorityUpdated(DownloadId, bool, Option<TorrentDetailsSnapshot>),
     CategoryEdit(settings::CategoryEdit, String),
     CategoryTarget(ruscello_core::CategoryId),
     AddCategoryRule,
@@ -214,6 +242,9 @@ pub(crate) struct App {
     pub(crate) editor: text_editor::Content,
     pending_probes: VecDeque<Url>,
     in_flight: usize,
+    inspect_tokens: HashMap<String, CancellationToken>,
+    pub(crate) torrent_details: Option<(DownloadId, TorrentDetailsSnapshot)>,
+    details_in_flight: bool,
     pub(crate) selection: BTreeSet<DownloadId>,
     modifiers: keyboard::Modifiers,
     pub(crate) menu: Option<DownloadId>,
@@ -264,6 +295,11 @@ impl App {
             .unwrap_or_else(|| default_destination.clone());
         let mut options = EngineOptions::new(database, destination.clone());
         options.temporary_directory = preferences.temporary_folder.clone();
+        options.data_dir = options.database.parent().map(Path::to_path_buf);
+        options.eager_torrent_session = true;
+        if let Some(torrent) = preferences.torrent.to_settings() {
+            options.torrent = torrent;
+        }
         let app = Self {
             selection_motion: view_animation(true),
             details_motion: view_animation(preferences.details),
@@ -298,6 +334,9 @@ impl App {
             editor: text_editor::Content::new(),
             pending_probes: VecDeque::new(),
             in_flight: 0,
+            inspect_tokens: HashMap::new(),
+            torrent_details: None,
+            details_in_flight: false,
             selection: BTreeSet::new(),
             modifiers: keyboard::Modifiers::default(),
             menu: None,
@@ -465,12 +504,28 @@ impl App {
                     self.queue.replace(snapshot);
                     self.selection
                         .retain(|id| self.queue.downloads.contains_key(id));
+                    if self
+                        .torrent_details
+                        .as_ref()
+                        .is_some_and(|(id, _)| self.queue.selected != Some(*id))
+                    {
+                        self.torrent_details = None;
+                    }
                     if self.closing {
                         return self.finish_close();
                     }
-                    if self.offset >= self.queue.rows.len() as f32 * queue::ROW_HEIGHT {
-                        return self.reset_scroll();
-                    }
+                    let details = if self.preferences.details && self.selected_is_torrent() {
+                        self.refresh_torrent_details()
+                    } else {
+                        Task::none()
+                    };
+                    let scroll = if self.offset >= self.queue.rows.len() as f32 * queue::ROW_HEIGHT
+                    {
+                        self.reset_scroll()
+                    } else {
+                        Task::none()
+                    };
+                    return Task::batch([details, scroll]);
                 } else {
                     self.banner = Some("queue-unavailable");
                     if self.closing {
@@ -480,6 +535,16 @@ impl App {
             }
             Message::Event(EngineEvent::Progress(updates)) => {
                 self.queue.progress(updates, Instant::now())
+            }
+            Message::Event(EngineEvent::TorrentProgress(updates)) => {
+                self.queue.torrent_progress(updates);
+                if self.preferences.details && self.selected_is_torrent() && !self.details_in_flight
+                {
+                    return self.refresh_torrent_details();
+                }
+            }
+            Message::Event(EngineEvent::TorrentTelemetry(telemetry)) => {
+                self.queue.torrent_telemetry(telemetry);
             }
             Message::Event(EngineEvent::Log {
                 id: Some(id),
@@ -592,7 +657,12 @@ impl App {
                 self.queue.category = category;
                 return self.filter_changed();
             }
-            Message::Select(id) => self.select(id),
+            Message::Select(id) => {
+                self.select(id);
+                if self.preferences.details && self.selected_is_torrent() {
+                    return self.refresh_torrent_details();
+                }
+            }
             Message::Package(id) => {
                 if !self.queue.collapsed.remove(&id) {
                     self.queue.collapsed.insert(id);
@@ -607,9 +677,19 @@ impl App {
             Message::SystemTheme(mode) => self.system_theme = mode,
             Message::ToggleDetails => {
                 self.preferences.details = !self.preferences.details;
-                return self.save_preferences();
+                let refresh = if self.preferences.details && self.selected_is_torrent() {
+                    self.refresh_torrent_details()
+                } else {
+                    Task::none()
+                };
+                return Task::batch([self.save_preferences(), refresh]);
             }
-            Message::DetailTab(tab) => self.detail_tab = tab,
+            Message::DetailTab(tab) => {
+                self.detail_tab = tab;
+                if self.preferences.details && self.selected_is_torrent() {
+                    return self.refresh_torrent_details();
+                }
+            }
             Message::Settings(open) => {
                 self.settings = open;
                 if open {
@@ -680,6 +760,9 @@ impl App {
                 self.add = None;
                 self.editor = text_editor::Content::new();
                 self.pending_probes.clear();
+                for token in self.inspect_tokens.drain().map(|(_, token)| token) {
+                    token.cancel();
+                }
             }
             Message::Clipboard(Some(value)) => {
                 if let Some(dialog) = &mut self.add
@@ -801,6 +884,22 @@ impl App {
                     dialog.previews.insert(url, preview);
                 }
                 return self.run_probes();
+            }
+            Message::TorrentInspected(key, result) => {
+                self.inspect_tokens.remove(&key);
+                if let Some(dialog) = &mut self.add {
+                    dialog.apply_torrent_inspection(key, result);
+                }
+            }
+            Message::ToggleTorrentFile(key, index) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.toggle_torrent_file(&key, index);
+                }
+            }
+            Message::ToggleAllTorrentFiles(key, select_all) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.toggle_all_torrent_files(&key, select_all);
+                }
             }
             Message::SubmitAdd => {
                 if let (Some(engine), Some(dialog)) = (self.engine.clone(), &mut self.add) {
@@ -1099,19 +1198,114 @@ impl App {
                     settings::TorrentOption::Dht => self.preferences.torrent.dht = value,
                     settings::TorrentOption::Pex => self.preferences.torrent.pex = value,
                     settings::TorrentOption::Upnp => self.preferences.torrent.upnp = value,
+                    settings::TorrentOption::Lsd => self.preferences.torrent.lsd = value,
                 }
                 return self.save_preferences();
             }
             Message::TorrentField(field, value) => {
                 match field {
                     settings::TorrentField::Port => self.preferences.torrent.port = value,
+                    settings::TorrentField::DownloadLimit => {
+                        self.preferences.torrent.download_limit = value
+                    }
+                    settings::TorrentField::UploadLimit => {
+                        self.preferences.torrent.upload_limit = value
+                    }
                     settings::TorrentField::Ratio => self.preferences.torrent.seed_ratio = value,
                     settings::TorrentField::Minutes => {
                         self.preferences.torrent.seed_minutes = value
                     }
+                    settings::TorrentField::MaxPeers => self.preferences.torrent.max_peers = value,
                     settings::TorrentField::Interface => self.preferences.torrent.interface = value,
+                    settings::TorrentField::Blocklist => self.preferences.torrent.blocklist = value,
                 }
                 return self.save_preferences();
+            }
+            Message::PickBlocklist => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().to_path_buf())
+                    },
+                    Message::BlocklistPicked,
+                );
+            }
+            Message::BlocklistPicked(Some(path)) => {
+                self.preferences.torrent.blocklist = path.display().to_string();
+                return self.save_preferences();
+            }
+            Message::SaveTorrentSettings => {
+                let Some(settings) = self.preferences.torrent.to_settings() else {
+                    self.banner = Some("invalid-settings");
+                    return Task::none();
+                };
+                let change = self.engine.clone().map_or_else(Task::none, |engine| {
+                    Task::perform(
+                        async move {
+                            if engine.set_torrent_settings(settings).await.is_ok() {
+                                engine.torrent_telemetry().await.ok()
+                            } else {
+                                None
+                            }
+                        },
+                        Message::TorrentSettingsApplied,
+                    )
+                });
+                return Task::batch([change, self.save_preferences()]);
+            }
+            Message::TorrentSettingsApplied(Some(telemetry)) => {
+                self.queue.torrent_telemetry(telemetry);
+            }
+            Message::TorrentSettingsApplied(None) => self.banner = Some("action-failed"),
+            Message::TorrentDetails(id, details) => {
+                self.details_in_flight = false;
+                if self.queue.selected == Some(id) {
+                    self.torrent_details = details.map(|snapshot| (id, snapshot));
+                }
+            }
+            Message::SetTorrentFilePriority(id, file_index, include) => {
+                let Some((details_id, snapshot)) = &self.torrent_details else {
+                    return Task::none();
+                };
+                if *details_id != id {
+                    return Task::none();
+                }
+                let only_files: Vec<usize> = snapshot
+                    .files
+                    .iter()
+                    .filter_map(|file| {
+                        let keep = if file.index == file_index {
+                            include
+                        } else {
+                            file.priority == TorrentFilePriority::Download
+                        };
+                        keep.then_some(file.index)
+                    })
+                    .collect();
+                if let Some(engine) = self.engine.clone() {
+                    self.details_in_flight = true;
+                    return Task::perform(
+                        async move {
+                            let ok = engine.set_torrent_files(id, only_files).await.is_ok();
+                            let details = engine.torrent_details(id).await.ok().flatten();
+                            (id, ok, details)
+                        },
+                        |(id, ok, details)| Message::TorrentFilePriorityUpdated(id, ok, details),
+                    );
+                }
+            }
+            Message::TorrentFilePriorityUpdated(id, ok, details) => {
+                self.details_in_flight = false;
+                if !ok {
+                    self.banner = Some("action-failed");
+                }
+                if self.queue.selected == Some(id)
+                    && let Some(snapshot) = details
+                {
+                    self.torrent_details = Some((id, snapshot));
+                }
             }
             Message::CategoryEdit(field, value) => match field {
                 settings::CategoryEdit::Name => self.category_draft.name = value,
@@ -1205,7 +1399,15 @@ impl App {
         let Some(dialog) = &mut self.add else {
             return Task::none();
         };
-        let urls = dialog.refresh();
+        let (urls, torrents) = dialog.refresh();
+        let active_torrents: HashSet<String> = dialog.torrent_previews.keys().cloned().collect();
+        self.inspect_tokens.retain(|key, token| {
+            let keep = active_torrents.contains(key);
+            if !keep {
+                token.cancel();
+            }
+            keep
+        });
         let paths = dialog.new_text_lists();
         self.pending_probes
             .retain(|url| dialog.previews.contains_key(url));
@@ -1215,7 +1417,76 @@ impl App {
         } else {
             Task::perform(add::load_files(paths), Message::FilesLoaded)
         };
-        Task::batch([self.run_probes(), import])
+        Task::batch([
+            self.run_probes(),
+            self.run_torrent_inspections(torrents),
+            import,
+        ])
+    }
+
+    fn run_torrent_inspections(&mut self, keys: Vec<String>) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for key in keys {
+            if self.inspect_tokens.contains_key(&key) {
+                continue;
+            }
+            let source = add::torrent_source(&key);
+            let token = CancellationToken::new();
+            self.inspect_tokens.insert(key.clone(), token.clone());
+            let engine = self.engine.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let result = if let Some(engine) = engine {
+                        engine
+                            .inspect_torrent(source, Vec::new(), token)
+                            .await
+                            .map_err(|error| error.to_string())
+                    } else if let TorrentSource::File(path) = source {
+                        tokio::task::spawn_blocking(move || {
+                            let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+                            ruscello_engine::inspect_torrent_bytes(&bytes)
+                                .map_err(|error| error.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()))
+                    } else {
+                        Err("Engine not started".to_owned())
+                    };
+                    (key, result)
+                },
+                |(key, result)| Message::TorrentInspected(key, result),
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    fn selected_is_torrent(&self) -> bool {
+        self.queue
+            .selected
+            .and_then(|id| self.queue.downloads.get(&id))
+            .is_some_and(|download| matches!(download.source, Source::Torrent(_)))
+    }
+
+    fn refresh_torrent_details(&mut self) -> Task<Message> {
+        if self.details_in_flight {
+            return Task::none();
+        }
+        let (Some(engine), Some(id)) = (self.engine.clone(), self.queue.selected) else {
+            return Task::none();
+        };
+        if !self
+            .queue
+            .downloads
+            .get(&id)
+            .is_some_and(|download| matches!(download.source, Source::Torrent(_)))
+        {
+            return Task::none();
+        }
+        self.details_in_flight = true;
+        Task::perform(
+            async move { (id, engine.torrent_details(id).await.ok().flatten()) },
+            |(id, details)| Message::TorrentDetails(id, details),
+        )
     }
 
     fn run_probes(&mut self) -> Task<Message> {
@@ -1273,6 +1544,17 @@ impl App {
             .contains(&id)
             .then_some(id)
             .or_else(|| self.selection.iter().next().copied());
+        if self
+            .torrent_details
+            .as_ref()
+            .is_some_and(|(current, _)| self.queue.selected != Some(*current))
+        {
+            self.torrent_details = None;
+            self.details_in_flight = false;
+        }
+        if !self.detail_tab.allowed(self.selected_is_torrent()) {
+            self.detail_tab = DetailTab::General;
+        }
     }
 
     fn shortcut(&mut self, shortcut: Shortcut) -> Task<Message> {
@@ -1355,6 +1637,14 @@ impl App {
                                 None
                             }
                         })
+                        .collect(),
+                );
+            }
+            Action::ForceRecheck => {
+                return self.command(
+                    selected
+                        .filter(|download| actions::can_recheck(download))
+                        .map(|download| Command::ForceRecheck(download.id))
                         .collect(),
                 );
             }

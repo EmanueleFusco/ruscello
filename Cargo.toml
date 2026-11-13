@@ -41,6 +41,7 @@ infer = { version = "0.22.0", default-features = false }
 iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny-skia", "tokio", "canvas", "linux-theme-detection", "x11", "wayland"] }
 iced_test = "0.14.0"
 keyring = "4.2.0"
+librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
 md-5 = "0.11.0"
 mime_guess = "2.0.5"
 notify-rust = { version = "4.19.0", default-features = false, features = ["d"] }

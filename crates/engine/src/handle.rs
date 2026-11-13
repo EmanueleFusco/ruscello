@@ -1,16 +1,23 @@
 use std::{
     io,
+    net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use ruscello_core::{
     CategoryId, Download, DownloadId, FailureReason, Package, PackageId, Priority, Source, Status,
-    Tag,
+    Tag, TorrentSource,
 };
 use ruscello_storage::{DatabaseRecovery, Storage, StorageError};
+use ruscello_torrent::{
+    TorrentDetailsSnapshot, TorrentError, TorrentInspection, TorrentManager,
+    TorrentSessionTelemetry, TorrentSettings,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     CategorySettings, DiskPolicy, DownloadProgress, HttpError, StartupError,
@@ -18,6 +25,7 @@ use crate::{
 };
 
 pub(super) const LIMITS_KEY: &str = "scheduler_limits";
+pub(super) const TORRENT_SETTINGS_KEY: &str = "torrent_settings";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -51,6 +59,12 @@ pub struct EngineOptions {
     pub disk: DiskPolicy,
     /// Initial limits for a database without saved limits.
     pub limits: Limits,
+    /// Root directory for BitTorrent session persistence and cached metadata.
+    pub data_dir: Option<PathBuf>,
+    /// Initial BitTorrent session settings when not yet persisted in storage.
+    pub torrent: TorrentSettings,
+    /// Whether to initialize the BitTorrent session eagerly on startup.
+    pub eager_torrent_session: bool,
 }
 
 impl EngineOptions {
@@ -62,6 +76,9 @@ impl EngineOptions {
             temporary_directory: None,
             disk: DiskPolicy::default(),
             limits: Limits::default(),
+            data_dir: None,
+            torrent: TorrentSettings::offline_ephemeral(),
+            eager_torrent_session: false,
         }
     }
 }
@@ -80,6 +97,18 @@ pub struct AddDownload {
     pub max_connections: Option<NonZeroUsize>,
     pub bandwidth: Option<NonZeroU64>,
     pub checksum: Option<String>,
+    /// Selected 0-based file indices for BitTorrent downloads (`None` downloads all files).
+    pub only_files: Option<Vec<usize>>,
+    /// Pre-fetched canonical `.torrent` bytes from pre-add inspection.
+    pub cached_torrent_bytes: Option<Vec<u8>>,
+    /// Explicit resolved output folder preserved across resume/recheck.
+    pub resolved_output_folder: Option<PathBuf>,
+    /// Optional per-torrent seed ratio override (`millis / 1000.0`).
+    pub seed_ratio_millis: Option<u32>,
+    /// Optional per-torrent seeding time limit in minutes.
+    pub seed_time_limit_minutes: Option<u64>,
+    /// Optional initial peer addresses (primarily for direct peers or tests).
+    pub initial_peers: Vec<SocketAddr>,
 }
 
 impl AddDownload {
@@ -96,6 +125,12 @@ impl AddDownload {
             max_connections: None,
             bandwidth: None,
             checksum: None,
+            only_files: None,
+            cached_torrent_bytes: None,
+            resolved_output_folder: None,
+            seed_ratio_millis: None,
+            seed_time_limit_minutes: None,
+            initial_peers: Vec::new(),
         }
     }
 }
@@ -107,6 +142,8 @@ pub struct EngineSnapshot {
     pub limits: Limits,
     pub recovery: DatabaseRecovery,
     pub categories: CategorySettings,
+    pub torrent: TorrentSettings,
+    pub telemetry: TorrentSessionTelemetry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,12 +152,29 @@ pub struct ProgressUpdate {
     pub progress: DownloadProgress,
 }
 
+/// Runtime upload/peer/seed telemetry reported per active BitTorrent download.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TorrentRuntimeProgress {
+    pub id: DownloadId,
+    pub download_rate_bps: u64,
+    pub upload_rate_bps: u64,
+    pub uploaded_bytes: u64,
+    pub seed_ratio: f64,
+    pub seed_elapsed_secs: u64,
+    pub peers_connected: u32,
+    pub peers_total: u32,
+    pub seeders_connected: u32,
+    pub eta_secs: Option<u64>,
+    pub piece_count: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineLog {
     DownloadFailed(FailureReason),
     DatabaseWriteFailed,
     CleanupFailed,
     DiskSpaceLow,
+    TorrentSessionInitFailed,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +182,8 @@ pub enum EngineEvent {
     Added(Box<Download>),
     Removed(DownloadId),
     Progress(Vec<ProgressUpdate>),
+    TorrentProgress(Vec<TorrentRuntimeProgress>),
+    TorrentTelemetry(TorrentSessionTelemetry),
     StatusChanged {
         id: DownloadId,
         status: Status,
@@ -173,6 +229,8 @@ pub enum EngineError {
     Transition(#[from] ruscello_core::InvalidTransition),
     #[error(transparent)]
     Http(#[from] HttpError),
+    #[error(transparent)]
+    Torrent(#[from] TorrentError),
     #[error("a file operation stopped unexpectedly")]
     Worker(#[from] tokio::task::JoinError),
 }
@@ -183,6 +241,7 @@ pub(super) enum Command {
     Add(Vec<AddDownload>, Option<String>, Reply<Vec<DownloadId>>),
     Update(Update, Reply<()>),
     Snapshot(Reply<EngineSnapshot>),
+    TorrentManager(Reply<Arc<TorrentManager>>),
     Shutdown(Reply<()>),
 }
 
@@ -190,12 +249,15 @@ pub(super) enum Update {
     Pause(DownloadId),
     Resume(DownloadId),
     ForceStart(DownloadId),
+    ForceRecheck(DownloadId),
+    SetTorrentFiles(DownloadId, Vec<usize>),
     Cancel(DownloadId, bool),
     Priority(DownloadId, Priority),
     Move(DownloadId, Option<DownloadId>),
     Limits(Limits),
     TemporaryBandwidth(Option<NonZeroU64>),
     Categories(CategorySettings),
+    TorrentSettings(TorrentSettings),
 }
 
 /// Asynchronous queue control through a bounded mailbox and broadcast events.
@@ -232,6 +294,13 @@ impl EngineHandle {
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or(options.limits);
+        options.torrent = snapshot
+            .settings
+            .get(TORRENT_SETTINGS_KEY)
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or(options.torrent);
         let categories = CategoryBook::load(&storage, &snapshot).await?;
         let (commands, receiver) = mpsc::channel(64);
         let (events, _) = broadcast::channel(256);
@@ -242,7 +311,8 @@ impl EngineHandle {
             options,
             categories,
             events.clone(),
-        )?;
+        )
+        .await?;
         tokio::spawn(Box::pin(scheduler.run(receiver)));
         Ok(Self { commands, events })
     }
@@ -330,6 +400,70 @@ impl EngineHandle {
 
     pub async fn set_categories(&self, settings: CategorySettings) -> Result<(), EngineError> {
         self.update(Update::Categories(settings)).await
+    }
+
+    /// Triggers a full SHA-1 piece recheck for a torrent download (clears fastresume bitmap).
+    pub async fn force_recheck(&self, id: DownloadId) -> Result<(), EngineError> {
+        self.update(Update::ForceRecheck(id)).await
+    }
+
+    /// Updates the included 0-based file indices (`Download` vs `Skip`) for a torrent download.
+    pub async fn set_torrent_files(
+        &self,
+        id: DownloadId,
+        only_files: Vec<usize>,
+    ) -> Result<(), EngineError> {
+        self.update(Update::SetTorrentFiles(id, only_files)).await
+    }
+
+    /// Persists and applies global BitTorrent session settings (ports, DHT, limits, interface, blocklist).
+    pub async fn set_torrent_settings(&self, settings: TorrentSettings) -> Result<(), EngineError> {
+        self.update(Update::TorrentSettings(settings)).await
+    }
+
+    /// Resolves metadata for a `.torrent` file, `.torrent` URL, or magnet URI before adding.
+    pub async fn inspect_torrent(
+        &self,
+        source: TorrentSource,
+        initial_peers: Vec<SocketAddr>,
+        cancellation: CancellationToken,
+    ) -> Result<TorrentInspection, EngineError> {
+        let manager = self.request(Command::TorrentManager).await?;
+        Ok(manager
+            .inspect(&source, initial_peers, &cancellation)
+            .await?)
+    }
+
+    /// Returns detailed live state (pieces, files, peers, trackers) for a managed torrent, or `None` if not active.
+    pub async fn torrent_details(
+        &self,
+        id: DownloadId,
+    ) -> Result<Option<TorrentDetailsSnapshot>, EngineError> {
+        let manager = self.request(Command::TorrentManager).await?;
+        match manager.details(id).await {
+            Ok(details) => Ok(Some(details)),
+            Err(TorrentError::NotFound | TorrentError::NotResolved) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Queries aggregate BitTorrent session telemetry (global rates, DHT nodes, listen port).
+    pub async fn torrent_telemetry(&self) -> Result<TorrentSessionTelemetry, EngineError> {
+        let manager = self.request(Command::TorrentManager).await?;
+        Ok(manager.session_telemetry().await)
+    }
+
+    /// Packages and begins seeding a local file or folder in the engine's BitTorrent session.
+    pub async fn create_and_serve_local_torrent(
+        &self,
+        source_path: &Path,
+        trackers: Vec<String>,
+        piece_length: Option<u32>,
+    ) -> Result<(Vec<u8>, String, SocketAddr), EngineError> {
+        let manager = self.request(Command::TorrentManager).await?;
+        Ok(manager
+            .create_and_serve_local(source_path, trackers, piece_length)
+            .await?)
     }
 
     /// Stops transfers after saving their checkpoints and releases the queue database.
