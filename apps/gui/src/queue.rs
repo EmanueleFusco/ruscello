@@ -82,6 +82,7 @@ pub(crate) struct Queue {
     pub(crate) downloads: BTreeMap<DownloadId, Download>,
     pub(crate) order: Vec<DownloadId>,
     pub(crate) categories: CategorySettings,
+    pub(crate) packages: BTreeMap<PackageId, String>,
     pub(crate) limits: Limits,
     pub(crate) rows: Vec<ListRow>,
     pub(crate) status: StatusFilter,
@@ -121,6 +122,11 @@ impl Queue {
             .collect();
         self.limits = snapshot.limits;
         self.categories = snapshot.categories;
+        self.packages = snapshot
+            .packages
+            .into_iter()
+            .map(|package| (package.id, package.name))
+            .collect();
         self.type_counts = [0; FILE_TYPES.len()];
         self.status_counts = [0; StatusFilter::ALL.len()];
         self.category_counts.clear();

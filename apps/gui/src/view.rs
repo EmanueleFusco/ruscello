@@ -1,14 +1,16 @@
 use iced::{
     Alignment, Element, Fill, Padding, Theme,
     widget::{
-        self, button, column, container, mouse_area, progress_bar, row, scrollable, space, text,
-        text_input, tooltip,
+        self, button, checkbox, column, container, mouse_area, progress_bar, row, scrollable,
+        space, text, text_editor, text_input, tooltip,
     },
 };
 use ruscello_core::{Download, Status};
 use ruscello_engine::EngineLog;
 
 use crate::{
+    actions::Action,
+    add::{Input, Probe},
     app::{App, Column, DetailTab, Message},
     i18n::{self, Strings},
     icons::{self, icon},
@@ -21,8 +23,20 @@ pub(crate) fn queue_id() -> widget::Id {
     widget::Id::new("download-list")
 }
 
+pub(crate) fn add_id() -> widget::Id {
+    widget::Id::new("add-download-input")
+}
+
+pub(crate) fn search_id() -> widget::Id {
+    widget::Id::new("search-downloads")
+}
+
 pub(crate) fn main(app: &App) -> Element<'_, Message> {
-    let content = if app.settings {
+    let content = if let Some(dialog) = &app.add {
+        add_dialog(app, dialog)
+    } else if let Some((ids, delete)) = &app.remove {
+        remove_dialog(app, ids.len(), *delete)
+    } else if app.settings {
         settings(app)
     } else {
         column![
@@ -53,11 +67,17 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
 fn toolbar(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
     row![
-        text(l.get("downloads")).size(22),
-        space::horizontal().width(10),
+        button(
+            row![icon('\u{e13d}'), text(l.get("add"))]
+                .align_y(Alignment::Center)
+                .spacing(6)
+        )
+        .padding(8)
+        .on_press(Message::OpenAdd),
         icon('\u{e151}'),
         text_input(&l.get("search"), &app.queue.search)
             .on_input(Message::Search)
+            .id(search_id())
             .padding(8)
             .width(Fill),
         icon_button(
@@ -70,6 +90,28 @@ fn toolbar(app: &App) -> Element<'_, Message> {
             Message::ToggleDetails
         ),
         icon_button('\u{e154}', l.get("settings"), Message::Settings(true)),
+        icon_button(
+            if app.can_pause_all() {
+                '\u{e12e}'
+            } else {
+                '\u{e13c}'
+            },
+            l.get(if app.can_pause_all() {
+                "pause-all"
+            } else {
+                "resume-all"
+            }),
+            Message::PauseAll
+        ),
+        icon_button(
+            '\u{e4f9}',
+            l.get(if app.alternate_speed() {
+                "alternate-off"
+            } else {
+                "alternate-on"
+            }),
+            Message::AlternateSpeed
+        ),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
@@ -172,6 +214,9 @@ fn center(app: &App) -> Element<'_, Message> {
         body = body.push(controls);
     }
     body = body.push(download_list(app));
+    if app.menu.is_some() {
+        body = body.push(context_menu(app));
+    }
     if app.preferences.details {
         body = body.push(details(app));
     }
@@ -230,9 +275,15 @@ fn download_list(app: &App) -> Element<'_, Message> {
                         '\u{e06d}'
                     }),
                     icon('\u{e129}'),
-                    text(l.with(
-                        "package",
-                        [("id", id.0.to_string()), ("count", count.to_string())]
+                    text(q.packages.get(&id).map_or_else(
+                        || l.with(
+                            "package",
+                            [("id", id.0.to_string()), ("count", count.to_string())]
+                        ),
+                        |name| l.with(
+                            "package-named",
+                            [("name", name.clone()), ("count", count.to_string())]
+                        )
                     )),
                 ]
                 .spacing(8)
@@ -264,7 +315,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
     let id = download.id;
     let speed = q.speed(id);
     let name = queue::display_name(download);
-    let selected = q.selected == Some(id);
+    let selected = app.selection.contains(&id);
     let mut cells = row![
         container(
             row![
@@ -342,7 +393,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
         };
         cells = cells.push(container(content).width(column.width()).clip(true));
     }
-    button(cells)
+    let row_button = button(cells)
         .style(move |theme, state| theme::selection(theme, state, selected))
         .width(Fill)
         .height(ROW_HEIGHT)
@@ -356,8 +407,38 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             top: 4.0,
             bottom: 4.0,
         })
-        .on_press(Message::Select(id))
-        .into()
+        .on_press(Message::Select(id));
+    let pause = if crate::actions::can_pause(status) {
+        icon_button(
+            '\u{e12e}',
+            l.get("pause"),
+            Message::SingleAction(id, Action::TogglePause),
+        )
+    } else if crate::actions::can_resume(status) {
+        icon_button(
+            '\u{e13c}',
+            l.get("resume"),
+            Message::SingleAction(id, Action::TogglePause),
+        )
+    } else {
+        space::horizontal().width(32).into()
+    };
+    mouse_area(
+        row![
+            row_button,
+            pause,
+            icon_button(
+                '\u{e247}',
+                l.get("open-folder"),
+                Message::SingleAction(id, Action::OpenFolder)
+            ),
+            icon_button('\u{e0b6}', l.get("actions"), Message::Menu(id)),
+        ]
+        .align_y(Alignment::Center)
+        .height(ROW_HEIGHT),
+    )
+    .on_right_press(Message::Menu(id))
+    .into()
 }
 
 fn details(app: &App) -> Element<'_, Message> {
@@ -565,4 +646,171 @@ pub(crate) fn log_key(message: EngineLog) -> &'static str {
         EngineLog::CleanupFailed => "log-cleanup",
         EngineLog::DiskSpaceLow => "log-disk",
     }
+}
+fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, Message> {
+    let l = &app.strings;
+    let mut choices = row![option(
+        l.get("automatic"),
+        dialog.category.is_none(),
+        Message::AddCategory(None)
+    )]
+    .spacing(5);
+    for item in &app.queue.categories.categories {
+        let category = &item.category;
+        choices = choices.push(option(
+            l.category(category),
+            dialog.category == Some(category.id),
+            Message::AddCategory(Some(category.id)),
+        ));
+    }
+    let previews = column(dialog.entries.iter().map(|input| {
+        let (key, detail) = match input {
+            Input::Http(url) => match dialog.previews.get(url) {
+                Some(Probe::File(name, bytes)) => (
+                    "direct-link",
+                    bytes.map_or_else(
+                        || name.clone(),
+                        |bytes| format!("{name} · {}", size(l, bytes)),
+                    ),
+                ),
+                Some(Probe::Web) => ("web-input", l.get("resolver-unavailable")),
+                Some(Probe::Media) => ("media-input", l.get("media-unavailable")),
+                Some(Probe::Unavailable) => ("probe-unavailable", String::new()),
+                Some(Probe::Pending) | None => ("probing", String::new()),
+            },
+            Input::Torrent(_) => (input.key(), l.get("torrent-unavailable")),
+            Input::Dlc(_) => (input.key(), l.get("resolver-unavailable")),
+            _ => (input.key(), String::new()),
+        };
+        container(
+            row![
+                text(l.get(key)).width(160),
+                column![
+                    text(input.label()).wrapping(text::Wrapping::None),
+                    text(detail).size(12)
+                ]
+                .width(Fill),
+            ]
+            .spacing(8),
+        )
+        .clip(true)
+        .padding(5)
+        .into()
+    }))
+    .spacing(4);
+    let destination = dialog
+        .destination
+        .as_ref()
+        .map_or_else(|| l.get("automatic"), |path| path.display().to_string());
+    let can_submit = !app.booting && dialog.can_submit();
+    container(
+        column![
+            row![
+                text(l.get("add-download")).size(22).width(Fill),
+                button(text(l.get("back")))
+                    .on_press_maybe((!dialog.submitting).then_some(Message::CloseAdd))
+            ]
+            .align_y(Alignment::Center),
+            text_editor(&app.editor)
+                .id(add_id())
+                .placeholder(l.get("add-placeholder"))
+                .on_action(Message::EditAdd)
+                .height(128)
+                .padding(9),
+            button(text(l.get("choose-files"))).on_press(Message::PickFiles),
+            container(scrollable(previews).height(Fill))
+                .height(Fill)
+                .width(Fill)
+                .padding(8)
+                .style(theme::panel),
+            text(l.get("category")),
+            scrollable(choices)
+                .direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::default()
+                ))
+                .width(Fill),
+            row![
+                text(l.get("folder")),
+                text(destination).width(Fill),
+                button(text(l.get("choose-folder"))).on_press(Message::PickDestination)
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+            row![
+                checkbox(!dialog.paused)
+                    .label(l.get("start-immediately"))
+                    .on_toggle(Message::StartImmediately),
+                space::horizontal().width(Fill),
+                button(text(l.get("add"))).on_press_maybe(can_submit.then_some(Message::SubmitAdd)),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8)
+        ]
+        .spacing(12),
+    )
+    .width(Fill)
+    .height(Fill)
+    .padding(12)
+    .into()
+}
+
+fn context_menu(app: &App) -> Element<'_, Message> {
+    use ruscello_core::Priority;
+    let l = &app.strings;
+    let mut actions = row![].spacing(4);
+    for (key, action) in [
+        ("pause-resume", Action::TogglePause),
+        ("open-file", Action::OpenFile),
+        ("open-folder", Action::OpenFolder),
+        ("copy-link", Action::CopyLink),
+        ("priority-low", Action::Priority(Priority::Low)),
+        ("priority-normal", Action::Priority(Priority::Normal)),
+        ("priority-high", Action::Priority(Priority::High)),
+        ("move-up", Action::MoveUp),
+        ("move-down", Action::MoveDown),
+        ("remove", Action::Cancel),
+    ] {
+        actions = actions.push(
+            button(text(l.get(key)).size(12))
+                .on_press(Message::RowAction(action))
+                .style(button::secondary),
+        );
+    }
+    container(
+        scrollable(actions)
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::default(),
+            ))
+            .width(Fill),
+    )
+    .width(Fill)
+    .style(theme::panel)
+    .padding(6)
+    .into()
+}
+
+fn remove_dialog(app: &App, count: usize, delete: bool) -> Element<'_, Message> {
+    let l = &app.strings;
+    container(
+        container(
+            column![
+                text(l.with("confirm-remove", [("count", count.to_string())])).size(20),
+                checkbox(delete)
+                    .label(l.get("delete-files"))
+                    .on_toggle(Message::DeleteFiles),
+                row![
+                    button(text(l.get("back"))).on_press(Message::CancelRemove),
+                    button(text(l.get("remove")))
+                        .on_press(Message::ConfirmRemove)
+                        .style(button::danger)
+                ]
+                .spacing(8),
+            ]
+            .spacing(12),
+        )
+        .style(theme::panel)
+        .padding(20),
+    )
+    .center(Fill)
+    .into()
 }

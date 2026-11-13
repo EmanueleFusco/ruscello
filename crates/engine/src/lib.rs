@@ -26,5 +26,11 @@ pub use file_types::file_type_hint;
 /// Direct HTTP entry point for developer commands and benchmarks.
 pub use ruscello_http::{
     ChecksumAlgorithm, DownloadOptions, DownloadProgress, ErrorClass, ExpectedChecksum,
-    HttpDownloader, HttpError, Url, WriterError,
+    HttpDownloader, HttpError, Probe, Url, WriterError,
 };
+
+/// Probes a candidate URL with the same metadata logic used by downloads.
+pub async fn inspect_http(url: Url) -> Result<Probe, HttpError> {
+    let client = ruscello_http::client()?;
+    ruscello_http::probe(&client, &url).await
+}

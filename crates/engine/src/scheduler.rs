@@ -5,9 +5,9 @@ use std::{
     time::Duration,
 };
 
-use ruscello_core::{Download, DownloadId, FailureReason, Source, Status};
+use ruscello_core::{Download, DownloadId, FailureReason, Package, PackageId, Source, Status};
 use ruscello_http::{DownloadProgress, HostConnections, HttpDownloader};
-use ruscello_storage::{Change, DatabaseRecovery, QueueEntry, Storage};
+use ruscello_storage::{Change, DatabaseRecovery, QueueEntry, Snapshot, Storage};
 use tokio::{
     sync::{broadcast, mpsc, watch},
     task::{Id, JoinSet},
@@ -38,6 +38,7 @@ pub(super) struct Scheduler {
     hosts: HostConnections,
     http: HttpDownloader,
     queue: BTreeMap<DownloadId, QueueEntry>,
+    packages: BTreeMap<PackageId, Package>,
     forced: BTreeSet<DownloadId>,
     active: BTreeMap<DownloadId, Active>,
     workers: JoinSet<Outcome>,
@@ -60,7 +61,7 @@ enum Stop {
 impl Scheduler {
     pub(super) fn new(
         storage: Storage,
-        queue: Vec<QueueEntry>,
+        snapshot: Snapshot,
         recovery: DatabaseRecovery,
         options: EngineOptions,
         categories: CategoryBook,
@@ -81,9 +82,15 @@ impl Scheduler {
             events,
             hosts,
             http,
-            queue: queue
+            queue: snapshot
+                .queue
                 .into_iter()
                 .map(|entry| (entry.download.id, entry))
+                .collect(),
+            packages: snapshot
+                .packages
+                .into_iter()
+                .map(|package| (package.id, package))
                 .collect(),
             forced: BTreeSet::new(),
             active: BTreeMap::new(),
@@ -148,8 +155,8 @@ impl Scheduler {
 
     async fn command(&mut self, command: Command) {
         match command {
-            Command::Add(requests, reply) => {
-                let _ = reply.send(self.add(requests).await);
+            Command::Add(requests, package, reply) => {
+                let _ = reply.send(self.add(requests, package).await);
             }
             Command::Update(Update::Pause(id), reply) => self.stop(id, Stop::Pause, reply).await,
             Command::Update(Update::Cancel(id, delete_files), reply) => {
@@ -166,6 +173,7 @@ impl Scheduler {
                     .collect();
                 let _ = reply.send(Ok(EngineSnapshot {
                     downloads,
+                    packages: self.packages.values().cloned().collect(),
                     limits: self.limits,
                     recovery: self.recovery,
                     categories: self.categories.settings(),
@@ -175,7 +183,27 @@ impl Scheduler {
         }
     }
 
-    async fn add(&mut self, requests: Vec<AddDownload>) -> Result<Vec<DownloadId>, EngineError> {
+    async fn add(
+        &mut self,
+        requests: Vec<AddDownload>,
+        package_name: Option<String>,
+    ) -> Result<Vec<DownloadId>, EngineError> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let package = package_name
+            .map(|name| {
+                let last = self.packages.keys().next_back().map_or(0, |id| id.0);
+                let id = last
+                    .checked_add(1)
+                    .filter(|id| i64::try_from(*id).is_ok())
+                    .ok_or(EngineError::Identifier)?;
+                Ok::<_, EngineError>(Package {
+                    id: PackageId(id),
+                    name,
+                })
+            })
+            .transpose()?;
         let mut entries = Vec::with_capacity(requests.len());
         let mut ids = BTreeSet::new();
         let first = self
@@ -205,7 +233,10 @@ impl Scheduler {
                 id,
             );
             let mut download = Download::new(id, Source::Http { url: url.into() }, destination);
-            download.package = request.package;
+            download.package = package
+                .as_ref()
+                .map(|package| package.id)
+                .or(request.package);
             download.category = category.map(|policy| policy.category.id);
             download.filename = request.filename_hint;
             download.tags = request.tags;
@@ -219,9 +250,15 @@ impl Scheduler {
                 working_directory,
             });
         }
-        self.storage
-            .apply(entries.iter().map(save_entry).collect())
-            .await?;
+        let mut changes = Vec::with_capacity(entries.len() + 1);
+        if let Some(package) = &package {
+            changes.push(Change::SavePackage(package.clone()));
+        }
+        changes.extend(entries.iter().map(save_entry));
+        self.storage.apply(changes).await?;
+        if let Some(package) = package {
+            self.packages.insert(package.id, package);
+        }
         let mut ids = Vec::with_capacity(entries.len());
         for entry in entries {
             let id = entry.download.id;
