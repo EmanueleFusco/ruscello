@@ -14,7 +14,18 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+directories.workspace = true
+fluent-bundle.workspace = true
+fs4.workspace = true
+iced.workspace = true
+ruscello-core.workspace = true
+ruscello-engine.workspace = true
 ruscello-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

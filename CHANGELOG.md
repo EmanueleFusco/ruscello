@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- M3.1 and M3.7: Native desktop queue with virtualized rows, search, filters, persisted details and columns,
+  system-aware light and dark themes, bundled Inter and Lucide fonts, and live English and Italian switching.
 - M0: Cargo workspace structure (crates `core`, `http`, `torrent`, `media`, `resolver`, `browser`,
   `storage`, `engine`, `api`, `testkit`; apps `gui`, `cli`, `webview`), work plan, ADRs, UI and testing
   specifications, GitHub Actions CI, `cargo-deny` configuration, and `AGENTS.md`.
