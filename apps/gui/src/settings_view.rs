@@ -1,27 +1,46 @@
 use iced::{
     Alignment, Element, Fill, Point, Rectangle, Renderer as IcedRenderer, Size, Theme, mouse,
-    widget::{button, canvas, checkbox, column, container, row, scrollable, text, text_input},
+    widget::{button, canvas, column, container, keyed_column, row, rule, space, text},
 };
 
 use crate::{
     app::{App, Message},
+    icons::icon,
     preferences::{Appearance, Locale, Renderer},
     settings::{Folder, Number, Page, TorrentField, TorrentOption, UpdateStatus},
     theme,
-    view::option,
+    view::{heading, muted, option},
 };
 
 pub(crate) fn view(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
+    let opacity = app.selection_opacity();
     let navigation = column(Page::ALL.into_iter().map(|page| {
-        button(text(l.get(page.key())))
-            .width(Fill)
-            .on_press(Message::SettingsPage(page))
-            .style(move |theme, status| theme::selection(theme, status, page == app.page))
-            .into()
+        let glyph = match page {
+            Page::General => '\u{e154}',
+            Page::Downloads => '\u{e0b2}',
+            Page::Speed => '\u{e29a}',
+            Page::Torrent => '\u{e102}',
+            Page::Categories => '\u{e0d7}',
+            Page::Integrations => '\u{e247}',
+            Page::Advanced => '\u{e29a}',
+            Page::About => '\u{e0f9}',
+        };
+        button(
+            row![icon(glyph).size(15), text(l.get(page.key())).width(Fill)]
+                .spacing(9)
+                .align_y(Alignment::Center),
+        )
+        .width(Fill)
+        .padding([8, 10])
+        .on_press(Message::SettingsPage(page))
+        .style(move |theme, status| {
+            theme::animated_selection(theme, status, page == app.page, opacity)
+        })
+        .into()
     }))
-    .spacing(5)
-    .width(170);
+    .spacing(3)
+    .width(Fill);
     let content = match app.page {
         Page::General => general(app),
         Page::Downloads => downloads(app),
@@ -34,26 +53,43 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     };
     column![
         row![
-            button(text(l.get("back"))).on_press(Message::Settings(false)),
-            text(l.get("settings")).size(22)
+            heading('\u{e154}', l.get("settings")),
+            space::horizontal().width(Fill),
+            theme::action(text(l.get("back"))).on_press(Message::Settings(false)),
         ]
         .align_y(Alignment::Center)
         .spacing(10),
         row![
-            container(navigation).padding(8).style(theme::panel),
-            scrollable(
-                container(content)
-                    .padding(18)
+            container(theme::vertical(navigation).spacing(6))
+                .padding(8)
+                .width(210)
+                .height(Fill)
+                .style(theme::panel),
+            keyed_column![(
+                app.page,
+                theme::vertical(
+                    column![
+                        text(l.get(app.page.key())).size(20),
+                        rule::horizontal(1).style(theme::separator),
+                        container(content)
+                            .padding(18)
+                            .width(Fill)
+                            .style(theme::panel)
+                    ]
+                    .spacing(12)
                     .width(Fill)
-                    .style(theme::panel)
-            )
+                )
+                .spacing(6)
+                .width(Fill)
+                .height(Fill)
+            )]
             .width(Fill)
             .height(Fill)
         ]
         .spacing(12)
         .height(Fill),
     ]
-    .spacing(12)
+    .spacing(14)
     .into()
 }
 
@@ -77,12 +113,17 @@ fn general(app: &App) -> Element<'_, Message> {
                 Message::Appearance(appearance),
             ))
         });
-    column![
-        text(l.get("language")),
+    let controls = column![
+        text(l.get("language")).size(15),
         locale,
-        text(l.get("appearance")),
+        rule::horizontal(1).style(theme::separator),
+        text(l.get("appearance")).size(15),
         appearance,
-        text(l.get("renderer")),
+        theme::check(app.preferences.motion)
+            .label(l.get("interface-motion"))
+            .on_toggle(Message::Motion),
+        rule::horizontal(1).style(theme::separator),
+        text(l.get("renderer")).size(15),
         row![
             option(
                 l.get("renderer-hardware"),
@@ -96,19 +137,64 @@ fn general(app: &App) -> Element<'_, Message> {
             ),
         ]
         .spacing(6),
-        text(l.get("renderer-note")),
-        checkbox(app.preferences.close_to_tray)
-            .label(l.get("close-to-tray"))
-            .on_toggle(Message::CloseToTray),
-        checkbox(app.preferences.notifications)
-            .label(l.get("notifications"))
-            .on_toggle(Message::Notifications),
-        checkbox(app.preferences.autostart)
-            .label(l.get("autostart"))
-            .on_toggle(Message::Autostart),
+        text(l.get("renderer-note")).size(13).style(muted),
+    ];
+    #[cfg(windows)]
+    let controls = controls.push(nvidia_profile(app));
+    controls
+        .push(rule::horizontal(1).style(theme::separator))
+        .push(
+            theme::check(app.preferences.close_to_tray)
+                .label(l.get("close-to-tray"))
+                .on_toggle(Message::CloseToTray),
+        )
+        .push(
+            theme::check(app.preferences.notifications)
+                .label(l.get("notifications"))
+                .on_toggle(Message::Notifications),
+        )
+        .push(
+            theme::check(app.preferences.autostart)
+                .label(l.get("autostart"))
+                .on_toggle(Message::Autostart),
+        )
+        .spacing(12)
+        .into()
+}
+
+#[cfg(windows)]
+fn nvidia_profile(app: &App) -> Element<'_, Message> {
+    use crate::nvidia::{Action, State};
+
+    let l = &app.strings;
+    let (status, action) = match app.nvidia_profile {
+        State::Checking => ("nvidia-checking", None),
+        State::Available if app.preferences.renderer == Renderer::Hardware => (
+            "nvidia-description",
+            Some(("nvidia-enable", Action::Enable)),
+        ),
+        State::Available => ("nvidia-requires-hardware", None),
+        State::External => ("nvidia-external", None),
+        State::Managed => ("nvidia-managed", Some(("nvidia-restore", Action::Restore))),
+        State::Shared => ("nvidia-shared", None),
+        State::Changed => ("nvidia-changed", None),
+        State::Unavailable => ("nvidia-unavailable", None),
+        State::Failed => ("nvidia-failed", Some(("nvidia-retry", Action::Read))),
+    };
+    let mut controls = column![
+        rule::horizontal(1).style(theme::separator),
+        text(l.get("nvidia-refresh")).size(15),
+        text(l.get(status)).size(13).style(muted),
     ]
-    .spacing(12)
-    .into()
+    .spacing(8);
+    if let Some((label, action)) = action {
+        controls = controls
+            .push(theme::action(text(l.get(label))).on_press(Message::NvidiaProfile(action)));
+    }
+    if app.nvidia_restart {
+        controls = controls.push(text(l.get("nvidia-restart")).size(13).style(muted));
+    }
+    controls.into()
 }
 
 fn downloads(app: &App) -> Element<'_, Message> {
@@ -127,17 +213,22 @@ fn downloads(app: &App) -> Element<'_, Message> {
         text(l.get("default-folder")),
         row![
             text(destination.display().to_string()).width(Fill),
-            button(text(l.get("choose-folder"))).on_press(Message::ChooseFolder(Folder::Default))
+            theme::action(text(l.get("choose-folder")))
+                .on_press(Message::ChooseFolder(Folder::Default))
         ]
-        .spacing(8),
+        .spacing(8)
+        .align_y(Alignment::Center),
         text(l.get("temporary-folder")),
         row![
             text(temporary).width(Fill),
-            button(text(l.get("choose-folder"))).on_press(Message::ChooseFolder(Folder::Temporary)),
-            button(text(l.get("reset"))).on_press(Message::ClearTemporary),
+            theme::action(text(l.get("choose-folder")))
+                .on_press(Message::ChooseFolder(Folder::Temporary)),
+            theme::action(text(l.get("reset"))).on_press(Message::ClearTemporary),
         ]
-        .spacing(8),
-        text(l.get("folder-restart")),
+        .spacing(8)
+        .align_y(Alignment::Center),
+        text(l.get("folder-restart")).style(muted),
+        rule::horizontal(1).style(theme::separator),
         number(app, Number::Concurrent),
         number(app, Number::PerHost),
         number(app, Number::PerDownload),
@@ -167,7 +258,7 @@ fn torrent(app: &App) -> Element<'_, Message> {
         ("torrent-upnp", preferences.upnp, TorrentOption::Upnp),
     ] {
         controls = controls.push(
-            checkbox(value)
+            theme::check(value)
                 .label(l.get(key))
                 .on_toggle(move |value| Message::TorrentOption(choice, value)),
         );
@@ -194,7 +285,7 @@ fn torrent(app: &App) -> Element<'_, Message> {
         controls = controls.push(
             row![
                 text(label.clone()).width(260),
-                text_input(&label, value)
+                theme::field(&label, value)
                     .on_input(move |value| Message::TorrentField(field, value))
                     .width(160),
             ]
@@ -209,7 +300,7 @@ fn categories(app: &App) -> Element<'_, Message> {
     use crate::settings::CategoryEdit;
     use ruscello_engine::CategoryMatch;
     let l = &app.strings;
-    let mut categories = column![text(l.get("categories")).size(18)].spacing(8);
+    let mut categories = column![].spacing(8);
     let mut choices = row![].spacing(5);
     for policy in &app.queue.categories.categories {
         let category = &policy.category;
@@ -221,7 +312,7 @@ fn categories(app: &App) -> Element<'_, Message> {
             row![
                 text(l.category(category)).width(180),
                 text(folder).width(Fill),
-                button(text(l.get("choose-folder")))
+                theme::action(text(l.get("choose-folder")))
                     .on_press(Message::ChooseFolder(Folder::Category(category.id))),
             ]
             .spacing(10)
@@ -235,10 +326,15 @@ fn categories(app: &App) -> Element<'_, Message> {
     }
     categories = categories.push(
         row![
-            text_input(&l.get("category-name"), &app.category_draft.name)
+            theme::field(&l.get("category-name"), &app.category_draft.name)
                 .on_input(|name| Message::CategoryEdit(CategoryEdit::Name, name)),
-            button(text(l.get("create-category"))).on_press(Message::CreateCategory),
+            theme::action(text(l.get("create-category")))
+                .style(theme::primary)
+                .on_press_maybe(
+                    (!app.category_draft.name.trim().is_empty()).then_some(Message::CreateCategory)
+                ),
         ]
+        .align_y(Alignment::Center)
         .spacing(8),
     );
     categories = categories.push(text(l.with(
@@ -263,30 +359,28 @@ fn categories(app: &App) -> Element<'_, Message> {
             row![
                 text(format!("{kind}:{value}")).width(Fill),
                 text(category),
-                button(text(l.get("remove"))).on_press(Message::RemoveCategoryRule(index)),
+                theme::action(text(l.get("remove")))
+                    .style(theme::danger)
+                    .on_press(Message::RemoveCategoryRule(index)),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
         );
     }
     categories
-        .push(
-            scrollable(choices)
-                .direction(scrollable::Direction::Horizontal(
-                    scrollable::Scrollbar::default(),
-                ))
-                .width(Fill),
-        )
+        .push(theme::horizontal(choices).width(Fill))
+        .push(text(l.get("rule-pattern")).size(13).style(muted))
         .push(
             row![
-                text_input(&l.get("rule-pattern"), &app.category_draft.rule)
+                theme::field("", &app.category_draft.rule)
                     .on_input(|rule| Message::CategoryEdit(CategoryEdit::Rule, rule)),
-                button(text(l.get("add-rule"))).on_press_maybe(
-                    app.category_draft
-                        .category
-                        .map(|_| Message::AddCategoryRule)
+                theme::action(text(l.get("add-rule"))).on_press_maybe(
+                    (app.category_draft.category.is_some()
+                        && !app.category_draft.rule.trim().is_empty())
+                    .then_some(Message::AddCategoryRule)
                 ),
             ]
+            .align_y(Alignment::Center)
             .spacing(8),
         )
         .into()
@@ -297,11 +391,11 @@ fn integrations(app: &App) -> Element<'_, Message> {
     let mut controls = column![
         text(l.get("lan-title")).size(18),
         text(l.get("lan-pending")),
-        checkbox(app.preferences.lan_enabled)
+        theme::check(app.preferences.lan_enabled)
             .label(l.get("lan-enabled"))
             .on_toggle(Message::LanEnabled),
         number(app, Number::Port),
-        checkbox(app.preferences.lan_auth)
+        theme::check(app.preferences.lan_auth)
             .label(l.get("lan-auth"))
             .on_toggle(Message::LanAuth),
         save(app),
@@ -310,15 +404,16 @@ fn integrations(app: &App) -> Element<'_, Message> {
     if app.preferences.lan_auth {
         controls = controls.push(
             row![
-                text_input(&l.get("lan-password"), &app.lan_password.0)
+                theme::field(&l.get("lan-password"), &app.lan_password.0)
                     .secure(true)
                     .on_input(
                         |password| Message::LanPassword(crate::settings::LanPassword(password))
                     ),
-                button(text(l.get("save-password"))).on_press_maybe(
+                theme::action(text(l.get("save-password"))).on_press_maybe(
                     (!app.lan_password.0.is_empty()).then_some(Message::SaveLanPassword)
                 ),
             ]
+            .align_y(Alignment::Center)
             .spacing(8),
         );
     }
@@ -327,7 +422,7 @@ fn integrations(app: &App) -> Element<'_, Message> {
         && let Ok(code) = qrcode::QrCode::new(&url)
     {
         controls = controls
-            .push(button(text(url)).on_press(Message::CopyLanUrl))
+            .push(theme::action(text(url)).on_press(Message::CopyLanUrl))
             .push(canvas(Qr(code)).width(160).height(160));
     }
     controls
@@ -339,13 +434,14 @@ fn integrations(app: &App) -> Element<'_, Message> {
 fn advanced(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
     let controls = column![
-        button(text(l.get("open-logs"))).on_press(Message::OpenLogs),
-        button(text(l.get("copy-diagnostics"))).on_press(Message::CopyDiagnostics),
+        theme::action(text(l.get("open-logs"))).on_press(Message::OpenLogs),
+        theme::action(text(l.get("copy-diagnostics"))).on_press(Message::CopyDiagnostics),
     ]
     .spacing(10);
     #[cfg(not(target_os = "macos"))]
-    let controls = controls
-        .push(button(text(l.get("register-associations"))).on_press(Message::RegisterAssociations));
+    let controls = controls.push(
+        theme::action(text(l.get("register-associations"))).on_press(Message::RegisterAssociations),
+    );
     controls.into()
 }
 
@@ -357,10 +453,10 @@ fn about(app: &App) -> Element<'_, Message> {
             [("version", env!("CARGO_PKG_VERSION").to_owned())]
         ))
         .size(18),
-        checkbox(app.preferences.check_updates)
+        theme::check(app.preferences.check_updates)
             .label(l.get("check-on-start"))
             .on_toggle(Message::CheckAutomatically),
-        button(text(l.get("check-now"))).on_press_maybe(
+        theme::action(text(l.get("check-now"))).on_press_maybe(
             (!matches!(app.update_status, UpdateStatus::Checking)).then_some(Message::CheckUpdates)
         ),
     ]
@@ -378,8 +474,8 @@ fn about(app: &App) -> Element<'_, Message> {
                 content = content.push(text(l.get("release-notes"))).push(text(notes));
             }
             content = content
-                .push(button(text(l.get("open-release"))).on_press(Message::OpenRelease))
-                .push(button(text(l.get("install-update"))))
+                .push(theme::action(text(l.get("open-release"))).on_press(Message::OpenRelease))
+                .push(theme::action(text(l.get("install-update"))).style(theme::primary))
                 .push(text(l.get("install-pending")));
             None
         }
@@ -394,9 +490,8 @@ fn number(app: &App, field: Number) -> Element<'_, Message> {
     let label = app.strings.get(field.key());
     row![
         text(label.clone()).width(260),
-        text_input(&label, &app.settings_draft.fields[field.index()])
+        theme::field(&label, &app.settings_draft.fields[field.index()])
             .on_input(move |value| Message::SettingNumber(field, value))
-            .padding(7)
             .width(160)
     ]
     .align_y(Alignment::Center)
@@ -405,7 +500,8 @@ fn number(app: &App, field: Number) -> Element<'_, Message> {
 }
 
 fn save(app: &App) -> Element<'_, Message> {
-    button(text(app.strings.get("save")))
+    theme::action(text(app.strings.get("save")))
+        .style(theme::primary)
         .on_press(Message::SaveLimits)
         .into()
 }

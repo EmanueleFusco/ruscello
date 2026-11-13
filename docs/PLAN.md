@@ -193,6 +193,8 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations & Remote Control (LAN Web UI toggle, port, optional password, QR code; browser extension; `yt-dlp`/`ffmpeg`), Advanced.
       Desktop controls for the Torrent, LAN, extension, sidecar, and updater services follow their backend milestones
       (M4, M7, M8, and M10.5).
+      On Windows, the NVIDIA fixed-refresh option can preserve hardware rendering on affected VRR displays
+      (see [ADR-0008](adr/0008-nvidia-fixed-refresh.md)).
 - [x] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets/`.torrent`/`.dlc` files to the running instance).
 - [x] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).

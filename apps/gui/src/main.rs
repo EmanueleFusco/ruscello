@@ -7,6 +7,8 @@ mod desktop;
 mod i18n;
 mod icons;
 mod instance;
+#[cfg(windows)]
+mod nvidia;
 mod preferences;
 mod queue;
 mod settings;

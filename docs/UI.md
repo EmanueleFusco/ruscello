@@ -50,7 +50,8 @@ rather than cluttering toolbars.
 - **Row hover actions**: reveals 2–3 subtle icons (pause/resume, open folder, `⋯`); all other operations live
   in the right-click / `⋯` context menu.
 - **Toolbar**: only Add, Search, Pause/Resume All, Alternative Speed Mode (`🐢`, qBittorrent-style), Settings, and (when a new GitHub Release is detected) a subtle **"⬆ Update available (`vX.Y.Z`)"** pill that opens the in-app updater dialog with release notes, download progress bar, and *Update & Restart* button.
-- **Collapsible details panel** (remembers open/closed state): *General* (URL, folder, hashes, timestamps),
+- **Collapsible details panel** (remembers open/closed state): click the Details heading or the toolbar toggle
+  to expand or collapse the panel. The heading remains visible when collapsed. Tabs include *General* (URL, folder, hashes, timestamps),
   *Segments* (visual map of segments/pieces and active connections), *Files / Peers / Trackers* (shown for torrents),
   and per-download *Log*.
 
@@ -78,9 +79,11 @@ rather than cluttering toolbars.
 
 ## Visual Style
 
-- Light and dark themes (follows OS by default, overridable in Settings). Neutral warm-gray palette, single accent
-  color (blue/teal), semantic status colors. No flashy gradients, subtle elevation borders, 6–8 px corner radius,
-  short feedback transitions (≤ 150 ms) for hover/expand only.
+- Light and dark themes (follows OS by default, overridable in Settings). Neutral slate surfaces, blue accents,
+  and semantic status colors. Use 8 px corner radii for panels, buttons, and inputs, and 4 px for checkboxes
+  and slim progress bars. Only the selected background fades when switching tabs or Settings pages. The Details
+  tabs fade as the panel expands or collapses, and the heading stays visible. Transitions last at most 150 ms,
+  stop repainting when settled, and can be disabled in General settings.
 - Typography: bundled Inter font, 13–14 px body text, tabular numerals (`tnum`) for speeds, sizes, and ETAs.
 - Icons: monochrome Lucide icon font (ISC license).
 - Density: 32–36 px row height; optional compact density mode.
@@ -94,6 +97,8 @@ rather than cluttering toolbars.
 ## Settings Pages
 
 - **General**: Language (*System Default / English / Italiano*), Theme, **UI Renderer** (*Hardware GPU `wgpu` [Default] / Software 2D `tiny-skia` [prevents G-SYNC/OLED flicker & NVIDIA game overlay]*, applied on restart), Launch at startup, System tray behavior, Queue completion action.
+  Windows also offers an optional **Fixed refresh rate (NVIDIA)** setting for hardware rendering. It shows existing
+  fixed-refresh profiles and can restore an override applied by Ruscello. Restart the app after changing the profile.
 - **Downloads**: Default folder, max concurrent downloads, max connections per file/host, temporary folder.
 - **Speed**: Global limits, Alternative speed limits (`🐢`), Time-of-day scheduler.
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.
