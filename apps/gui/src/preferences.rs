@@ -82,6 +82,9 @@ pub(crate) struct Preferences {
     pub(crate) lan_port: NonZeroU16,
     pub(crate) lan_auth: bool,
     pub(crate) check_updates: bool,
+    pub(crate) close_to_tray: bool,
+    pub(crate) notifications: bool,
+    pub(crate) autostart: bool,
 }
 
 impl Default for Preferences {
@@ -99,6 +102,9 @@ impl Default for Preferences {
             lan_port: NonZeroU16::MIN.saturating_add(9665),
             lan_auth: true,
             check_updates: true,
+            close_to_tray: false,
+            notifications: true,
+            autostart: false,
         }
     }
 }

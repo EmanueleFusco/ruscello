@@ -191,9 +191,9 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [ ] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
       **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations & Remote Control (LAN Web UI toggle, port, optional password, QR code; browser extension; `yt-dlp`/`ffmpeg`), Advanced.
-- [ ] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
+- [x] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets/`.torrent`/`.dlc` files to the running instance).
-- [ ] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
+- [x] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
 - [x] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
       **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
 - [ ] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.

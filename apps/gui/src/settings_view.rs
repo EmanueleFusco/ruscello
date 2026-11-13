@@ -98,6 +98,15 @@ fn general(app: &App) -> Element<'_, Message> {
         ]
         .spacing(6),
         text(l.get("renderer-note")),
+        checkbox(app.preferences.close_to_tray)
+            .label(l.get("close-to-tray"))
+            .on_toggle(Message::CloseToTray),
+        checkbox(app.preferences.notifications)
+            .label(l.get("notifications"))
+            .on_toggle(Message::Notifications),
+        checkbox(app.preferences.autostart)
+            .label(l.get("autostart"))
+            .on_toggle(Message::Autostart),
     ]
     .spacing(12)
     .into()
@@ -204,12 +213,15 @@ fn integrations(app: &App) -> Element<'_, Message> {
 
 fn advanced(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
-    column![
+    let controls = column![
         button(text(l.get("open-logs"))).on_press(Message::OpenLogs),
         button(text(l.get("copy-diagnostics"))).on_press(Message::CopyDiagnostics),
     ]
-    .spacing(10)
-    .into()
+    .spacing(10);
+    #[cfg(not(target_os = "macos"))]
+    let controls = controls
+        .push(button(text(l.get("register-associations"))).on_press(Message::RegisterAssociations));
+    controls.into()
 }
 
 fn about(app: &App) -> Element<'_, Message> {
