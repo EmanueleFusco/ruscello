@@ -783,6 +783,10 @@ impl TorrentManager {
             .await
             .map_err(|error| TorrentError::Session(error.to_string()))?;
 
+        // Give the dropped `DiskBackedBitV` background flusher a turn to close its file handle
+        // before `start_or_resume` creates a fresh bitfield on Windows.
+        tokio::task::yield_now().await;
+
         {
             let mut entries = self.lock_entries();
             entries.remove(&id);
@@ -1404,15 +1408,18 @@ impl TorrentManager {
         trackers: Vec<String>,
         piece_length: Option<u32>,
     ) -> Result<(Vec<u8>, String, SocketAddr), TorrentError> {
-        let holder = self.session_lock.read().await;
+        let session = { self.session_lock.read().await.session.clone() };
         let opts = CreateTorrentOptions {
             name: None,
             trackers,
             piece_length,
         };
-        let (torrent_result, _handle) = holder
-            .session
+        let (torrent_result, handle) = session
             .create_and_serve_torrent(source_path, opts)
+            .await
+            .map_err(|error| TorrentError::Session(error.to_string()))?;
+        handle
+            .wait_until_initialized()
             .await
             .map_err(|error| TorrentError::Session(error.to_string()))?;
         let bytes = torrent_result
@@ -1420,7 +1427,7 @@ impl TorrentManager {
             .map_err(|error| TorrentError::Session(error.to_string()))?
             .to_vec();
         let hash = torrent_result.info_hash().as_string();
-        let addr = holder.session.listen_addr().ok_or_else(|| {
+        let addr = session.listen_addr().ok_or_else(|| {
             TorrentError::Session("seeder session has no listener address".into())
         })?;
         let loopback = if addr.ip().is_unspecified() {

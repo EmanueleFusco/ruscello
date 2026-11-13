@@ -34,36 +34,62 @@ async fn wait_for_status(
     expected: Status,
     budget: Duration,
 ) -> Result<(), Box<dyn Error>> {
-    let snapshot = engine.snapshot().await?;
-    if snapshot
-        .downloads
-        .iter()
-        .find(|d| d.id == id)
-        .is_some_and(|d| d.status() == expected)
-    {
+    let check_snapshot =
+        |snapshot: ruscello_engine::EngineSnapshot| -> Result<bool, Box<dyn Error>> {
+            if let Some(download) = snapshot.downloads.iter().find(|d| d.id == id) {
+                let status = download.status();
+                if status == expected {
+                    return Ok(true);
+                }
+                if !matches!(expected, Status::Failed { .. })
+                    && let Status::Failed { reason } = status
+                {
+                    return Err(format!(
+                    "download {} unexpectedly failed ({reason:?}) while waiting for {expected:?}",
+                    id.0
+                )
+                .into());
+                }
+            }
+            Ok(false)
+        };
+
+    if check_snapshot(engine.snapshot().await?)? {
         return Ok(());
     }
+    let mut poll = tokio::time::interval(Duration::from_millis(200));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     timeout(budget, async {
         loop {
-            match events.recv().await {
-                Ok(EngineEvent::StatusChanged { id: actual, status })
-                    if actual == id && status == expected =>
-                {
-                    return Ok(());
-                }
-                Ok(_) => {}
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let snapshot = engine.snapshot().await?;
-                    if snapshot
-                        .downloads
-                        .iter()
-                        .find(|d| d.id == id)
-                        .is_some_and(|d| d.status() == expected)
-                    {
+            tokio::select! {
+                recv = events.recv() => match recv {
+                    Ok(EngineEvent::StatusChanged { id: actual, status }) if actual == id => {
+                        if status == expected {
+                            return Ok(());
+                        }
+                        if !matches!(expected, Status::Failed { .. })
+                            && let Status::Failed { reason } = status
+                        {
+                            return Err(format!(
+                                "download {} unexpectedly failed ({reason:?}) while waiting for {expected:?}",
+                                id.0
+                            )
+                            .into());
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if check_snapshot(engine.snapshot().await?)? {
+                            return Ok(());
+                        }
+                    }
+                    Err(err) => return Err(Box::new(err) as Box<dyn Error>),
+                },
+                _ = poll.tick() => {
+                    if check_snapshot(engine.snapshot().await?)? {
                         return Ok(());
                     }
                 }
-                Err(err) => return Err(Box::new(err) as Box<dyn Error>),
             }
         }
     })
@@ -284,7 +310,7 @@ async fn magnet_category_rule_restart_fastresume_force_recheck_and_cancel_delete
             &mut events,
             id,
             Status::Seeding,
-            Duration::from_secs(20),
+            Duration::from_secs(35),
         )
         .await?;
 
@@ -329,7 +355,7 @@ async fn magnet_category_rule_restart_fastresume_force_recheck_and_cancel_delete
             &mut events,
             id,
             Status::Seeding,
-            Duration::from_secs(20),
+            Duration::from_secs(35),
         )
         .await?;
         assert_eq!(std::fs::read(&out_file)?, payload);
