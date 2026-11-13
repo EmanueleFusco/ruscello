@@ -2,11 +2,11 @@ use std::{
     collections::{BTreeSet, VecDeque},
     hash::{Hash, Hasher},
     path::PathBuf,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use iced::{
-    Element, Size, Subscription, Task, clipboard, event,
+    Animation, Element, Size, Subscription, Task, clipboard, event,
     futures::{Stream, stream},
     keyboard,
     widget::{operation, scrollable::AbsoluteOffset, text_editor},
@@ -34,6 +34,10 @@ pub(crate) enum DetailTab {
     Segments,
     Log,
 }
+
+const MOTION_DURATION: Duration = Duration::from_millis(144);
+pub(crate) const DETAILS_COLLAPSED_HEIGHT: f32 = 48.0;
+const DETAILS_HEIGHT: f32 = 158.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Column {
@@ -65,11 +69,11 @@ impl Column {
 
     pub(crate) fn width(self) -> u32 {
         match self {
-            Self::Size => 80,
-            Self::Progress => 122,
-            Self::Speed => 95,
-            Self::Eta => 100,
-            Self::Status => 130,
+            Self::Size => 70,
+            Self::Progress => 102,
+            Self::Speed => 78,
+            Self::Eta => 85,
+            Self::Status => 110,
         }
     }
 
@@ -100,6 +104,8 @@ pub(crate) enum Message {
     Resize(Size),
     SystemTheme(iced::theme::Mode),
     ToggleDetails,
+    Motion(bool),
+    AnimationFrame(Instant),
     DetailTab(DetailTab),
     Settings(bool),
     Locale(Locale),
@@ -141,6 +147,10 @@ pub(crate) enum Message {
     ActionResult(bool),
     SettingsPage(Page),
     Renderer(Renderer),
+    #[cfg(windows)]
+    NvidiaProfile(crate::nvidia::Action),
+    #[cfg(windows)]
+    NvidiaProfileResult(crate::nvidia::Outcome),
     SettingNumber(Number, String),
     SaveLimits,
     ChooseFolder(Folder),
@@ -178,6 +188,9 @@ pub(crate) enum Message {
 }
 
 pub(crate) struct App {
+    selection_motion: Animation<bool>,
+    details_motion: Animation<bool>,
+    frame: Instant,
     window: window::Id,
     engine: Option<EngineHandle>,
     pub(crate) queue: Queue,
@@ -212,6 +225,12 @@ pub(crate) struct App {
     pub(crate) page: Page,
     pub(crate) settings_draft: Draft,
     pub(crate) renderer: Renderer,
+    #[cfg(windows)]
+    pub(crate) nvidia_profile: crate::nvidia::State,
+    #[cfg(windows)]
+    pub(crate) nvidia_restart: bool,
+    #[cfg(windows)]
+    nvidia_busy: bool,
     pub(crate) lan_address: Option<std::net::IpAddr>,
     pub(crate) lan_password: settings::LanPassword,
     pub(crate) update_status: UpdateStatus,
@@ -246,11 +265,20 @@ impl App {
         let mut options = EngineOptions::new(database, destination.clone());
         options.temporary_directory = preferences.temporary_folder.clone();
         let app = Self {
+            selection_motion: view_animation(true),
+            details_motion: view_animation(preferences.details),
+            frame: Instant::now(),
             window,
             engine: None,
             queue: Queue::default(),
             strings,
             renderer: preferences.renderer,
+            #[cfg(windows)]
+            nvidia_profile: crate::nvidia::State::Checking,
+            #[cfg(windows)]
+            nvidia_restart: false,
+            #[cfg(windows)]
+            nvidia_busy: false,
             preferences,
             config,
             destination,
@@ -337,6 +365,14 @@ impl App {
             });
         Subscription::batch([
             engine,
+            if self.preferences.motion
+                && (self.selection_motion.is_animating(self.frame)
+                    || self.details_motion.is_animating(self.frame))
+            {
+                iced::time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
+            } else {
+                Subscription::none()
+            },
             window::close_requests().map(|_| Message::Close),
             window::resize_events().map(|(_, size)| Message::Resize(size)),
             iced::system::theme_changes().map(Message::SystemTheme),
@@ -353,8 +389,59 @@ impl App {
     }
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        let selection = (self.detail_tab, self.page);
+        let details = self.preferences.details;
+        let task = self.handle(message);
+        if selection != (self.detail_tab, self.page) {
+            self.frame = self.frame.max(Instant::now());
+            self.selection_motion = view_animation(false).go(true, self.frame);
+        }
+        if details != self.preferences.details {
+            self.frame = self.frame.max(Instant::now());
+            self.details_motion
+                .go_mut(self.preferences.details, self.frame);
+        }
+        task
+    }
+
+    pub(crate) fn selection_opacity(&self) -> f32 {
+        if self.preferences.motion {
+            self.selection_motion.interpolate(0.65, 1.0, self.frame)
+        } else {
+            1.0
+        }
+    }
+
+    pub(crate) fn details_height(&self) -> f32 {
+        DETAILS_COLLAPSED_HEIGHT
+            + (DETAILS_HEIGHT - DETAILS_COLLAPSED_HEIGHT) * self.details_progress()
+    }
+
+    pub(crate) fn details_tabs_opacity(&self) -> f32 {
+        // Finish fading before the shrinking panel starts clipping the tabs.
+        ((self.details_progress() - 0.12) / 0.88).clamp(0.0, 1.0)
+    }
+
+    fn details_progress(&self) -> f32 {
+        if self.preferences.motion {
+            self.details_motion.interpolate(0.0, 1.0, self.frame)
+        } else if self.preferences.details {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Noop => {}
+            Message::AnimationFrame(now) => self.frame = self.frame.max(now),
+            Message::Motion(enabled) => {
+                self.preferences.motion = enabled;
+                self.selection_motion = view_animation(true);
+                self.details_motion = view_animation(self.preferences.details);
+                return self.save_preferences();
+            }
             Message::Started(engine) => {
                 self.engine = engine;
                 if self.engine.is_none() {
@@ -531,6 +618,10 @@ impl App {
                         self.preferences.alternate_bandwidth,
                         self.preferences.lan_port,
                     );
+                    #[cfg(windows)]
+                    if self.page == Page::General {
+                        return Task::batch([self.reset_scroll(), self.read_nvidia_profile()]);
+                    }
                 }
                 return self.reset_scroll();
             }
@@ -836,17 +927,57 @@ impl App {
     fn update_settings(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SettingsPage(page) => {
-                if !self.settings {
-                    let _ = self.update(Message::Settings(true));
-                }
                 self.page = page;
-                if page == Page::Integrations {
-                    return Task::perform(settings::lan_address(), Message::LanAddress);
+                let already_open = self.settings;
+                #[cfg(windows)]
+                if already_open && page == Page::General {
+                    return self.read_nvidia_profile();
                 }
+                let open = if already_open {
+                    Task::none()
+                } else {
+                    self.update(Message::Settings(true))
+                };
+                if page == Page::Integrations {
+                    return Task::batch([
+                        open,
+                        Task::perform(settings::lan_address(), Message::LanAddress),
+                    ]);
+                }
+                return open;
             }
             Message::Renderer(renderer) => {
                 self.preferences.renderer = renderer;
                 return self.save_preferences();
+            }
+            #[cfg(windows)]
+            Message::NvidiaProfile(action) => {
+                use crate::nvidia::{Action, State};
+                let allowed = match action {
+                    Action::Read => true,
+                    Action::Enable => {
+                        self.nvidia_profile == State::Available
+                            && self.preferences.renderer == Renderer::Hardware
+                    }
+                    Action::Restore => self.nvidia_profile == State::Managed,
+                };
+                if allowed && !self.nvidia_busy && !self.closing {
+                    self.nvidia_busy = true;
+                    self.nvidia_profile = State::Checking;
+                    return Task::perform(
+                        crate::nvidia::run(self.config.clone(), action),
+                        Message::NvidiaProfileResult,
+                    );
+                }
+            }
+            #[cfg(windows)]
+            Message::NvidiaProfileResult(outcome) => {
+                self.nvidia_busy = false;
+                self.nvidia_profile = outcome.state;
+                self.nvidia_restart |= outcome.changed;
+                if self.closing {
+                    return self.finish_close();
+                }
             }
             Message::SettingNumber(field, value) => {
                 self.settings_draft.fields[field.index()] = value
@@ -1286,7 +1417,18 @@ impl App {
             .any(|download| actions::can_pause(download.status()))
     }
 
+    pub(crate) fn can_resume_all(&self) -> bool {
+        self.queue
+            .downloads
+            .values()
+            .any(|download| download.status() == Status::Paused)
+    }
+
     fn finish_close(&mut self) -> Task<Message> {
+        #[cfg(windows)]
+        if self.nvidia_busy {
+            return Task::none();
+        }
         if self.booting || self.saving {
             return Task::none();
         }
@@ -1338,6 +1480,11 @@ impl App {
         operation::scroll_to(view::queue_id(), AbsoluteOffset { x: 0.0, y: 0.0 })
     }
 
+    #[cfg(windows)]
+    fn read_nvidia_profile(&mut self) -> Task<Message> {
+        self.update_settings(Message::NvidiaProfile(crate::nvidia::Action::Read))
+    }
+
     fn save_preferences(&mut self) -> Task<Message> {
         if self.saving {
             self.dirty = true;
@@ -1360,6 +1507,12 @@ impl App {
     pub(crate) fn view(&self, _: window::Id) -> Element<'_, Message> {
         view::main(self)
     }
+}
+
+fn view_animation(initial: bool) -> Animation<bool> {
+    Animation::new(initial)
+        .duration(MOTION_DURATION)
+        .easing(iced::animation::Easing::EaseOutCubic)
 }
 
 fn i18n_status_key(status: Status) -> &'static str {

@@ -9,10 +9,11 @@ use ruscello_testkit::{FileSpec, TestServer};
 
 use crate::{
     actions::Action as RowAction,
-    app::{App, Message},
+    app::{App, DETAILS_COLLAPSED_HEIGHT, DetailTab, Message},
     desktop::{Receiver, Startup},
     i18n::Strings,
     preferences::{Locale, Preferences},
+    settings::Page,
 };
 
 fn receiver<T>() -> Receiver<T> {
@@ -40,6 +41,10 @@ fn app(temp: &tempfile::TempDir) -> anyhow::Result<App> {
 }
 
 fn simulator(app: &App) -> Simulator<'_, Message, Theme, iced::Renderer> {
+    simulator_at(app, Size::new(1120.0, 720.0))
+}
+
+fn simulator_at(app: &App, size: Size) -> Simulator<'_, Message, Theme, iced::Renderer> {
     Simulator::with_size(
         iced::Settings {
             default_font: iced::Font::with_name("Inter Variable"),
@@ -50,7 +55,7 @@ fn simulator(app: &App) -> Simulator<'_, Message, Theme, iced::Renderer> {
             ],
             ..iced::Settings::default()
         },
-        Size::new(1120.0, 720.0),
+        size,
         app.view(window::Id::unique()),
     )
 }
@@ -197,6 +202,205 @@ fn captures_distinct_download_and_settings_snapshots() -> anyhow::Result<()> {
     assert!(simulator(&app).snapshot(&theme)?.matches_hash(&path)?);
     let _ = app.update(Message::Settings(true));
     assert!(!simulator(&app).snapshot(&theme)?.matches_hash(&path)?);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn nvidia_settings_offer_only_the_action_for_the_current_profile() -> anyhow::Result<()> {
+    use crate::nvidia::{Action, Outcome, State};
+
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    let _ = app.update(Message::Settings(true));
+    let _ = app.update(Message::NvidiaProfileResult(Outcome {
+        state: State::External,
+        changed: false,
+    }));
+    let mut ui = simulator(&app);
+    assert!(
+        ui.find("Fixed refresh rate is already set in the NVIDIA profile.")
+            .is_ok()
+    );
+    assert!(ui.find("Restore previous NVIDIA settings").is_err());
+    drop(ui);
+
+    let _ = app.update(Message::NvidiaProfileResult(Outcome {
+        state: State::Available,
+        changed: false,
+    }));
+    assert!(matches!(
+        click(&app, "Use fixed refresh rate")?,
+        Message::NvidiaProfile(Action::Enable)
+    ));
+    let _ = app.update(Message::NvidiaProfileResult(Outcome {
+        state: State::Managed,
+        changed: true,
+    }));
+    assert!(matches!(
+        click(&app, "Restore previous NVIDIA settings")?,
+        Message::NvidiaProfile(Action::Restore)
+    ));
+    assert!(
+        simulator(&app)
+            .find("Restart Ruscello to apply the change.")
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[test]
+fn switching_tabs_and_settings_pages_keeps_the_layout_still() -> anyhow::Result<()> {
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    let toolbar = simulator(&app).find("Add")?.bounds();
+    let details = simulator(&app).find("Details")?.bounds();
+    for (label, expected) in [
+        ("Segments", DetailTab::Segments),
+        ("Log", DetailTab::Log),
+        ("General", DetailTab::General),
+    ] {
+        let message = click(&app, label)?;
+        assert!(matches!(message, Message::DetailTab(tab) if tab == expected));
+        let _ = app.update(message);
+        let mut ui = simulator(&app);
+        assert_eq!(ui.find("Add")?.bounds(), toolbar);
+        assert_eq!(ui.find("Details")?.bounds(), details);
+        assert!(app.selection_opacity() < 1.0);
+    }
+
+    let _ = app.update(Message::Settings(true));
+    let heading = simulator(&app).find("Settings")?.bounds();
+    let navigation = simulator(&app).find("Downloads")?.bounds();
+    let message = click(&app, "Speed")?;
+    assert!(matches!(message, Message::SettingsPage(Page::Speed)));
+    let _ = app.update(message);
+    assert_eq!(simulator(&app).find("Settings")?.bounds(), heading);
+    assert_eq!(simulator(&app).find("Downloads")?.bounds(), navigation);
+    let _ = app.update(Message::AnimationFrame(
+        Instant::now() + Duration::from_millis(200),
+    ));
+    assert_eq!(app.selection_opacity(), 1.0);
+
+    let _ = app.update(Message::Motion(false));
+    let _ = app.update(Message::SettingsPage(Page::General));
+    assert_eq!(app.selection_opacity(), 1.0);
+    Ok(())
+}
+
+#[test]
+fn details_header_collapses_and_reopens_even_with_an_empty_queue() -> anyhow::Result<()> {
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    let expanded = app.details_height();
+    let start = Instant::now() + Duration::from_secs(1);
+    let _ = app.update(Message::AnimationFrame(start));
+    let message = click(&app, "Details")?;
+    assert!(matches!(message, Message::ToggleDetails));
+    let _ = app.update(message);
+    assert!(!app.preferences.details);
+    assert_eq!(app.details_height(), expanded);
+    assert_eq!(app.details_tabs_opacity(), 1.0);
+    let _ = app.update(Message::AnimationFrame(start + Duration::from_millis(32)));
+    let initial_opacity = app.details_tabs_opacity();
+    assert!(initial_opacity > 0.0 && initial_opacity < 1.0);
+    let mut ui = simulator(&app);
+    ui.click("Segments")?;
+    assert!(
+        !ui.into_messages()
+            .any(|message| matches!(message, Message::DetailTab(_)))
+    );
+    let _ = app.update(Message::AnimationFrame(start + Duration::from_millis(64)));
+    assert!(app.details_tabs_opacity() > 0.0);
+    assert!(app.details_tabs_opacity() < initial_opacity);
+    let _ = app.update(Message::AnimationFrame(start + Duration::from_millis(112)));
+    assert!(app.details_height() > DETAILS_COLLAPSED_HEIGHT);
+    assert_eq!(app.details_tabs_opacity(), 0.0);
+    assert!(simulator(&app).find("Segments").is_err());
+
+    let reopened = start + Duration::from_millis(160);
+    let _ = app.update(Message::AnimationFrame(reopened));
+    assert_eq!(app.details_height(), DETAILS_COLLAPSED_HEIGHT);
+
+    let message = click(&app, "Details")?;
+    assert!(matches!(message, Message::ToggleDetails));
+    let _ = app.update(message);
+    assert!(app.preferences.details);
+    assert_eq!(app.details_tabs_opacity(), 0.0);
+    let _ = app.update(Message::AnimationFrame(
+        reopened + Duration::from_millis(32),
+    ));
+    assert!(app.details_tabs_opacity() > 0.0 && app.details_tabs_opacity() < 1.0);
+    assert!(simulator(&app).find("Segments").is_ok());
+    let _ = app.update(Message::Motion(false));
+    assert_eq!(app.details_height(), expanded);
+    assert_eq!(app.details_tabs_opacity(), 1.0);
+    let _ = app.update(click(&app, "Details")?);
+    assert_eq!(app.details_height(), DETAILS_COLLAPSED_HEIGHT);
+    assert!(simulator(&app).find("Segments").is_err());
+    Ok(())
+}
+
+#[test]
+fn aligns_queue_headers_and_keeps_filenames_visible_at_minimum_width() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    let _ = app.update(Message::Locale(Locale::Italian));
+    let id = DownloadId(1);
+    let mut download = Download::new(
+        id,
+        Source::Http {
+            url: "https://example.test/fixture.zip".into(),
+        },
+        temp.path().to_owned(),
+    );
+    download.filename = Some("fixture.zip".into());
+    download.total_bytes = Some(2_048);
+    app.queue.order.push(id);
+    app.queue.downloads.insert(id, download);
+    app.queue.rebuild();
+
+    let mut ui = simulator_at(&app, Size::new(950.0, 490.0));
+    let header = ui.find(app.strings.get("size"))?.bounds();
+    let value = ui
+        .find(app.strings.with("kib", [("value", "2.0".into())]))?
+        .bounds();
+    assert!((header.x - value.x).abs() <= 1.0);
+    let name = ui.find("fixture.zip")?;
+    assert!(
+        name.visible_bounds()
+            .is_some_and(|bounds| bounds.width >= 65.0)
+    );
+    Ok(())
+}
+
+#[test]
+fn advanced_add_labels_stay_visible_while_editing_in_italian() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    let _ = app.update(Message::Locale(Locale::Italian));
+    let _ = app.update(Message::OpenAdd);
+    let _ = app.update(Message::AddAdvanced);
+    let _ = app.update(Message::AddConnections("4".into()));
+    let _ = app.update(Message::AddChecksum("sha256:1234".into()));
+    let _ = app.update(Message::AddBandwidth("1024".into()));
+    let mut ui = simulator(&app);
+    for (label, value) in [
+        ("add-connections", "4"),
+        ("checksum", "sha256:1234"),
+        ("download-bandwidth", "1024"),
+    ] {
+        let label = ui.find(app.strings.get(label))?;
+        assert!(label.visible_bounds().is_some());
+        assert!(label.bounds().y < ui.find(value)?.bounds().y);
+    }
     Ok(())
 }
 

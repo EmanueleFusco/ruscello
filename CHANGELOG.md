@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- Optional per-app NVIDIA fixed refresh on Windows, with existing-profile detection and restore, for VRR flicker
+  while using the hardware renderer.
 - M3.1 and M3.7: Native desktop queue with virtualized rows, search, filters, persisted details and columns,
   system-aware light and dark themes, bundled Inter and Lucide fonts, and live English and Italian switching.
 - M3.2 and M3.3: Add dialog with HTTP previews, clipboard and text-file imports, destination and category
@@ -40,6 +42,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
   and checkpoint-preserving pauses when available disk space is low.
 
 ### Changed
+- Refined the desktop queue, Settings, and Add dialog with a blue accent, clearer toolbar icons, and
+  short, optional selection and panel transitions. The Details heading toggles the panel and stays
+  visible when collapsed. The tabs fade as the panel expands and collapses.
+- Standardized desktop controls and scrollbars, aligned queue headers with their data columns,
+  and kept advanced Add fields labeled while editing.
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.
 - Isolated rotating CLI logs from the GUI and browser helper log retention.
 - Moved FTP/FTPS support from M1.11 to M9.8.

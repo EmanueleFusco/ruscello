@@ -40,6 +40,7 @@ tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winreg.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 iced_test.workspace = true
