@@ -206,6 +206,7 @@ pub(crate) struct App {
     pub(crate) menu: Option<DownloadId>,
     pub(crate) hovered: Option<DownloadId>,
     pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
+    deferred_inputs: Vec<String>,
     alternate_speed: bool,
     alternate_pending: bool,
     pub(crate) page: Page,
@@ -274,6 +275,7 @@ impl App {
             menu: None,
             hovered: None,
             remove: None,
+            deferred_inputs: Vec::new(),
             alternate_speed: false,
             alternate_pending: false,
             page: Page::General,
@@ -435,6 +437,10 @@ impl App {
                     .ok();
             }
             Message::Incoming(inputs) => {
+                if self.add.as_ref().is_some_and(|dialog| dialog.submitting) {
+                    self.deferred_inputs.extend(inputs);
+                    return self.show_window();
+                }
                 if !inputs.is_empty() {
                     self.settings = false;
                     let dialog = self.add.get_or_insert_with(Dialog::default);
@@ -577,6 +583,9 @@ impl App {
                 ]);
             }
             Message::CloseAdd => {
+                if self.add.as_ref().is_some_and(|dialog| dialog.submitting) {
+                    return Task::none();
+                }
                 self.add = None;
                 self.editor = text_editor::Content::new();
                 self.pending_probes.clear();
@@ -607,12 +616,24 @@ impl App {
                 if paths.is_empty() {
                     return Task::none();
                 }
+                if self.add.as_ref().is_some_and(|dialog| dialog.submitting) {
+                    self.deferred_inputs.extend(
+                        paths
+                            .iter()
+                            .map(|path| crate::instance::normalize(path.as_os_str())),
+                    );
+                    return Task::none();
+                }
                 self.settings = false;
                 self.add.get_or_insert_with(Dialog::default);
                 return Task::perform(add::load_files(paths), Message::FilesLoaded);
             }
             Message::FilesLoaded(inputs) => {
                 if let Some(dialog) = &mut self.add {
+                    if dialog.submitting {
+                        self.deferred_inputs.extend(inputs.iter().map(Input::label));
+                        return Task::none();
+                    }
                     dialog.files.extend(inputs);
                     return self.refresh_add();
                 }
@@ -718,13 +739,22 @@ impl App {
                 }
             }
             Message::Added(success) => {
-                if success {
-                    return self.interaction(Message::CloseAdd);
-                }
                 if let Some(dialog) = &mut self.add {
                     dialog.submitting = false;
                 }
+                let inputs = std::mem::take(&mut self.deferred_inputs);
+                if success {
+                    let close = self.interaction(Message::CloseAdd);
+                    if inputs.is_empty() {
+                        return close;
+                    }
+                    let open = self.update(Message::Incoming(inputs));
+                    return Task::batch([close, open]);
+                }
                 self.banner = Some("add-failed");
+                if !inputs.is_empty() {
+                    return self.update(Message::Incoming(inputs));
+                }
             }
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Shortcut(shortcut) => return self.shortcut(shortcut),

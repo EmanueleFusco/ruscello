@@ -199,3 +199,25 @@ fn captures_distinct_download_and_settings_snapshots() -> anyhow::Result<()> {
     assert!(!simulator(&app).snapshot(&theme)?.matches_hash(&path)?);
     Ok(())
 }
+
+#[test]
+fn preserves_forwarded_links_while_submitting_the_previous_batch() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    let _ = app.update(Message::OpenAdd);
+    let dialog = app
+        .add
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Add dialog did not open"))?;
+    dialog.submitting = true;
+    let url = "https://example.test/next.zip";
+    let _ = app.update(Message::Incoming(vec![url.into()]));
+    let _ = app.update(Message::Added(true));
+    let dialog = app
+        .add
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Forwarded link did not open"))?;
+    assert_eq!(dialog.text, url);
+    assert!(!dialog.submitting);
+    Ok(())
+}
