@@ -34,6 +34,7 @@ async fn classifies_completed_entries_from_an_older_queue() -> TestResult {
             download,
             position: 0,
             working_directory: temp.path().to_owned(),
+            torrent: None,
         }))])
         .await?;
     storage.close().await?;

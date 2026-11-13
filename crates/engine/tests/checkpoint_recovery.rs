@@ -71,6 +71,7 @@ async fn reconciles_over_and_under_reported_bytes_from_a_legacy_checkpoint() -> 
             download,
             position: 0,
             working_directory: working.clone(),
+            torrent: None,
         };
         storage
             .apply(vec![Change::SaveDownload(Box::new(entry))])

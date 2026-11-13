@@ -10,11 +10,12 @@ mod file_types;
 mod handle;
 mod scheduler;
 mod startup;
+mod torrent_bridge;
 mod transfer;
 
 pub use handle::{
     AddDownload, EngineError, EngineEvent, EngineHandle, EngineLog, EngineOptions, EngineSnapshot,
-    Limits, ProgressUpdate,
+    Limits, ProgressUpdate, TorrentRuntimeProgress,
 };
 pub use startup::{RECOVERY_FOLDER, StartupError, recover_queue};
 
@@ -27,6 +28,13 @@ pub use file_types::file_type_hint;
 pub use ruscello_http::{
     ChecksumAlgorithm, ChecksumError, DownloadOptions, DownloadProgress, ErrorClass,
     ExpectedChecksum, HttpDownloader, HttpError, Probe, SegmentProgress, Url, WriterError,
+};
+pub use ruscello_torrent::{
+    PieceBucketState, TorrentDetailsSnapshot, TorrentError, TorrentFilePriority,
+    TorrentFileProgress, TorrentInspectFile, TorrentInspection, TorrentPeerInfo, TorrentPeerState,
+    TorrentPeerTransport, TorrentPhase, TorrentPieceMap, TorrentProgressSnapshot,
+    TorrentSessionTelemetry, TorrentSettings, TorrentTrackerInfo, TorrentTrackerStatus,
+    inspect_torrent_bytes,
 };
 
 /// Probes a candidate URL with the same metadata logic used by downloads.

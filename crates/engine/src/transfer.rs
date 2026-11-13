@@ -485,6 +485,7 @@ mod tests {
             ),
             position: 0,
             working_directory: working_directory(&destination, id),
+            torrent: None,
         };
         let ready = ready_directory(&entry);
         fs::create_dir_all(&ready)?;

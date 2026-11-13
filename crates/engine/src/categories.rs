@@ -215,16 +215,18 @@ impl CategoryBook {
         &self,
         explicit: Option<CategoryId>,
         kind: SourceKind,
-        url: &Url,
+        target: &str,
+        url: Option<&Url>,
         filename: Option<&str>,
     ) -> Result<Option<&CategoryPolicy>, EngineError> {
         if let Some(id) = explicit {
             return self.get(id).map(Some).ok_or(EngineError::UnknownCategory);
         }
-        let decoded = url
-            .path_segments()
-            .and_then(|mut parts| parts.next_back())
-            .map(|part| percent_encoding::percent_decode_str(part).decode_utf8_lossy());
+        let decoded = url.and_then(|u| {
+            u.path_segments()
+                .and_then(|mut parts| parts.next_back())
+                .map(|part| percent_encoding::percent_decode_str(part).decode_utf8_lossy())
+        });
         let filename = filename.or(decoded.as_deref()).unwrap_or_default();
         let id = self
             .compiled
@@ -232,7 +234,7 @@ impl CategoryBook {
             .zip(&self.rules)
             .find_map(|(matcher, rule)| {
                 matcher
-                    .matches(kind, url, filename)
+                    .matches(kind, target, url, filename)
                     .then_some(rule.category)
             });
         Ok(id.and_then(|id| self.get(id)))
@@ -276,9 +278,9 @@ impl Matcher {
         }
     }
 
-    fn matches(&self, kind: SourceKind, url: &Url, filename: &str) -> bool {
+    fn matches(&self, kind: SourceKind, target: &str, url: Option<&Url>, filename: &str) -> bool {
         match self {
-            Self::Domain(domain) => url.host_str().is_some_and(|host| {
+            Self::Domain(domain) => url.and_then(Url::host_str).is_some_and(|host| {
                 let host = host.trim_end_matches('.');
                 host == domain
                     || host
@@ -289,7 +291,7 @@ impl Matcher {
                 .to_ascii_lowercase()
                 .strip_suffix(extension)
                 .is_some_and(|prefix| prefix.len() > 1 && prefix.ends_with('.')),
-            Self::Regex(regex) => regex.is_match(url.as_str()) || regex.is_match(filename),
+            Self::Regex(regex) => regex.is_match(target) || regex.is_match(filename),
             Self::Source(source) => *source == kind,
         }
     }
