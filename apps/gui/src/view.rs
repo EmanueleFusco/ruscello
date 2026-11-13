@@ -680,6 +680,8 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
                     .on_input(Message::AddConnections),
                 text_input(&l.get("expected-checksum"), &dialog.checksum)
                     .on_input(Message::AddChecksum),
+                text_input(&l.get("download-bandwidth"), &dialog.bandwidth)
+                    .on_input(Message::AddBandwidth),
             ]
             .spacing(8),
         );

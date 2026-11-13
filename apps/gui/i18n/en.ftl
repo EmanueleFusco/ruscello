@@ -189,3 +189,5 @@ create-category = Create category
 rule-pattern = Rule (domain:example.com, extension:zip, or regex:pattern)
 add-rule = Add rule
 expected-checksum = Expected checksum (algorithm:hex)
+download-bandwidth = Speed limit (bytes/s)
+install-update = Download and install update

@@ -190,6 +190,7 @@ pub(crate) struct Dialog {
     pub(crate) submitting: bool,
     pub(crate) advanced: bool,
     pub(crate) connections: String,
+    pub(crate) bandwidth: String,
     pub(crate) checksum: String,
 }
 
@@ -214,7 +215,9 @@ impl Dialog {
     fn valid_options(&self) -> bool {
         let connections = self.connections.trim();
         let checksum = self.checksum.trim();
+        let bandwidth = self.bandwidth.trim();
         (connections.is_empty() || connections.parse::<std::num::NonZeroUsize>().is_ok())
+            && (bandwidth.is_empty() || bandwidth.parse::<std::num::NonZeroU64>().is_ok())
             && (checksum.is_empty() || ruscello_engine::parse_checksum(checksum).is_ok())
     }
 
@@ -264,6 +267,7 @@ impl Dialog {
                 request.category = self.category;
                 request.start_immediately = !self.paused;
                 request.max_connections = self.connections.trim().parse().ok();
+                request.bandwidth = self.bandwidth.trim().parse().ok();
                 request.checksum =
                     (!self.checksum.trim().is_empty()).then(|| self.checksum.trim().to_owned());
                 if let Some(Probe::File(filename, _)) = self.previews.get(url) {

@@ -361,6 +361,7 @@ fn about(app: &App) -> Element<'_, Message> {
             }
             content = content
                 .push(button(text(l.get("open-release"))).on_press(Message::OpenRelease))
+                .push(button(text(l.get("install-update"))))
                 .push(text(l.get("install-pending")));
             None
         }

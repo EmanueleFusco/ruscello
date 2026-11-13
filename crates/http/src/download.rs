@@ -51,6 +51,8 @@ pub struct DownloadOptions {
     pub cancellation: CancellationToken,
     pub retry: RetryPolicy,
     pub bandwidth: BandwidthLimit,
+    /// An additional per-download rate applied alongside the shared limits.
+    pub download_bandwidth: Option<NonZeroU64>,
     pub progress: Option<watch::Sender<DownloadProgress>>,
     pub expired_link_resolver: Option<Arc<dyn ExpiredLinkResolver>>,
     pub mirrors: Vec<Url>,
@@ -70,6 +72,7 @@ impl Default for DownloadOptions {
             cancellation: CancellationToken::new(),
             retry: RetryPolicy::default(),
             bandwidth: BandwidthLimit::default(),
+            download_bandwidth: None,
             progress: None,
             expired_link_resolver: None,
             mirrors: Vec::new(),
@@ -233,6 +236,9 @@ impl HttpDownloader {
         let limits = TransferLimits {
             global: self.global_bandwidth.clone(),
             local: options.bandwidth.clone(),
+            individual: options
+                .download_bandwidth
+                .map(|rate| BandwidthLimit::new(Some(rate))),
         };
         let source = data.size.and_then(|size| {
             (size > 0)
@@ -393,12 +399,16 @@ impl DownloadState {
 struct TransferLimits {
     global: BandwidthLimit,
     local: BandwidthLimit,
+    individual: Option<BandwidthLimit>,
 }
 
 impl TransferLimits {
     async fn next_chunk(&self, bytes: &Bytes, offset: usize) -> Bytes {
         let requested = (bytes.len() - offset).min(MAX_CHUNK_BYTES);
-        let granted = self.global.acquire(&self.local, requested).await;
+        let granted = self
+            .global
+            .acquire(&self.local, self.individual.as_ref(), requested)
+            .await;
         bytes.slice(offset..offset + granted)
     }
 }

@@ -245,6 +245,7 @@ impl Scheduler {
             download.tags = request.tags;
             download.priority = request.priority;
             download.max_connections = request.max_connections;
+            download.bandwidth = request.bandwidth;
             download.checksum = request.checksum.map(String::into_boxed_str);
             if !request.start_immediately {
                 download.transition(Status::Paused)?;

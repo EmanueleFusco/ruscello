@@ -78,6 +78,7 @@ pub struct AddDownload {
     pub priority: Priority,
     pub start_immediately: bool,
     pub max_connections: Option<NonZeroUsize>,
+    pub bandwidth: Option<NonZeroU64>,
     pub checksum: Option<String>,
 }
 
@@ -93,6 +94,7 @@ impl AddDownload {
             priority: Priority::default(),
             start_immediately: true,
             max_connections: None,
+            bandwidth: None,
             checksum: None,
         }
     }

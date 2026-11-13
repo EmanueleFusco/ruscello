@@ -120,6 +120,7 @@ pub(crate) enum Message {
     AddCategory(Option<CategoryId>),
     AddAdvanced,
     AddConnections(String),
+    AddBandwidth(String),
     AddChecksum(String),
     StartImmediately(bool),
     Probe(Url, add::Probe),
@@ -648,6 +649,11 @@ impl App {
             Message::AddConnections(value) => {
                 if let Some(dialog) = &mut self.add {
                     dialog.connections = value;
+                }
+            }
+            Message::AddBandwidth(value) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.bandwidth = value;
                 }
             }
             Message::AddChecksum(value) => {

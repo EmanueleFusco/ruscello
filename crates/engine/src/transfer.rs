@@ -141,6 +141,7 @@ pub(super) async fn run(
                     ..RetryPolicy::default()
                 },
                 bandwidth: context.bandwidth,
+                download_bandwidth: entry.download.bandwidth,
                 progress: Some(progress),
                 checkpoint_job: Some(CheckpointJob {
                     id: entry.download.id.0,
