@@ -70,4 +70,6 @@ jobs:
         run: cargo test --release --locked -p ruscello-cli --test http_benchmark -- --ignored --nocapture
       - name: Crash and resume
         if: success() || failure()
-        run: cargo test --release --locked -p ruscello-cli --test crash_resume
+        run: |
+          cargo test --release --locked -p ruscello-cli --test crash_resume
+          cargo test --release --locked -p ruscello-cli --test crash_resume crash_recovery_refetches_at_most_two_seconds_of_data -- --ignored --nocapture

@@ -180,6 +180,11 @@ impl TestFile {
     pub fn payload(&self) -> Payload {
         self.resource.representation().payload()
     }
+
+    /// Counts all response body bytes produced so far, including probe bytes.
+    pub fn emitted_bytes(&self) -> u64 {
+        self.resource.emitted.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Debug)]

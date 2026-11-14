@@ -109,6 +109,7 @@ use the Rust toolchain.
 | Short soak | Prefix that command with `RUSCELLO_SOAK_SECONDS=90` |
 | Linux desktop resource budget | Build `ruscello-gui` and `ruscello-cli` with `--release --locked`, then run `./scripts/bench-resources.py` in an empty X11 session. For software rendering, use `xvfb-run -a ./scripts/bench-resources.py --backend Software`. |
 | Throughput and crash resume | Use the aria2 benchmark above and run `cargo test -p ruscello-cli --release --test crash_resume`. |
+| Timed checkpoint budget | `cargo test -p ruscello-cli --release --test crash_resume crash_recovery_refetches_at_most_two_seconds_of_data -- --ignored --nocapture` |
 | Dependency and path audits | `cargo deny check` and `./scripts/check-personal-paths.sh` |
 | Package builds | Run the **Desktop packages** GitHub workflow or follow the platform commands in `packaging/README.md`. |
 
@@ -125,3 +126,23 @@ boundaries. It normalizes user-mode CPU at the measured throughput to 1 Gbit/s a
 throughput to reach that rate. Run with an actual display and GPU to measure the default renderer.
 For CPU profiling on Linux, run `perf record -g -- ./scripts/bench-resources.py` in the same environment
 and inspect the call stacks with `perf report`. Results depend on the filesystem, CPU, display and renderer.
+
+### Linux release validation
+
+The following measurements used the same AMD Lucienne desktop on X11 and optimized builds with
+LTO disabled for the local iteration. The software run used Xvfb.
+
+| Budget | Software 2D | Hardware GPU |
+| --- | ---: | ---: |
+| Idle RAM | 49.2 MB | 130.1 MB |
+| RAM with 10 downloads | 76.1 MB | 154.2 MB |
+| Idle CPU | 0.0% | 0.0% |
+| User CPU normalized to 1 Gbit/s | 5.4% | 5.1% |
+| Cold start to usable window | 0.113 s | 0.307 s |
+| Per-row progress updates | 3.00 Hz | 2.96 Hz |
+
+The hardware renderer exceeded both RAM budgets on this machine. The process-kill benchmark
+observed a 2.001-second checkpoint gap and an upper bound of 3,538,944 bytes to refetch
+at a configured 2 MiB/s. The resumed file matched its fixture's SHA-256.
+The segmented throughput repeat measured 482.6 MiB/s against aria2's 540.6 MiB/s (89.27%),
+below the 95% target. The local kernel restricted access to `perf` counters.
