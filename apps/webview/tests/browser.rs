@@ -207,3 +207,47 @@ async fn native_popup_blocking_intercepts_download_and_captures_resources() -> a
     engine.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires a native desktop session"]
+async fn xfs_batch_respects_countdowns_blocks_popups_and_downloads_all_files() -> anyhow::Result<()>
+{
+    trace();
+    let temp = tempfile::tempdir()?;
+    let server = TestServer::start().await?;
+    let fixture = ruscello_testkit::XfsBrowserFixture::register(&server);
+    let mut config = EngineOptions::new(temp.path().join("queue.db"), temp.path().join("files"));
+    config.browser = Some(options(temp.path()));
+    let engine = EngineHandle::start(config).await?;
+    let ids = engine
+        .add_many(
+            fixture
+                .shares
+                .iter()
+                .map(|url| AddDownload::new(Source::Hoster { url: url.clone() }))
+                .collect(),
+        )
+        .await?;
+    wait_for(&engine, &ids, Status::Completed).await?;
+    let snapshot = engine.snapshot().await?;
+    for (id, file) in ids.iter().zip(&fixture.files) {
+        let path = snapshot
+            .downloads
+            .iter()
+            .find(|item| item.id == *id)
+            .and_then(|item| item.completed_path.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("Missing published XFS file"))?;
+        let expected = file.payload();
+        assert_eq!(std::fs::read(path)?, expected.bytes(0..expected.len()));
+        assert!(
+            file.requests()
+                .iter()
+                .any(|request| request.range.is_some()),
+            "HTTP engine must probe the intercepted file"
+        );
+    }
+    assert_eq!(fixture.early_requests(), 0);
+    assert_eq!(fixture.popup_requests(), 0);
+    engine.shutdown().await?;
+    Ok(())
+}

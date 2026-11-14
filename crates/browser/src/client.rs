@@ -8,7 +8,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::protocol::{Failure, MAX_FRAME, Request, Response, View};
+use crate::protocol::{
+    Failure, MAX_COOKIE_BYTES, MAX_FRAME, MAX_IMPORT_COOKIES, Request, Response, Url, View,
+};
 
 #[derive(Debug, Clone)]
 pub struct BrowserOptions {
@@ -82,6 +84,39 @@ impl BrowserClient {
             biased;
             () = cancellation.cancelled() => Err(Failure::Cancelled),
             resolved = result => resolved.map_err(|_| Failure::Unavailable)?,
+        }
+    }
+
+    /// Imports every eligible cookie in a series of bounded protocol requests.
+    pub async fn import_cookies(
+        &self,
+        url: &Url,
+        cookies: Vec<String>,
+        cancellation: &CancellationToken,
+    ) -> Result<usize, Failure> {
+        let mut count = 0;
+        let mut cookies = cookies
+            .into_iter()
+            .filter(|cookie| cookie.len() <= MAX_COOKIE_BYTES);
+        loop {
+            let batch: Vec<_> = cookies.by_ref().take(MAX_IMPORT_COOKIES).collect();
+            if batch.is_empty() {
+                return Ok(count);
+            }
+            // Even with worst-case JSON escaping, the bounded batch fits in a frame.
+            let response = self
+                .request(
+                    Request::Import {
+                        url: url.clone(),
+                        cookies: batch,
+                    },
+                    cancellation,
+                )
+                .await?;
+            let Response::Imported { count: imported } = response else {
+                return Err(Failure::Unavailable);
+            };
+            count += imported;
         }
     }
 
