@@ -36,7 +36,10 @@ async fn downloads_over_plain_ftp_and_verifies_checksum() -> TestResult {
         )
         .await?;
 
-    assert_eq!(path, dir.path().join("archive.bin"));
+    assert_eq!(
+        std::fs::canonicalize(&path)?,
+        std::fs::canonicalize(dir.path().join("archive.bin"))?
+    );
     assert_eq!(std::fs::read(&path)?, payload);
     assert!(scan_checkpoints(dir.path())?.is_empty());
     Ok(())

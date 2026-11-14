@@ -819,11 +819,11 @@ fn find_in_path(binary: &Path) -> Option<PathBuf> {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
+        if !path.is_file() {
+            return false;
+        }
         use std::os::unix::fs::PermissionsExt as _;
         fs::metadata(path)
             .map(|meta| (meta.permissions().mode() & 0o111) != 0)
@@ -831,7 +831,7 @@ fn is_executable_file(path: &Path) -> bool {
     }
     #[cfg(not(unix))]
     {
-        true
+        path.is_file()
     }
 }
 
