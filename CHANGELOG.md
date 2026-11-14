@@ -53,6 +53,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
   and checkpoint-preserving pauses when available disk space is low.
 
 ### Changed
+- Updated GitHub Actions checkout to use Node.js 24 and refreshed the README and UI guide for M5.
 - Refined the desktop queue, Settings, and Add dialog with a blue accent, clearer toolbar icons, and
   short, optional selection and panel transitions. The Details heading toggles the panel and stays
   visible when collapsed. The tabs fade as the panel expands and collapses.

@@ -57,25 +57,24 @@ rather than cluttering toolbars.
 
 ## Unified "Add Download" Dialog
 
-1. Multi-line input box: paste URLs, magnet links, free-form text containing links, or drag & drop `.torrent` / `.dlc` / `.txt`
-   files (or pick them via file dialog). Pre-populated from clipboard if valid URLs are detected (never auto-started without
-   confirmation unless an auto-accept rule matches).
+1. Paste URLs, magnet links, or text containing links. Drop or choose `.torrent`, `.dlc`, `.txt`, Metalink,
+   M3U, or link shortcut files. The Add dialog can prefill URLs from the clipboard. The optional hoster
+   auto-accept setting starts batches containing only recognized hoster links.
    The GUI accepts dropped link shortcuts when the window system delivers them as files. On native Wayland, use paste
    or the file picker until iced exposes drop events.
 2. Immediate background probing (per-row spinner): each entry resolves into a detected type (*Direct File*,
    *Hoster «name»*, *Container `.dlc` (decrypted Package)*, *Torrent*, *Media Stream*, or *Web Page → LinkGrabber*).
-3. For web pages: switches to the **LinkGrabber** view (see `PLAN.md` M5.5) with collapsible groups:
-   *Likely Targets ⭐* (pre-selected), *Other Files*, *Media*, *Linked Pages*; each row displays filename, size,
-   host, and explainable score badge.
-4. Bottom bar: Category (auto-suggested by rules), Destination Folder, "Start Immediately" toggle (on by default),
-   and collapsed Advanced Options (max connections, speed limit, expected checksum, archive password).
+3. **LinkGrabber** appears inside Add. Search or filter the collapsible groups *Likely targets* (preselected),
+   *Other files*, *Media*, and *Linked pages*. Hover over a score to see how it was calculated. Imported
+   packages keep their names, and **Download selected** queues the checked entries. Stream transfers are planned for M7.
+4. Choose a category and destination or use the automatic defaults. **Start immediately** is on by default.
+   Advanced options include max connections, bandwidth limit, and expected checksum.
 
 ## User Verifications & Prompts
 
-- Never pop up unexpected modal windows over the user's work. When a download requires user interaction, its status
-  changes to *"⚠ Verification required"*, accompanied by a system notification and a sidebar badge. Clicking the row
-  action opens the browser helper window directly on the challenge page; once completed, the window closes
-  automatically and the queued batch resumes.
+When a host requires verification, the queue shows **Verification required** and unrelated downloads can
+continue. The M6 browser helper will open the challenge on demand, let the user complete it, and resume
+queued downloads that can reuse the resulting session.
 
 ## Visual Style
 
@@ -104,8 +103,10 @@ rather than cluttering toolbars.
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.
 - **Categories & Rules**: User categories, default folders, auto-assignment rules.
 - **Integrations & Remote Web UI**:
+  - **Link imports**: the clipboard monitor, hoster auto-accept, and dcrypt.it fallback are opt-in.
+    The alternate DLC service receives the encrypted container when the primary key service fails.
   - **LAN Remote Web UI (qBittorrent-style)**: toggle *Enable Remote Web UI on local network*, port number, **Require Password** toggle (user can choose password-protected or no-password access on LAN), clickable LAN URL (`http://192.168.x.x:9666`), and a **QR Code** to open the interface immediately on a smartphone browser.
   - **Browser Extension**: pairing token and instructions.
   - **Sidecars & Clipboard**: `yt-dlp`/`ffmpeg` sidecar manager & auto-update, optional clipboard monitor.
-- **Hoster Accounts**: Credentials stored in OS keyring.
+- **Hoster Accounts**: save or remove Pixeldrain and Gofile API tokens in the operating system credential store.
 - **Advanced & About**: Logs (open log file / copy diagnostics report without secrets, as in `Scaricatore-di-Porto-rust`), proxy, custom User-Agent, DNS, reset, and **In-App Updates** (current version, *Check for updates automatically on startup* toggle, *Check Now* button, release notes viewer, and one-click *Download & Install Update* with progress bar).

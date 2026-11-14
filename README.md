@@ -1,28 +1,24 @@
 # Ruscello
 
-> Desktop download manager written **entirely in Rust**: BitTorrent + HTTP/hoster + media streaming — fast,
-> crash-safe, resumable, and lightweight. Unites the capabilities of qBittorrent and JDownloader in a single,
-> minimal, professional interface.
-
-**M3 GUI v1 (`v0.3.0`)** provides a desktop interface for the persistent HTTP download queue. Add links
-or import a text list, then monitor, pause, resume, and remove downloads. Settings can switch between
-English and Italian while the app is open and select the renderer for the next launch.
-The [Work Plan & Roadmap](docs/PLAN.md) tracks the remaining capabilities.
+Ruscello is a desktop download manager written in Rust for HTTP, file hosters, and BitTorrent. The
+M5 milestone (`v0.5.0`) adds LinkGrabber, hoster plugins, and native JDownloader DLC import to the
+persistent download queue. The desktop app supports Windows, Linux, and macOS.
 
 ## Key Features
 
-- 🧲 **BitTorrent**: magnet links, `.torrent` files, selective file downloading, seeding limits (`librqbit`).
-- ⚡ **High-Speed HTTP**: dynamic multi-connection segmentation with work stealing, mirror support, bandwidth limiting.
-- 🛡️ **Zero Lost Downloads**: crash-safe resume after PC power-off, process crash, or network drop; strict data integrity.
-- 🔗 **Broad Site & Container Support**: native hoster plugins (`fuckingfast`, `XFileSharing`, `datanodes`, etc.), JDownloader **`.dlc` container decryption**, declarative TOML recipes, native HLS/DASH, optional `yt-dlp` sidecar.
-- 🔎 **LinkGrabber**: analyzes web pages and highlights the files you most likely want to download with explainable scoring.
-- 📱 **LAN Remote Web UI**: optional qBittorrent-style web interface accessible from your phone or another device on the local network (with or without password, plus instant QR code pairing).
-- 🤖 **Hands-Off Automation**: queues, retries, checksum verification, multi-part archive extraction, post-queue actions.
-- 🧑‍💻 **Clean Professional UI**: built with `iced`, organizing downloads by automatic File Types and user Categories.
-- 🌐 **Bilingual Interface**: available in **English** and **Italian** (user-selectable in Settings).
-- 🪶 **Lightweight**: low idle RAM footprint, ~0% CPU when idle.
+- **HTTP and HTTPS** downloads use dynamic segmentation, bandwidth limits, and crash-safe checkpoints.
+  The queue supports pause, resume, retry, checksum verification, and verified mirrors.
+- **BitTorrent** accepts magnets and `.torrent` files, with file selection, seeding limits, and piece rechecks.
+- **Hoster plugins** cover `fuckingfast.co`, XFileSharing/DataNodes, and other services. Ruscello can renew an
+  expired link and resume when the new response matches the saved file validators. Custom TOML recipes load
+  without restarting the app. Pixeldrain and Gofile API tokens use the operating system credential store.
+- **LinkGrabber** analyzes pages and explains why it ranked each result. Search or filter the list, select
+  files, and queue them as packages. Import JDownloader `.dlc`, text lists, Metalink, and M3U playlists.
+- **Desktop settings** include English and Italian with live switching, categories and rules, and hardware or
+  software rendering.
 
-Target platforms: Windows and Linux (first-class priority), macOS.
+Browser-assisted verification and session reuse, HLS/DASH transfers, the LAN web interface, and automatic
+archive extraction are on the [roadmap](docs/PLAN.md). LinkGrabber can discover stream URLs today.
 
 ## Development
 
@@ -35,10 +31,12 @@ cargo run -p ruscello-cli -- --help  # Headless CLI
 Developer & agent documentation: [AGENTS.md](AGENTS.md), [Architecture](docs/ARCHITECTURE.md),
 [UI Specs](docs/UI.md), [Testing Strategy](docs/TESTING.md), [ADRs](docs/adr/).
 
-### Download an HTTP file
+### Download or inspect a link
 
 ```bash
 cargo run -p ruscello-cli -- get <url> -o downloads -x 16
+cargo run -p ruscello-cli -- inspect <page-url>
+cargo run -p ruscello-cli -- import links.dlc
 cargo run -p ruscello-cli -- --language it --help
 ```
 
@@ -46,6 +44,15 @@ Progress appears on standard error in a terminal. Use `--progress` to display it
 `--quiet` to suppress it. Standard output contains the path to the completed file.
 Press Ctrl+C to interrupt a download. Run the same command to resume when the server supports validated byte ranges.
 Use `--checksum sha256:<hex>` to verify the completed file, and repeat `--mirror <url>` to add verified sources.
+
+The `inspect` and `import` commands print URLs to standard output. In the desktop app, use **Add** to review
+and queue discovered files or imported packages. DLC import requests a key from JDownloader and decrypts
+the payload locally. The optional dcrypt.it fallback sends the encrypted container and can be enabled in
+**Settings → Integrations** or with `import links.dlc --dlc-fallback`. The Gofile plugin uses the official
+Premium API for share listings.
+
+See the [UI guide](docs/UI.md#unified-add-download-dialog) for the Add workflow and
+[Resolver Pipeline](docs/ARCHITECTURE.md#resolver-pipeline) for the TOML recipe schema.
 
 ## License
 
