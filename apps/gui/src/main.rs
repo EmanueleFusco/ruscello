@@ -165,8 +165,12 @@ fn run(
             command.env("RUSCELLO_UPDATE_FAILED", "1");
         }
         #[cfg(target_os = "linux")]
-        if let Some(directory) = std::env::var_os("OWD") {
-            command.current_dir(directory);
+        {
+            // The new AppImage runtime supplies its own mount and executable paths.
+            command.env_remove("APPDIR").env_remove("APPIMAGE");
+            if let Some(directory) = std::env::var_os("OWD") {
+                command.current_dir(directory);
+            }
         }
         command.spawn()?;
     }

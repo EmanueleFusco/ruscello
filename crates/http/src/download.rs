@@ -670,7 +670,7 @@ impl Segmented {
             allocator,
             connections: ConnectionController::with_initial(
                 cap,
-                NonZeroUsize::new((cap.get() / 4).clamp(1, 4)).unwrap_or(NonZeroUsize::MIN),
+                NonZeroUsize::new((cap.get() / 2).clamp(1, 8)).unwrap_or(NonZeroUsize::MIN),
             ),
             tasks: JoinSet::new(),
             active: BTreeMap::new(),
@@ -745,7 +745,11 @@ impl Segmented {
                 event = self.incoming.recv() => match event.ok_or(HttpError::WorkerStopped)? {
                     Event::Data(id, bytes) => {
                         self.accept(writer, id, bytes).await?;
-                        if self.allocator.completed() - persisted >= CHECKPOINT_BYTES {
+                        // Finalization synchronizes the last bytes, and the error
+                        // path checkpoints them if the transfer does not finish.
+                        if !self.allocator.is_complete()
+                            && self.allocator.completed() - persisted >= CHECKPOINT_BYTES
+                        {
                             writer.checkpoint().await?;
                             persisted = self.allocator.completed();
                         }
