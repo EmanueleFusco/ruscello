@@ -67,6 +67,8 @@ pub struct EngineOptions {
     pub eager_torrent_session: bool,
     /// Shared resolver, including the recipe folder and optional browser integration.
     pub resolver: Option<crate::Resolver>,
+    pub browser: Option<crate::BrowserOptions>,
+    pub browser_enabled: bool,
     pub dlc_service: Option<crate::DlcKeyService>,
 }
 
@@ -83,6 +85,8 @@ impl EngineOptions {
             torrent: TorrentSettings::offline_ephemeral(),
             eager_torrent_session: false,
             resolver: None,
+            browser: None,
+            browser_enabled: true,
             dlc_service: None,
         }
     }
@@ -188,6 +192,7 @@ pub enum EngineLog {
     CleanupFailed,
     DiskSpaceLow,
     TorrentSessionInitFailed,
+    VerificationRequired,
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +231,8 @@ pub enum EngineError {
     UnsupportedSource,
     #[error("the HTTP source is not a valid URL")]
     InvalidUrl,
+    #[error("the download is not waiting for verification")]
+    VerificationNotPending,
     #[error("the expected checksum is invalid")]
     InvalidChecksum(#[from] crate::ChecksumError),
     #[error("the engine could not allocate a download ID")]
@@ -260,6 +267,8 @@ pub(super) enum Command {
     Update(Update, Reply<()>),
     Snapshot(Reply<EngineSnapshot>),
     TorrentManager(Reply<Arc<TorrentManager>>),
+    Verify(DownloadId, crate::BrowserLocale, Reply<()>),
+    ResumeVerified(crate::Url, Reply<()>),
     Shutdown(Reply<()>),
 }
 
@@ -293,6 +302,11 @@ impl EngineHandle {
         let resolver = match options.resolver.take() {
             Some(resolver) => resolver,
             None => crate::Resolver::new(None)?,
+        };
+        let resolver = if let Some(browser) = options.browser.take() {
+            resolver.with_browser_helper(browser, options.browser_enabled)
+        } else {
+            resolver
         };
         let dlc_service = options.dlc_service.take();
         options.temporary_directory = options
@@ -354,6 +368,51 @@ impl EngineHandle {
         cancellation: &CancellationToken,
     ) -> Result<crate::PageAnalysis, EngineError> {
         Ok(self.resolver.inspect(url, cancellation).await?)
+    }
+
+    pub async fn inspect_link_in_browser(
+        &self,
+        url: &crate::Url,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PageAnalysis, EngineError> {
+        Ok(self.resolver.inspect_browser(url, cancellation).await?)
+    }
+
+    pub async fn verify_link(
+        &self,
+        url: &crate::Url,
+        locale: crate::BrowserLocale,
+        cancellation: &CancellationToken,
+    ) -> Result<(), EngineError> {
+        self.resolver.verify(url, locale, cancellation).await?;
+        self.request(|reply| Command::ResumeVerified(url.clone(), reply))
+            .await
+    }
+
+    pub async fn open_verification(
+        &self,
+        id: DownloadId,
+        locale: crate::BrowserLocale,
+    ) -> Result<(), EngineError> {
+        self.request(|reply| Command::Verify(id, locale, reply))
+            .await
+    }
+
+    pub fn enable_browser_helper(&self, enabled: bool) {
+        self.resolver.enable_browser_helper(enabled);
+    }
+
+    pub async fn import_browser_cookies(
+        &self,
+        browser: crate::InstalledBrowser,
+        url: &crate::Url,
+    ) -> Result<usize, EngineError> {
+        let count = self.resolver.import_browser_cookies(browser, url).await?;
+        if count > 0 {
+            self.request(|reply| Command::ResumeVerified(url.clone(), reply))
+                .await?;
+        }
+        Ok(count)
     }
 
     pub async fn import_links(

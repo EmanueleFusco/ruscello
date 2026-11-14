@@ -175,6 +175,7 @@ impl Transport {
                 .send()
                 .await?;
             if !is_redirect(response.status()) {
+                crate::probe::check_verification(&response)?;
                 return Ok(ActiveResponse {
                     response,
                     _permit: permit,

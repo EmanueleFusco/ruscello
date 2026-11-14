@@ -14,7 +14,25 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-ruscello-platform.workspace = true
+cookie.workspace = true
+regex.workspace = true
+ruscello-browser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tao.workspace = true
+wry.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+getrandom.workspace = true
+
+[dev-dependencies]
+ruscello-engine.workspace = true
+ruscello-core.workspace = true
+ruscello-testkit.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

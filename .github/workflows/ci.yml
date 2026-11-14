@@ -75,3 +75,26 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  browser:
+    name: native browser (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          ./scripts/ci-linux-deps.sh
+          sudo apt-get install -y --no-install-recommends xvfb xauth
+      - uses: Swatinem/rust-cache@v2
+      - name: Loopback native browser tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test -p ruscello-webview --test browser --locked -- --ignored --test-threads=1
+      - name: Loopback native browser tests (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: cargo test -p ruscello-webview --test browser --locked -- --ignored --test-threads=1

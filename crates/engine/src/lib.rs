@@ -25,16 +25,16 @@ pub use categories::{
 };
 pub use disk::{DiskPolicy, DiskSpaceProbe};
 pub use file_types::file_type_hint;
-pub use resolution::{ResolvedDownload, resolve_download};
+pub use resolution::{ResolvedDownload, prepare_http_download, resolve_download};
 /// Direct HTTP entry point for developer commands and benchmarks.
 pub use ruscello_http::{
     ChecksumAlgorithm, ChecksumError, DownloadOptions, DownloadProgress, ErrorClass,
     ExpectedChecksum, HttpDownloader, HttpError, Probe, SegmentProgress, Url, WriterError,
 };
 pub use ruscello_resolver::{
-    Builtin, Candidate, CandidateGroup, ContainerFile, DlcKeyService, HosterAccount,
-    HosterCredentials, ImportedLink, ImportedPackage, KeyringAccounts, PageAnalysis, ResolveError,
-    Resolver, ScoreReason, links,
+    BrowserFailure, BrowserLocale, BrowserOptions, Builtin, Candidate, CandidateGroup,
+    ContainerFile, DlcKeyService, HosterAccount, HosterCredentials, ImportedLink, ImportedPackage,
+    InstalledBrowser, KeyringAccounts, PageAnalysis, ResolveError, Resolver, ScoreReason, links,
 };
 pub use ruscello_torrent::{
     PieceBucketState, TorrentDetailsSnapshot, TorrentError, TorrentFilePriority,

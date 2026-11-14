@@ -551,7 +551,13 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
         tooltip::Position::FollowCursor,
     )
     .delay(std::time::Duration::from_millis(550));
-    let pause = if crate::actions::can_pause(status) {
+    let pause = if status == Status::WaitingUser {
+        icon_button(
+            '\u{e102}',
+            l.get("open-verification"),
+            Message::OpenVerification(id),
+        )
+    } else if crate::actions::can_pause(status) {
         icon_button(
             '\u{e12e}',
             l.get("pause"),
@@ -642,6 +648,12 @@ fn details(app: &App, height: f32) -> Element<'_, Message> {
         .queue
         .selected
         .and_then(|id| app.queue.downloads.get(&id));
+    if let Some(download) = download.filter(|download| download.status() == Status::WaitingUser) {
+        tabs = tabs.push(
+            theme::action(text(l.get("open-verification")))
+                .on_press(Message::OpenVerification(download.id)),
+        );
+    }
     let is_torrent = download.is_some_and(|item| matches!(item.source, Source::Torrent(_)));
     let visible_tabs: Vec<(DetailTab, &'static str)> = if is_torrent {
         vec![
@@ -1060,6 +1072,7 @@ pub(crate) fn log_key(message: EngineLog) -> &'static str {
         EngineLog::CleanupFailed => "log-cleanup",
         EngineLog::DiskSpaceLow => "log-disk",
         EngineLog::TorrentSessionInitFailed => "log-torrent-session",
+        EngineLog::VerificationRequired => "waiting-user",
     }
 }
 
@@ -1196,20 +1209,32 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
             }
             _ => (input.key(), String::new()),
         };
-        container(
-            row![
-                text(l.get(key)).size(12).style(muted).width(152),
-                column![
-                    text(input.label()).wrapping(text::Wrapping::None),
-                    text(detail).size(12).style(muted)
-                ]
-                .width(Fill),
+        let mut line = row![
+            text(l.get(key)).size(12).style(muted).width(152),
+            column![
+                text(input.label()).wrapping(text::Wrapping::None),
+                text(detail).size(12).style(muted)
             ]
-            .spacing(8),
-        )
-        .clip(true)
-        .padding([6, 9])
-        .into()
+            .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        if app.preferences.browser_helper
+            && let Input::Http(url) = input
+        {
+            let key = match dialog.previews.get(url) {
+                Some(Probe::Verification) => Some(("open-verification", true)),
+                Some(Probe::Web(..)) => Some(("analyze-in-browser", false)),
+                _ => None,
+            };
+            if let Some((key, verify)) = key {
+                line = line.push(
+                    theme::action(text(l.get(key)).size(12))
+                        .on_press(Message::AnalyzeInBrowser(url.clone(), verify)),
+                );
+            }
+        }
+        container(line).clip(true).padding([6, 9]).into()
     }))
     .spacing(4);
     let destination = dialog
@@ -1572,6 +1597,17 @@ fn context_menu(app: &App) -> Element<'_, Message> {
             .is_some_and(crate::actions::can_recheck)
     });
     let mut actions = row![].spacing(4);
+    if app.selection.iter().any(|id| {
+        app.queue
+            .downloads
+            .get(id)
+            .is_some_and(|download| download.status() == Status::WaitingUser)
+    }) {
+        actions = actions.push(
+            theme::action(text(l.get("open-verification")).size(12))
+                .on_press(Message::RowAction(Action::Verify)),
+        );
+    }
     for (key, action) in [
         ("pause-resume", Action::TogglePause),
         ("open-file", Action::OpenFile),

@@ -6,9 +6,11 @@
 //! scenarios with [TestServer::file] and inspect the observed requests through the
 //! returned [TestFile].
 
+mod browser;
 mod fixture;
 mod server;
 
 pub use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+pub use browser::BrowserFixture;
 pub use fixture::{FileSpec, Payload, Representation};
 pub use server::{Reply, Request, RequestRecord, TestFile, TestServer};

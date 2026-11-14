@@ -385,7 +385,6 @@ pub(crate) async fn probe(ctx: &Context, base: &Url, analysis: &mut PageAnalysis
         .collect::<Vec<_>>();
     let mut results = stream::iter(targets.into_iter().map(|(index, url)| async move {
         let response = ctx
-            .client()
             .head(url)
             .timeout(Duration::from_secs(3))
             .send()

@@ -73,8 +73,10 @@ rather than cluttering toolbars.
 ## User Verifications & Prompts
 
 When a host requires verification, the queue shows **Verification required** and unrelated downloads can
-continue. The M6 browser helper will open the challenge on demand, let the user complete it, and resume
-queued downloads that can reuse the resulting session.
+continue. **Open verification** is available in the row controls, context menu, and Details. The browser
+helper opens the site in a separate window where the user completes the verification. When the site
+returns to the verified page or initiates the file transfer, the window closes and waiting downloads
+for that origin resume. Add also offers **Analyze in browser** for pages with script-loaded resources.
 
 ## Visual Style
 
@@ -103,6 +105,9 @@ queued downloads that can reuse the resulting session.
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.
 - **Categories & Rules**: User categories, default folders, auto-assignment rules.
 - **Integrations & Remote Web UI**:
+  - **Browser helper**: enable the helper and explicitly import cookies for a website from Firefox or
+    a readable Chromium profile. Cookies stay in Ruscello's browser profile and in memory during resolution.
+    For encrypted Chromium profiles, use the verification window. Browser extension support is planned for M8.
   - **Link imports**: the clipboard monitor, hoster auto-accept, and dcrypt.it fallback are opt-in.
     The alternate DLC service receives the encrypted container when the primary key service fails.
   - **LAN Remote Web UI (qBittorrent-style)**: toggle *Enable Remote Web UI on local network*, port number, **Require Password** toggle (user can choose password-protected or no-password access on LAN), clickable LAN URL (`http://192.168.x.x:9666`), and a **QR Code** to open the interface immediately on a smartphone browser.

@@ -196,6 +196,7 @@ impl HttpDownloader {
         };
         let mut representation_changes = 0;
         let mut refreshes = 0;
+        let mut resolved = options.resolved.is_some();
         loop {
             if !self.connectivity.is_online() {
                 options.waiting(true);
@@ -208,7 +209,7 @@ impl HttpDownloader {
             {
                 HttpError::ExpiredRepresentation
             } else {
-                match Box::pin(self.attempt(url, &current, &options, &mut state)).await {
+                match Box::pin(self.attempt(url, &current, &options, &mut state, resolved)).await {
                     Ok(path) => return Ok(path),
                     Err(error) => error,
                 }
@@ -221,7 +222,8 @@ impl HttpDownloader {
                 state.restart();
                 continue;
             }
-            if error.classification() == ErrorClass::ExpiredLink
+            if (error.classification() == ErrorClass::ExpiredLink
+                || matches!(error, HttpError::VerificationRequired))
                 && let Some(resolver) = &options.expired_link_resolver
                 && refreshes < MAX_RESTARTS
             {
@@ -230,6 +232,7 @@ impl HttpDownloader {
                     () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
                     result = resolver.resolve_transfer(&current.url) => result?,
                 };
+                resolved = true;
                 if let Some(cap) = current.max_connections {
                     state.cap = state.cap.min(cap);
                 }
@@ -257,12 +260,12 @@ impl HttpDownloader {
         current: &TransferLink,
         options: &DownloadOptions,
         state: &mut DownloadState,
+        resolved: bool,
     ) -> Result<PathBuf, HttpError> {
         let mut data = tokio::select! {
             () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
             result = self.transport.probe_with(&current.url, current.headers.clone()) => result?,
         };
-        let resolved = options.resolved.is_some();
         if resolved && !data.attachment && is_page(data.content_type.as_deref()) {
             return Err(HttpError::ExpiredRepresentation);
         }
@@ -363,7 +366,7 @@ impl HttpDownloader {
                     &mut writer,
                     options,
                     progress,
-                    headers,
+                    (headers, resolved),
                 )
                 .await
                 {

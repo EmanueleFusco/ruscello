@@ -184,16 +184,14 @@ pub(super) async fn run(
                 })),
                 ..DownloadOptions::default()
             };
-            if let Some(resolved) = crate::resolution::prepare_download(
+            crate::resolution::prepare_http_download(
                 &context.resolver,
                 &url,
-                &transfer_cancellation,
+                &mut options,
                 matches!(entry.download.source, Source::Hoster { .. }),
+                None,
             )
-            .await?
-            {
-                resolved.apply(&mut options);
-            }
+            .await?;
             monitored_download(
                 &context.http,
                 &url,

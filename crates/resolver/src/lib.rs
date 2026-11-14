@@ -1,6 +1,7 @@
 //! Resolves public download links and inspects pages without executing their scripts.
 
 mod accounts;
+mod browser;
 mod containers;
 mod grabber;
 mod http;
@@ -14,6 +15,11 @@ pub use containers::{
 pub use grabber::{Candidate, CandidateGroup, PageAnalysis, ScoreReason, analyze_html};
 pub use plugins::{Builtin, IndexCrawler};
 pub use recipes::{Recipe, RecipeStep};
+pub use ruscello_browser::{
+    BrowserOptions,
+    import::Browser as InstalledBrowser,
+    protocol::{Failure as BrowserFailure, Locale as BrowserLocale, Session as BrowserSession},
+};
 
 use std::{
     fmt,
@@ -26,9 +32,9 @@ use std::{
 };
 
 use reqwest::{
-    StatusCode, Url,
+    Method, RequestBuilder, StatusCode, Url,
     cookie::CookieStore,
-    header::{self, HeaderMap, HeaderValue},
+    header::{self, HeaderMap},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -42,6 +48,8 @@ pub enum ResolveError {
     Request(#[source] reqwest::Error),
     #[error("the host requires browser verification")]
     VerificationRequired,
+    #[error(transparent)]
+    Browser(BrowserFailure),
     #[error("the page does not expose a supported download")]
     NoDownload,
     #[error("the page or container exceeds the size limit")]
@@ -69,6 +77,17 @@ pub enum ResolveError {
 impl From<reqwest::Error> for ResolveError {
     fn from(error: reqwest::Error) -> Self {
         Self::Request(error.without_url())
+    }
+}
+
+impl From<BrowserFailure> for ResolveError {
+    fn from(error: BrowserFailure) -> Self {
+        match error {
+            BrowserFailure::VerificationRequired => Self::VerificationRequired,
+            BrowserFailure::Cancelled => Self::Cancelled,
+            BrowserFailure::NoDownload => Self::NoDownload,
+            error => Self::Browser(error),
+        }
     }
 }
 
@@ -143,13 +162,36 @@ pub trait Browser: fmt::Debug + Send + Sync {
     ) -> ResolveFuture<'a, BrowserPage> {
         Box::pin(std::future::ready(Err(ResolveError::VerificationRequired)))
     }
+
+    fn verify<'a>(
+        &'a self,
+        _url: &'a Url,
+        _locale: BrowserLocale,
+        _cancellation: &'a CancellationToken,
+    ) -> ResolveFuture<'a, BrowserSession> {
+        Box::pin(std::future::ready(Err(BrowserFailure::Unavailable.into())))
+    }
+
+    fn read_session<'a>(
+        &'a self,
+        _url: &'a Url,
+        _cancellation: &'a CancellationToken,
+    ) -> ResolveFuture<'a, BrowserSession> {
+        Box::pin(std::future::ready(Ok(BrowserSession::default())))
+    }
 }
 
-#[derive(Debug)]
 pub struct BrowserPage {
     pub url: Url,
     pub html: String,
     pub resources: Vec<Url>,
+    pub session: BrowserSession,
+}
+
+impl fmt::Debug for BrowserPage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BrowserPage").finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +202,8 @@ pub struct Resolver {
     crawlers: Vec<Arc<dyn CrawlerPlugin>>,
     recipes: Option<PathBuf>,
     browser: Option<Arc<dyn Browser>>,
+    native_browser: Option<browser::NativeBrowser>,
+    sessions: browser::Sessions,
     accounts: Arc<dyn AccountStore>,
 }
 
@@ -177,6 +221,8 @@ impl Resolver {
             crawlers: vec![Arc::new(IndexCrawler)],
             recipes,
             browser: None,
+            native_browser: None,
+            sessions: browser::Sessions::default(),
             accounts: Arc::new(KeyringAccounts),
         })
     }
@@ -189,6 +235,62 @@ impl Resolver {
     pub fn with_browser(mut self, browser: impl Browser + 'static) -> Self {
         self.browser = Some(Arc::new(browser));
         self
+    }
+
+    pub fn with_browser_helper(mut self, options: BrowserOptions, enabled: bool) -> Self {
+        let browser = browser::NativeBrowser::new(options, enabled);
+        self.native_browser = Some(browser.clone());
+        self.with_browser(browser)
+    }
+
+    pub fn enable_browser_helper(&self, enabled: bool) {
+        if let Some(browser) = &self.native_browser {
+            browser.enable(enabled);
+        }
+        if !enabled {
+            self.sessions.clear();
+        }
+    }
+
+    pub async fn stop_browser_helper(&self) {
+        if let Some(browser) = &self.native_browser {
+            browser.stop().await;
+        }
+    }
+
+    pub async fn verify(
+        &self,
+        url: &Url,
+        locale: BrowserLocale,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ResolveError> {
+        http::validate(url)?;
+        let browser = self.browser.as_ref().ok_or(BrowserFailure::Unavailable)?;
+        let session = browser.verify(url, locale, cancellation).await?;
+        if session.user_agent.is_empty() {
+            return Err(BrowserFailure::Unavailable.into());
+        }
+        self.sessions.store(url, session, true);
+        Ok(())
+    }
+
+    pub async fn import_browser_cookies(
+        &self,
+        browser: InstalledBrowser,
+        url: &Url,
+    ) -> Result<usize, ResolveError> {
+        http::validate(url)?;
+        let helper = self
+            .native_browser
+            .as_ref()
+            .ok_or(BrowserFailure::Unavailable)?;
+        let (count, session) = helper.import(browser, url).await?;
+        self.sessions.store(url, session, count > 0);
+        Ok(count)
+    }
+
+    pub fn session_version(&self, url: &Url) -> u64 {
+        self.sessions.version(url)
     }
 
     pub fn with_crawler(mut self, crawler: impl CrawlerPlugin + 'static) -> Self {
@@ -236,6 +338,63 @@ impl Resolver {
         }
     }
 
+    /// Resolves again after HTTP rejects an existing transfer representation.
+    pub async fn recover_link(
+        &self,
+        url: &Url,
+        cancellation: &CancellationToken,
+        allow_generic_xfs: bool,
+        prefer_browser: bool,
+    ) -> Result<Option<Resolution>, ResolveError> {
+        http::validate(url)?;
+        let ctx = self.context(cancellation);
+        let recipes = recipes::load(self.recipes.as_deref()).await?;
+        let fallback = allow_generic_xfs.then_some(&Builtin::XFileSharing as &dyn HostPlugin);
+        let recover = async {
+            if let Some(plugin) = find_plugin(&recipes, self, url).or(fallback) {
+                let recipe = recipes.iter().find(|recipe| recipe.matches(url));
+                if prefer_browser
+                    && self.browser.is_some()
+                    && !plugin.requires_browser()
+                    && self.session_version(url) != 0
+                {
+                    let xfs =
+                        (plugin.name() == Builtin::XFileSharing.name()).then(Recipe::xfs_browser);
+                    let fallback = self
+                        .browser_fallback(url, recipe.or(xfs.as_ref()), &ctx, plugin.limits())
+                        .await;
+                    if !matches!(fallback, Err(ResolveError::NoDownload)) {
+                        return fallback.map(Some);
+                    }
+                }
+                return self.resolve_inner(url, &ctx, allow_generic_xfs).await;
+            }
+            let response = ctx
+                .get(url.clone())
+                .header(header::RANGE, "bytes=0-")
+                .send()
+                .await?;
+            let result = if http::is_html(&response) {
+                http::page(response).await.map(|_| None)
+            } else {
+                http::status(&response).map(|()| {
+                    Some(ctx.direct(response.url().clone(), url, HosterLimits::default()))
+                })
+            };
+            if matches!(result, Err(ResolveError::VerificationRequired)) {
+                return self
+                    .browser_fallback(url, None, &ctx, HosterLimits::default())
+                    .await
+                    .map(Some);
+            }
+            result
+        };
+        tokio::select! {
+            () = cancellation.cancelled() => Err(ResolveError::Cancelled),
+            result = recover => result,
+        }
+    }
+
     async fn resolve_inner(
         &self,
         url: &Url,
@@ -246,7 +405,9 @@ impl Resolver {
         let recipe = recipes.iter().find(|recipe| recipe.matches(url));
         let fallback = allow_generic_xfs.then_some(&Builtin::XFileSharing as &dyn HostPlugin);
         let Some(plugin) = find_plugin(&recipes, self, url).or(fallback) else {
-            return Ok(None);
+            let headers = self.sessions.headers(url);
+            return Ok((!headers.is_empty())
+                .then(|| http::direct(url.clone(), url, HosterLimits::default(), headers)));
         };
         let result = if plugin.requires_browser() {
             Err(ResolveError::VerificationRequired)
@@ -254,14 +415,48 @@ impl Resolver {
             plugin.resolve(ctx, url).await
         };
         let resolution = match (result, &self.browser) {
-            (Err(ResolveError::VerificationRequired), Some(browser)) => {
-                browser.resolve(url, recipe, &ctx.cancellation).await?
+            (Err(ResolveError::VerificationRequired), Some(_)) => {
+                let xfs = (plugin.name() == Builtin::XFileSharing.name()).then(Recipe::xfs_browser);
+                self.browser_fallback(url, recipe.or(xfs.as_ref()), ctx, plugin.limits())
+                    .await?
             }
             (result, _) => result?,
         };
         http::validate(&resolution.url)?;
         tracing::debug!(plugin = plugin.name(), "Resolved hoster link");
         Ok(Some(resolution))
+    }
+
+    async fn browser_fallback(
+        &self,
+        url: &Url,
+        recipe: Option<&Recipe>,
+        ctx: &Context,
+        limits: HosterLimits,
+    ) -> Result<Resolution, ResolveError> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(ResolveError::VerificationRequired)?;
+        let mut resolution = browser
+            .resolve(url, recipe, &ctx.cancellation)
+            .await
+            .map_err(|error| {
+                if matches!(
+                    error,
+                    ResolveError::Browser(
+                        BrowserFailure::Unavailable
+                            | BrowserFailure::ProfileInUse
+                            | BrowserFailure::Timeout
+                    )
+                ) {
+                    ResolveError::VerificationRequired
+                } else {
+                    error
+                }
+            })?;
+        resolution.limits = limits;
+        Ok(resolution)
     }
 
     pub async fn inspect(
@@ -275,6 +470,30 @@ impl Resolver {
             () = cancellation.cancelled() => Err(ResolveError::Cancelled),
             result = self.inspect_inner(url, &ctx) => result,
         }
+    }
+
+    pub async fn inspect_browser(
+        &self,
+        url: &Url,
+        cancellation: &CancellationToken,
+    ) -> Result<PageAnalysis, ResolveError> {
+        http::validate(url)?;
+        let browser = self.browser.as_ref().ok_or(BrowserFailure::Unavailable)?;
+        let page = browser.inspect(url, cancellation).await?;
+        http::validate(&page.url)?;
+        if page.html.len() > http::PAGE_LIMIT {
+            return Err(ResolveError::TooLarge);
+        }
+        if page.html.is_empty() && page.resources.is_empty() {
+            return Ok(PageAnalysis::direct(page.url, None));
+        }
+        self.sessions.store(&page.url, page.session, false);
+        let ctx = self.context(cancellation);
+        let mut analysis = ctx
+            .analyze_page(&page.url, &page.html, &page.resources)
+            .await;
+        grabber::probe(&ctx, &page.url, &mut analysis).await;
+        Ok(analysis)
     }
 
     async fn inspect_inner(&self, url: &Url, ctx: &Context) -> Result<PageAnalysis, ResolveError> {
@@ -297,16 +516,21 @@ impl Resolver {
             .find(|crawler| crawler.matches(url))
             .ok_or(ResolveError::NoDownload)?;
         match (crawler.crawl(ctx, url).await, &self.browser) {
-            (Err(ResolveError::VerificationRequired), Some(browser)) => {
-                let page = browser.inspect(url, &ctx.cancellation).await?;
-                http::validate(&page.url)?;
-                if page.html.len() > http::PAGE_LIMIT {
-                    return Err(ResolveError::TooLarge);
-                }
-                Ok(ctx
-                    .analyze_page(&page.url, &page.html, &page.resources)
-                    .await)
-            }
+            (Err(ResolveError::VerificationRequired), Some(_)) => self
+                .inspect_browser(url, &ctx.cancellation)
+                .await
+                .map_err(|error| {
+                    if matches!(
+                        error,
+                        ResolveError::Browser(
+                            BrowserFailure::Unavailable | BrowserFailure::ProfileInUse
+                        )
+                    ) {
+                        ResolveError::VerificationRequired
+                    } else {
+                        error
+                    }
+                }),
             (result, _) => result,
         }
     }
@@ -342,6 +566,23 @@ impl Context {
         &self.resolver.client
     }
 
+    fn request(&self, method: Method, url: Url) -> RequestBuilder {
+        let headers = self.resolver.sessions.headers(&url);
+        self.client().request(method, url).headers(headers)
+    }
+
+    pub fn get(&self, url: Url) -> RequestBuilder {
+        self.request(Method::GET, url)
+    }
+
+    pub fn post(&self, url: Url) -> RequestBuilder {
+        self.request(Method::POST, url)
+    }
+
+    pub fn head(&self, url: Url) -> RequestBuilder {
+        self.request(Method::HEAD, url)
+    }
+
     pub async fn account(&self, host: &str) -> Result<Option<HosterCredentials>, ResolveError> {
         self.resolver.accounts.get(host.to_owned()).await
     }
@@ -365,27 +606,13 @@ impl Context {
     }
 
     pub fn direct(&self, url: Url, referer: &Url, limits: HosterLimits) -> Resolution {
-        let mut headers = HeaderMap::new();
-        if let Some(mut cookie) = self.resolver.cookies.cookies(&url) {
+        let mut headers = self.resolver.sessions.headers(&url);
+        if !headers.contains_key(header::COOKIE)
+            && let Some(mut cookie) = self.resolver.cookies.cookies(&url)
+        {
             cookie.set_sensitive(true);
             headers.insert(header::COOKIE, cookie);
         }
-        let mut referer = referer.clone();
-        referer.set_fragment(None);
-        // Only include the full referrer on the originating site.
-        if referer.origin() != url.origin() {
-            referer.set_query(None);
-            referer.set_path("/");
-        }
-        if let Ok(value) = HeaderValue::from_str(referer.as_str()) {
-            headers.insert(header::REFERER, value);
-        }
-        Resolution {
-            url,
-            headers,
-            limits,
-            expires: None,
-            filename: None,
-        }
+        http::direct(url, referer, limits, headers)
     }
 }

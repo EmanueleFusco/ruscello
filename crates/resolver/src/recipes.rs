@@ -66,6 +66,26 @@ pub enum RecipeStep {
 }
 
 impl Recipe {
+    pub(crate) fn xfs_browser() -> Self {
+        // Every action is still gated by the page's native form and countdown.
+        let submit = |operation: &str, button: &str| RecipeStep::SubmitForm {
+            selector: format!("form:has(input[name=op][value={operation}])"),
+            button: Some(button.to_owned()),
+            fields: BTreeMap::new(),
+        };
+        Self {
+            config: Config { name: "XFileSharing".into(), patterns: Vec::new(), max_connections: Some(NonZeroUsize::MIN), max_parallel: Some(NonZeroUsize::MIN), browser: true },
+            patterns: Vec::new(),
+            steps: vec![
+                submit("download1", "#method_free, [name=method_free]"),
+                RecipeStep::WaitFor { selector: "#downloadbtn, #downloadlink, #direct_link".into() },
+                RecipeStep::Wait { seconds: None, from_page: Some("#countdown [data-seconds], #countdown span, #countdown, #seconds, [data-countdown]".into()), default_seconds: Some(0) },
+                RecipeStep::Click { selector: "#downloadbtn, #downloadlink, #direct_link".into() },
+                RecipeStep::ExpectDownload(true),
+            ],
+        }
+    }
+
     pub fn parse(raw: &str) -> Result<Self, ResolveError> {
         let file: File = toml::from_str(raw).map_err(|_| ResolveError::InvalidRecipe)?;
         if file.recipe.name.trim().is_empty()
@@ -188,7 +208,7 @@ impl Recipe {
             match step {
                 RecipeStep::Get(path) => {
                     let target = http::join(&page.url, path).ok_or(ResolveError::InvalidLink)?;
-                    page = Page::read(ctx.client().get(target).send().await?).await?;
+                    page = Page::read(ctx.get(target).send().await?).await?;
                 }
                 RecipeStep::SubmitForm {
                     selector,
@@ -261,8 +281,7 @@ impl Recipe {
                 RecipeStep::Follow(true) => {
                     let target = extracted.take().ok_or(ResolveError::NoDownload)?;
                     page = Page::read(
-                        ctx.client()
-                            .get(target)
+                        ctx.get(target)
                             .header(header::REFERER, page.url.as_str())
                             .send()
                             .await?,

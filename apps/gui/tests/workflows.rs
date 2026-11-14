@@ -799,3 +799,64 @@ async fn displays_torrent_status_telemetry_and_contextual_details_tabs() -> anyh
 
     Ok(())
 }
+
+#[tokio::test]
+async fn shows_verification_action_and_cookie_import_in_both_languages() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    app.preferences.notifications = false;
+    let server = TestServer::start().await?;
+    let fixture = ruscello_testkit::BrowserFixture::register(&server);
+    let engine = EngineHandle::start(EngineOptions::new(
+        temp.path().join("queue.db"),
+        temp.path().join("downloads"),
+    ))
+    .await?;
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(ruscello_engine::AddDownload::new(Source::Http {
+            url: fixture.protected[0].clone(),
+        }))
+        .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if matches!(events.recv().await?, EngineEvent::StatusChanged { id: changed, status: Status::WaitingUser } if changed == id) {
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+    }).await??;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(&mut app, Message::Select(id)).await;
+    assert!(
+        matches!(click(&app, "Open verification")?, Message::OpenVerification(selected) if selected == id)
+    );
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+    let verify = click(&app, "Apri verifica")?;
+    apply(&mut app, verify).await;
+    assert_eq!(app.banner, Some("browser-unavailable"));
+    let _ = app.update(Message::SettingsPage(Page::Integrations));
+    assert_eq!(
+        app.strings.get("cookie-import-firefox"),
+        "Importa da Firefox"
+    );
+    apply(&mut app, Message::CookieSite(fixture.protected[0].clone())).await;
+    let import = click(&app, "Importa da Firefox")?;
+    assert!(matches!(
+        import,
+        Message::ImportCookies(ruscello_engine::InstalledBrowser::Firefox)
+    ));
+    assert!(!app.cookie_importing);
+    apply(&mut app, import).await;
+    assert!(!app.cookie_importing);
+    assert_eq!(app.banner, Some("browser-unavailable"));
+    apply(&mut app, Message::BrowserHelper(false)).await;
+    assert!(!app.preferences.browser_helper);
+    apply(&mut app, Message::Settings(false)).await;
+    let verify = click(&app, "Apri verifica")?;
+    apply(&mut app, verify).await;
+    assert_eq!(app.banner, Some("browser-disabled"));
+    engine.shutdown().await?;
+    Ok(())
+}

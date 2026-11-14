@@ -280,8 +280,7 @@ Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
 - [x] **M5.7 Hoster accounts** (premium/login credentials) stored in the OS keyring (`keyring` crate), never in
       plaintext in SQLite.
 
-Browser-assisted verification, browser recipe execution, and network capture are connected through the resolver
-interface and require the M6 helper. The queue exposes `WaitingUser` for interactive verification.
+Browser-assisted verification, browser recipe execution, and resource capture use the M6 helper.
 Gofile's official Premium API requires a user token for listing public shares. Stream transfers are covered by M7.
 
 ### Definition of Done — M5
@@ -298,26 +297,26 @@ See ADR-0004. The browser helper is a **separate process** (`wry` + `tao`: WebVi
 Linux, WKWebView on macOS) spawned on demand and shut down after inactivity (saving RAM). It communicates with
 the engine over stdin/stdout JSON-lines defined in `ruscello-browser::protocol`.
 
-- [ ] **M6.1 Process lifecycle, persistent profile & IPC protocol**: spawn on demand, idle timeout shutdown, crash
+- [x] **M6.1 Process lifecycle, persistent profile & IPC protocol**: spawn on demand, idle timeout shutdown, crash
       recovery/restart, and a **persistent browser profile on disk** (`<data_dir>/webview_profile/`) so clearance cookies
       (e.g., `cf_clearance`) survive across batches and application restarts.
-- [ ] **M6.2 "Verification Required" window**: when a plugin/recipe detects an anti-bot challenge page
+- [x] **M6.2 "Verification Required" window**: when a plugin/recipe detects an anti-bot challenge page
       (full-page Cloudflare challenge, hoster CAPTCHA, login wall), the engine puts the download into
       `WaitingUser`, shows a non-intrusive notification; the user opens the helper window, **completes the
       check themselves**, and the helper detects navigation to the expected target page and closes automatically.
       Queued downloads for the same domain wait on the same verification (one check unlocks the entire batch
       for as long as the session remains valid).
-- [ ] **M6.3 Session reuse**: cookies (`cookies_for_url`, including `HttpOnly`) and the exact `User-Agent` from
+- [x] **M6.3 Session reuse**: cookies (`cookies_for_url`, including `HttpOnly`) and the exact `User-Agent` from
       the webview are exported to the engine's HTTP client for that domain. If a site rejects requests outside
       the browser context, fallback to M6.4.
-- [ ] **M6.4 Browser-assisted resolution**: execute recipe steps *inside* the webview DOM (`click`,
+- [x] **M6.4 Browser-assisted resolution**: execute recipe steps *inside* the webview DOM (`click`,
       `wait_for`, `extract`), with **popups and new windows blocked natively** (`new_window_req_handler`),
       and any browser-initiated download **intercepted** (`download_started_handler`): cancel the webview's
       built-in download and hand off the final URL + cookies + referer to our segmented Rust HTTP engine.
       The webview can run hidden when no user interaction is needed.
-- [ ] **M6.5 Resource capture**: injected script collecting `performance.getEntriesByType('resource')`,
+- [x] **M6.5 Resource capture**: injected script collecting `performance.getEntriesByType('resource')`,
       `<video>` sources, and `fetch`/`XHR` URLs → fed into LinkGrabber candidates (useful for embedded video players).
-- [ ] **M6.6 Cookie import from installed browsers** (best-effort: Firefox SQLite import; Chromium on Windows
+- [x] **M6.6 Cookie import from installed browsers** (best-effort: Firefox SQLite import; Chromium on Windows
       with App-Bound Encryption may not be accessible → recommend the M8 browser extension). Triggered only by
       explicit user action.
 

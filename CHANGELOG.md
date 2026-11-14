@@ -6,6 +6,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- M6.1–M6.6: On-demand native browser helper with a persistent profile. A user-completed verification
+  resumes waiting downloads for that site. Browser recipes block popups and hand file transfers to the
+  HTTP engine. LinkGrabber can discover browser resources, and Integration settings allow site-scoped
+  cookie import from Firefox or readable Chromium profiles. The desktop and CLI support English and Italian.
 - M5.1–M5.7: Hoster and page resolution, reloadable TOML recipes, and renewal of expired links and cookies
   while preserving HTTP checkpoints with matching validators. The desktop LinkGrabber supports scoring
   explanations, filters, selection, and named package imports in English and Italian.

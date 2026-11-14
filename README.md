@@ -17,16 +17,22 @@ persistent download queue. The desktop app supports Windows, Linux, and macOS.
 - **Desktop settings** include English and Italian with live switching, categories and rules, and hardware or
   software rendering.
 
-Browser-assisted verification and session reuse, HLS/DASH transfers, the LAN web interface, and automatic
-archive extraction are on the [roadmap](docs/PLAN.md). LinkGrabber can discover stream URLs today.
+When a site requires verification, select **Open verification** on the waiting download. Ruscello resumes
+waiting downloads for that site when you finish in the browser window. Use **Analyze in browser** in Add to
+include resources loaded by page scripts. **Settings → Integrations** offers site-scoped browser cookie import.
+HLS/DASH transfers, the LAN web interface, and automatic archive extraction are on the [roadmap](docs/PLAN.md).
 
 ## Development
 
 ```bash
+cargo build -p ruscello-webview      # Build the sibling helper for the GUI and CLI
 cargo run -p ruscello-gui            # GUI application
 cargo run -p ruscello-cli -- --help  # Headless CLI
 ./scripts/check.sh                   # (or scripts/check.ps1 on Windows) run all CI checks locally
 ```
+
+The helper uses WebKitGTK 4.1 on Linux, WebView2 on Windows, and WKWebView on macOS. Install the Linux
+development libraries listed in [AGENTS.md](AGENTS.md) or ensure the WebView2 Runtime is installed on Windows.
 
 Developer & agent documentation: [AGENTS.md](AGENTS.md), [Architecture](docs/ARCHITECTURE.md),
 [UI Specs](docs/UI.md), [Testing Strategy](docs/TESTING.md), [ADRs](docs/adr/).
@@ -35,7 +41,8 @@ Developer & agent documentation: [AGENTS.md](AGENTS.md), [Architecture](docs/ARC
 
 ```bash
 cargo run -p ruscello-cli -- get <url> -o downloads -x 16
-cargo run -p ruscello-cli -- inspect <page-url>
+cargo run -p ruscello-cli -- get <url> --browser
+cargo run -p ruscello-cli -- inspect <page-url> --browser
 cargo run -p ruscello-cli -- import links.dlc
 cargo run -p ruscello-cli -- --language it --help
 ```
