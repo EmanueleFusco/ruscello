@@ -108,6 +108,10 @@ impl Job {
         }
     }
 
+    pub(super) fn wake_at(&self) -> Instant {
+        self.next_tick.min(self.deadline).min(self.step_deadline)
+    }
+
     pub(super) fn tick(
         &mut self,
         webview: &WebView,
@@ -122,7 +126,12 @@ impl Job {
             return None;
         }
         self.next_tick = now + TICK;
-        if self.loading || self.evaluating || !self.navigating && !blank_ready {
+        if self.loading
+            || self.evaluating
+            || cfg!(any(target_os = "macos", target_os = "linux"))
+                && !self.navigating
+                && !blank_ready
+        {
             return None;
         }
         let html = match &self.current {

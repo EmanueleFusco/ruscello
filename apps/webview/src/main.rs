@@ -7,6 +7,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufRead, Read as _, Write as _},
     path::{Path, PathBuf},
+    sync::mpsc::{self, RecvTimeoutError, Sender},
     thread,
     time::{Duration, Instant},
 };
@@ -25,6 +26,7 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebView, WebViewBuilder}
 use job::Job;
 
 const TICK: Duration = Duration::from_millis(150);
+#[cfg(target_os = "macos")]
 const BLANK_PAGE: &str =
     "<!doctype html><html><head><title>Ruscello</title></head><body></body></html>";
 
@@ -32,6 +34,7 @@ const BLANK_PAGE: &str =
 enum Message {
     Input(Request),
     Closed,
+    Tick,
     LoadStarted,
     LoadFinished,
     BlankReady,
@@ -102,9 +105,11 @@ fn run() -> anyhow::Result<()> {
         let proxy = proxy.clone();
         move || read_requests(proxy)
     })?;
+    let timer = spawn_timer(proxy.clone())?;
     let mut job = None::<Job>;
     let mut generation = 0;
     let mut blank_ready = false;
+    let mut scheduled = None;
     events.run_return(|event, _, control| {
         let result = match event {
             Event::UserEvent(Message::Input(Request::Shutdown) | Message::Closed) => {
@@ -157,26 +162,67 @@ fn run() -> anyhow::Result<()> {
             Event::UserEvent(Message::Download(url)) => job
                 .as_mut()
                 .and_then(|active| active.download(&webview, url)),
-            Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. }) => job
+            Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. })
+            | Event::UserEvent(Message::Tick) => job
                 .as_mut()
                 .and_then(|active| active.tick(&webview, &proxy, blank_ready)),
             _ => None,
         };
         if let Some(response) = result {
-            job = None;
-            window.set_visible(false);
-            blank_ready = false;
-            let _ = webview.load_html(BLANK_PAGE);
+            if job.take().is_some() {
+                window.set_visible(false);
+                blank_ready = false;
+                #[cfg(target_os = "macos")]
+                let _ = webview.load_html(BLANK_PAGE);
+                #[cfg(not(target_os = "macos"))]
+                let _ = webview.load_url("about:blank");
+            }
             if reply(&response).is_err() {
                 *control = ControlFlow::Exit;
                 return;
             }
         }
-        *control = job.as_ref().map_or(ControlFlow::Wait, |active| {
-            ControlFlow::WaitUntil(active.next_tick.min(Instant::now() + TICK))
-        });
+        let wake = job.as_ref().map(Job::wake_at);
+        if wake != scheduled {
+            scheduled = wake;
+            let _ = timer.send(wake);
+        }
+        *control = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
     });
     Ok(())
+}
+
+// `tao`'s GTK backend ignores `ControlFlow::WaitUntil` deadlines when idle.
+fn spawn_timer(proxy: EventLoopProxy<Message>) -> io::Result<Sender<Option<Instant>>> {
+    let (tx, rx) = mpsc::channel::<Option<Instant>>();
+    thread::Builder::new()
+        .name("browser-timer".into())
+        .spawn(move || {
+            let mut next = None;
+            loop {
+                let Some(deadline) = next else {
+                    match rx.recv() {
+                        Ok(updated) => next = updated,
+                        Err(_) => break,
+                    }
+                    continue;
+                };
+                let now = Instant::now();
+                if deadline > now {
+                    match rx.recv_timeout(deadline - now) {
+                        Ok(updated) => next = updated,
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                    continue;
+                }
+                if proxy.send_event(Message::Tick).is_err() {
+                    break;
+                }
+                next = Some(now + TICK);
+            }
+        })?;
+    Ok(tx)
 }
 
 fn read_requests(proxy: EventLoopProxy<Message>) {
@@ -224,7 +270,6 @@ fn webview(
     let load_proxy = proxy.clone();
     let download_proxy = proxy.clone();
     let builder = WebViewBuilder::new_with_web_context(context)
-        .with_html(BLANK_PAGE)
         .with_devtools(false)
         .with_navigation_handler(|target| {
             target == "about:blank" || Url::parse(&target).is_ok_and(|url| web_url(&url))
@@ -255,8 +300,12 @@ fn webview(
     #[cfg(target_os = "macos")]
     let builder = {
         use wry::WebViewBuilderExtDarwin as _;
-        builder.with_data_store_identifier(profile_identifier(_profile)?)
+        builder
+            .with_html(BLANK_PAGE)
+            .with_data_store_identifier(profile_identifier(_profile)?)
     };
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_url("about:blank");
     #[cfg(target_os = "linux")]
     {
         use tao::platform::unix::WindowExtUnix as _;
