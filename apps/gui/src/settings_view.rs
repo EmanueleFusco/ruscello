@@ -5,10 +5,14 @@ use iced::{
 use ruscello_engine::SidecarKind;
 
 use crate::{
-    app::{App, Message},
+    app::{App, AutomationMsg, Message},
     icons::icon,
     preferences::{Appearance, Locale, Renderer},
-    settings::{Folder, Number, Page, TorrentField, TorrentOption, UpdateStatus},
+    settings::{
+        COMPLETION_ACTIONS, Folder, Number, OutsideHoursMode, Page, ScheduleRuleDraft,
+        ScheduleRuleMode, TorrentField, TorrentOption, UpdateStatus, WATCH_BEHAVIORS,
+        WatchFolderDraft, completion_action_key, watch_behavior_key,
+    },
     theme,
     view::{heading, muted, option},
 };
@@ -21,6 +25,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
             Page::General => '\u{e154}',
             Page::Downloads => '\u{e0b2}',
             Page::Speed => '\u{e29a}',
+            Page::Automation => '\u{e129}',
             Page::Torrent => '\u{e102}',
             Page::Categories => '\u{e0d7}',
             Page::Integrations => '\u{e247}',
@@ -47,6 +52,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
         Page::General => general(app),
         Page::Downloads => downloads(app),
         Page::Speed => speed(app),
+        Page::Automation => automation(app),
         Page::Torrent => torrent(app),
         Page::Categories => categories(app),
         Page::Integrations => integrations(app),
@@ -249,6 +255,401 @@ fn speed(app: &App) -> Element<'_, Message> {
     ]
     .spacing(10)
     .into()
+}
+
+fn automation(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    column![
+        automation_power_section(app),
+        automation_schedule_section(app),
+        automation_post_process_section(app),
+        automation_watch_folders_section(app),
+        row![
+            theme::action(text(l.get("save")))
+                .style(theme::primary)
+                .on_press(Message::Automation(AutomationMsg::Save)),
+        ],
+    ]
+    .spacing(12)
+    .into()
+}
+
+fn automation_power_section(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let draft = &app.automation_draft;
+    let completion_choices =
+        COMPLETION_ACTIONS
+            .into_iter()
+            .fold(row![].spacing(6), |row, action| {
+                row.push(option(
+                    l.get(completion_action_key(action)),
+                    draft.completion_action == action,
+                    Message::Automation(AutomationMsg::CompletionActionChanged(action)),
+                ))
+            });
+    let mut section = column![
+        text(l.get("automation-power-title")).size(16),
+        theme::check(draft.prevent_sleep_when_active)
+            .label(l.get("automation-prevent-sleep"))
+            .on_toggle(|enabled| Message::Automation(AutomationMsg::TogglePreventSleep(enabled))),
+        text(l.get("automation-completion-action")).size(14),
+        completion_choices,
+    ]
+    .spacing(8);
+    if matches!(
+        draft.completion_action,
+        ruscello_engine::QueueCompletionAction::Sleep
+            | ruscello_engine::QueueCompletionAction::Shutdown
+    ) {
+        section = section.push(
+            row![
+                text(l.get("automation-countdown-secs")).width(220),
+                theme::field(
+                    &l.get("seconds-placeholder"),
+                    &draft.completion_countdown_secs
+                )
+                .width(120)
+                .on_input(|val| Message::Automation(
+                    AutomationMsg::CompletionCountdownChanged(val)
+                )),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    container(section)
+        .padding(12)
+        .width(Fill)
+        .style(theme::panel)
+        .into()
+}
+
+fn automation_schedule_section(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let draft = &app.automation_draft;
+    let outside_choices = OutsideHoursMode::ALL
+        .into_iter()
+        .fold(row![].spacing(6), |row, mode| {
+            row.push(option(
+                l.get(mode.key()),
+                draft.outside_mode == mode,
+                Message::Automation(AutomationMsg::OutsideHoursModeChanged(mode)),
+            ))
+        });
+    let mut section = column![
+        text(l.get("automation-schedule-title")).size(16),
+        theme::check(draft.schedule_enabled)
+            .label(l.get("automation-schedule-enable"))
+            .on_toggle(
+                |enabled| Message::Automation(AutomationMsg::ToggleScheduleEnabled(enabled))
+            ),
+        text(l.get("schedule-outside-hours")).size(14),
+        outside_choices,
+    ]
+    .spacing(8);
+    if draft.outside_mode == OutsideHoursMode::LimitSpeed {
+        section = section.push(
+            row![
+                text(l.get("schedule-speed-limit")).width(220),
+                theme::field(&l.get("bytes-per-sec-hint"), &draft.outside_speed_bps)
+                    .width(160)
+                    .on_input(
+                        |val| Message::Automation(AutomationMsg::OutsideHoursSpeedChanged(val))
+                    ),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    for (index, rule) in draft.schedule_rules.iter().enumerate() {
+        section = section.push(schedule_rule_card(app, index, rule));
+    }
+    section = section.push(
+        theme::action(text(l.get("schedule-add-rule")))
+            .on_press(Message::Automation(AutomationMsg::AddScheduleRule)),
+    );
+    container(section)
+        .padding(12)
+        .width(Fill)
+        .style(theme::panel)
+        .into()
+}
+
+fn schedule_rule_card<'a>(
+    app: &'a App,
+    index: usize,
+    rule: &'a ScheduleRuleDraft,
+) -> Element<'a, Message> {
+    const DAY_KEYS: [&str; 7] = [
+        "day-mon", "day-tue", "day-wed", "day-thu", "day-fri", "day-sat", "day-sun",
+    ];
+    let l = &app.strings;
+    let days = (0_u8..7).fold(row![].spacing(4), |row, day| {
+        let active = (rule.days.bits() & (1_u8 << day)) != 0;
+        row.push(option(
+            l.get(DAY_KEYS[day as usize]),
+            active,
+            Message::Automation(AutomationMsg::ScheduleRuleDay(index, day, !active)),
+        ))
+    });
+    let modes = ScheduleRuleMode::ALL
+        .into_iter()
+        .fold(row![].spacing(6), |row, mode| {
+            row.push(option(
+                l.get(mode.key()),
+                rule.mode == mode,
+                Message::Automation(AutomationMsg::ScheduleRuleModeChanged(index, mode)),
+            ))
+        });
+    let mut card = column![
+        row![
+            theme::check(rule.enabled).on_toggle(move |enabled| {
+                Message::Automation(AutomationMsg::ToggleScheduleRuleEnabled(index, enabled))
+            }),
+            theme::field(&l.get("schedule-rule-name"), &rule.name).on_input(move |val| {
+                Message::Automation(AutomationMsg::ScheduleRuleName(index, val))
+            }),
+            theme::action(text(l.get("remove"))).on_press(Message::Automation(
+                AutomationMsg::RemoveScheduleRule(index)
+            )),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        days,
+        row![
+            text(l.get("schedule-from")).size(12).style(muted),
+            theme::field("23:00", &rule.start_hhmm)
+                .width(80)
+                .on_input(move |val| {
+                    Message::Automation(AutomationMsg::ScheduleRuleStart(index, val))
+                }),
+            text(l.get("schedule-to")).size(12).style(muted),
+            theme::field("07:00", &rule.end_hhmm)
+                .width(80)
+                .on_input(move |val| {
+                    Message::Automation(AutomationMsg::ScheduleRuleEnd(index, val))
+                }),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        modes,
+    ]
+    .spacing(6);
+    if rule.mode == ScheduleRuleMode::SpeedLimit {
+        card = card.push(
+            row![
+                text(l.get("schedule-speed-limit")).width(200),
+                theme::field(&l.get("bytes-per-sec-hint"), &rule.speed_bps)
+                    .width(160)
+                    .on_input(move |val| {
+                        Message::Automation(AutomationMsg::ScheduleRuleSpeedChanged(index, val))
+                    }),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    container(card)
+        .padding(10)
+        .width(Fill)
+        .style(theme::panel)
+        .into()
+}
+
+fn automation_post_process_section(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let draft = &app.automation_draft;
+    let mut passwords = column![].spacing(4);
+    for (index, _password) in draft.archive_passwords.iter().enumerate() {
+        passwords = passwords.push(
+            row![
+                text(format!(
+                    "{} #{}: ••••••••",
+                    l.get("extract-password"),
+                    index + 1
+                ))
+                .width(Fill)
+                .size(12),
+                theme::action(text(l.get("remove"))).on_press(Message::Automation(
+                    AutomationMsg::RemoveArchivePassword(index)
+                )),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    let section = column![
+        text(l.get("automation-post-title")).size(16),
+        theme::check(draft.auto_verify_checksums)
+            .label(l.get("automation-verify-checksums"))
+            .on_toggle(
+                |enabled| Message::Automation(AutomationMsg::ToggleAutoVerifyChecksums(enabled))
+            ),
+        rule::horizontal(1).style(theme::separator),
+        theme::check(draft.auto_extract)
+            .label(l.get("automation-auto-extract"))
+            .on_toggle(|enabled| Message::Automation(AutomationMsg::ToggleAutoExtract(enabled))),
+        theme::check(draft.extract_into_subfolder)
+            .label(l.get("automation-extract-subfolder"))
+            .on_toggle(
+                |enabled| Message::Automation(AutomationMsg::ToggleExtractSubfolder(enabled))
+            ),
+        theme::check(draft.delete_archives_after_extraction)
+            .label(l.get("automation-delete-archives"))
+            .on_toggle(|enabled| Message::Automation(AutomationMsg::ToggleDeleteArchives(enabled))),
+        row![
+            theme::field(
+                &l.get("extract-password-placeholder"),
+                &draft.new_archive_password
+            )
+            .secure(true)
+            .on_input(|val| Message::Automation(AutomationMsg::ArchivePasswordInput(val))),
+            theme::action(text(l.get("extract-add-password")))
+                .on_press(Message::Automation(AutomationMsg::AddArchivePassword)),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        passwords,
+        row![
+            text(l.get("automation-external-extractor")).width(210),
+            theme::field("7z / unrar", &draft.external_extractor_path).on_input(|val| {
+                Message::Automation(AutomationMsg::ExternalExtractorChanged(val))
+            }),
+            theme::action(text(l.get("choose-file")))
+                .on_press(Message::Automation(AutomationMsg::PickExternalExtractor)),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        rule::horizontal(1).style(theme::separator),
+        text(l.get("automation-post-command")).size(14),
+        theme::field(
+            &l.get("automation-post-command-placeholder"),
+            &draft.post_download_command,
+        )
+        .on_input(|val| Message::Automation(AutomationMsg::PostCommandChanged(val))),
+        text(l.get("automation-post-command-help"))
+            .size(12)
+            .style(muted),
+        row![
+            text(l.get("automation-post-timeout")).width(210),
+            theme::field("60", &draft.post_download_timeout_secs)
+                .width(120)
+                .on_input(|val| Message::Automation(AutomationMsg::PostTimeoutChanged(val))),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    ]
+    .spacing(8);
+    container(section)
+        .padding(12)
+        .width(Fill)
+        .style(theme::panel)
+        .into()
+}
+
+fn automation_watch_folders_section(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let draft = &app.automation_draft;
+    let mut section = column![
+        text(l.get("automation-watch-title")).size(16),
+        theme::check(draft.watch_enabled)
+            .label(l.get("automation-watch-enable"))
+            .on_toggle(|enabled| Message::Automation(AutomationMsg::ToggleWatchEnabled(enabled))),
+        row![
+            text(l.get("automation-watch-interval")).width(210),
+            theme::field("5", &draft.watch_poll_interval_secs)
+                .width(120)
+                .on_input(|val| Message::Automation(AutomationMsg::WatchPollChanged(val))),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    ]
+    .spacing(8);
+    for (index, rule) in draft.watch_rules.iter().enumerate() {
+        section = section.push(watch_folder_card(app, index, rule));
+    }
+    section = section.push(
+        row![
+            theme::action(text(l.get("watch-add-folder")))
+                .on_press(Message::Automation(AutomationMsg::AddWatchRule)),
+            theme::action(text(l.get("watch-browse-new")))
+                .on_press(Message::Automation(AutomationMsg::PickNewWatchRuleDir)),
+            theme::action(text(l.get("watch-scan-now")))
+                .on_press(Message::Automation(AutomationMsg::ScanWatchNow)),
+        ]
+        .spacing(8),
+    );
+    container(section)
+        .padding(12)
+        .width(Fill)
+        .style(theme::panel)
+        .into()
+}
+
+fn watch_folder_card<'a>(
+    app: &'a App,
+    index: usize,
+    rule: &'a WatchFolderDraft,
+) -> Element<'a, Message> {
+    let l = &app.strings;
+    let behaviors = WATCH_BEHAVIORS
+        .into_iter()
+        .fold(row![].spacing(6), |row, behavior| {
+            row.push(option(
+                l.get(watch_behavior_key(behavior)),
+                rule.processed_behavior == behavior,
+                Message::Automation(AutomationMsg::WatchRuleBehaviorChanged(index, behavior)),
+            ))
+        });
+    let card = column![
+        row![
+            theme::check(rule.enabled).on_toggle(move |enabled| {
+                Message::Automation(AutomationMsg::ToggleWatchRuleEnabled(index, enabled))
+            }),
+            theme::field(&l.get("folder"), &rule.directory).on_input(move |val| {
+                Message::Automation(AutomationMsg::WatchRuleDirChanged(index, val))
+            }),
+            theme::action(text(l.get("choose-folder")))
+                .on_press(Message::Automation(AutomationMsg::PickWatchRuleDir(index))),
+            theme::action(text(l.get("remove")))
+                .on_press(Message::Automation(AutomationMsg::RemoveWatchRule(index))),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        row![
+            theme::check(rule.import_torrents)
+                .label(".torrent")
+                .on_toggle(move |enabled| {
+                    Message::Automation(AutomationMsg::ToggleWatchRuleTorrents(index, enabled))
+                }),
+            theme::check(rule.import_dlc)
+                .label(".dlc")
+                .on_toggle(move |enabled| {
+                    Message::Automation(AutomationMsg::ToggleWatchRuleDlc(index, enabled))
+                }),
+            theme::check(rule.import_txt)
+                .label(".txt")
+                .on_toggle(move |enabled| {
+                    Message::Automation(AutomationMsg::ToggleWatchRuleTxt(index, enabled))
+                }),
+        ]
+        .spacing(12),
+        row![
+            text(l.get("category")).width(120),
+            theme::field(&l.get("optional-category"), &rule.category).on_input(move |val| {
+                Message::Automation(AutomationMsg::WatchRuleCategoryChanged(index, val))
+            }),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        behaviors,
+    ]
+    .spacing(6);
+    container(card)
+        .padding(10)
+        .width(Fill)
+        .style(theme::panel)
+        .into()
 }
 
 fn torrent(app: &App) -> Element<'_, Message> {

@@ -23,6 +23,7 @@ pub struct CategoryId(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
     Http { url: String },
+    Ftp { url: String },
     Torrent(TorrentSource),
     Media { url: String },
     Hoster { url: String },
@@ -31,6 +32,7 @@ pub enum Source {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
     Http,
+    Ftp,
     Torrent,
     Media,
     Hoster,
@@ -40,6 +42,7 @@ impl Source {
     pub fn kind(&self) -> SourceKind {
         match self {
             Self::Http { .. } => SourceKind::Http,
+            Self::Ftp { .. } => SourceKind::Ftp,
             Self::Torrent(_) => SourceKind::Torrent,
             Self::Media { .. } => SourceKind::Media,
             Self::Hoster { .. } => SourceKind::Hoster,

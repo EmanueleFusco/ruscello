@@ -13,10 +13,10 @@ use std::{
 
 use ruscello_engine::{
     BandwidthContext, BrowserLocale, BrowserOptions, ChecksumAlgorithm, ContainerFile,
-    DownloadOptions, DownloadProgress, EngineHandle, ExpectedChecksum, HttpDownloader, HttpError,
-    MediaEngine, MediaError, MediaKind, MediaRequest, MediaTransferJob, PageAnalysis, ResolveError,
-    Resolver, SidecarEndpoints, SidecarSettings, Url, is_dash_url, is_hls_url, is_manifest_url,
-    prepare_http_download,
+    DownloadOptions, DownloadProgress, EngineHandle, ExpectedChecksum, FtpCredentials,
+    HttpDownloader, HttpError, MediaEngine, MediaError, MediaKind, MediaRequest, MediaTransferJob,
+    PageAnalysis, ResolveError, Resolver, SidecarEndpoints, SidecarSettings, Url, is_dash_url,
+    is_hls_url, is_manifest_url, prepare_http_download, sanitize_ftp_url,
 };
 use ruscello_platform::{language::Language, logging, paths::AppPaths};
 use tokio::sync::watch;
@@ -115,23 +115,52 @@ async fn run(mut arguments: Arguments, language: Language) -> anyhow::Result<Pat
     };
     let cancellation = arguments.options.cancellation.clone();
     let resolver = resolver()?;
-    let is_media =
-        arguments.format.is_some() || arguments.ytdlp.is_some() || is_manifest_url(&arguments.url);
+    let is_ftp = matches!(arguments.url.scheme(), "ftp" | "ftps");
+    let is_media = !is_ftp
+        && (arguments.format.is_some()
+            || arguments.ytdlp.is_some()
+            || is_manifest_url(&arguments.url));
     let transfer = async {
         if is_media {
             run_media_download(&downloader, &resolver, &arguments).await
         } else {
-            prepare_http_download(
-                &resolver,
-                &arguments.url,
-                &mut arguments.options,
-                false,
-                arguments.browser.then_some(browser_locale(language)),
-            )
-            .await?;
-            Ok(downloader
-                .download(&arguments.url, arguments.options)
-                .await?)
+            let target_url = if is_ftp {
+                let mut credentials = (!arguments.url.username().is_empty()
+                    || arguments.url.password().is_some())
+                .then(|| FtpCredentials {
+                    username: if arguments.url.username().is_empty() {
+                        "anonymous".to_owned()
+                    } else {
+                        arguments.url.username().to_owned()
+                    },
+                    password: arguments.url.password().unwrap_or_default().to_owned(),
+                });
+                if arguments.ftp_user.is_some() || arguments.ftp_password.is_some() {
+                    let existing = credentials.unwrap_or(FtpCredentials {
+                        username: "anonymous".to_owned(),
+                        password: String::new(),
+                    });
+                    credentials = Some(FtpCredentials {
+                        username: arguments.ftp_user.clone().unwrap_or(existing.username),
+                        password: arguments.ftp_password.clone().unwrap_or(existing.password),
+                    });
+                }
+                if credentials.is_some() {
+                    arguments.options.ftp_credentials = credentials;
+                }
+                sanitize_ftp_url(&arguments.url)
+            } else {
+                prepare_http_download(
+                    &resolver,
+                    &arguments.url,
+                    &mut arguments.options,
+                    false,
+                    arguments.browser.then_some(browser_locale(language)),
+                )
+                .await?;
+                arguments.url.clone()
+            };
+            Ok(downloader.download(&target_url, arguments.options).await?)
         }
     };
     tokio::pin!(transfer);
@@ -457,6 +486,8 @@ struct Arguments {
     format: Option<String>,
     ytdlp: Option<PathBuf>,
     ffmpeg: Option<PathBuf>,
+    ftp_user: Option<String>,
+    ftp_password: Option<String>,
 }
 
 enum Command {
@@ -507,6 +538,9 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
         Some("-V" | "--version") => return Ok(Command::Version),
         Some("inspect") => {
             let url = url_arg(&args.next().ok_or(())?)?;
+            if matches!(url.scheme(), "ftp" | "ftps") {
+                return Err(());
+            }
             let mut browser = false;
             let mut ytdlp = None;
             let mut ffmpeg = None;
@@ -577,6 +611,8 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
         format: None,
         ytdlp: None,
         ffmpeg: None,
+        ftp_user: None,
+        ftp_password: None,
     };
     while let Some(flag) = args.next() {
         match flag.to_str() {
@@ -588,6 +624,14 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
                 let value = args.next().ok_or(())?;
                 let text = value.to_str().ok_or(())?;
                 arguments.format = Some(text.to_owned());
+            }
+            Some("--ftp-user") => {
+                let value = args.next().ok_or(())?;
+                arguments.ftp_user = Some(value.to_str().ok_or(())?.to_owned());
+            }
+            Some("--ftp-password") => {
+                let value = args.next().ok_or(())?;
+                arguments.ftp_password = Some(value.to_str().ok_or(())?.to_owned());
             }
             Some("--ytdlp") => arguments.ytdlp = Some(args.next().ok_or(())?.into()),
             Some("--ffmpeg") => arguments.ffmpeg = Some(args.next().ok_or(())?.into()),
@@ -630,7 +674,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
 
 fn url_arg(value: &OsStr) -> Result<Url, ()> {
     let url = Url::parse(value.to_str().ok_or(())?).map_err(|_| ())?;
-    if matches!(url.scheme(), "http" | "https") {
+    if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps") {
         Ok(url)
     } else {
         Err(())

@@ -7,6 +7,7 @@
 mod checksum;
 mod download;
 mod filename;
+mod ftp;
 mod limit;
 mod probe;
 mod retry;
@@ -18,6 +19,7 @@ pub use checksum::{ChecksumAlgorithm, ChecksumError, ExpectedChecksum};
 pub use download::{
     DownloadOptions, DownloadPreparation, DownloadProgress, HttpDownloader, SegmentProgress,
 };
+pub use ftp::{FtpCredentials, sanitize_ftp_url};
 pub use limit::BandwidthLimit;
 pub use probe::{HttpError, Probe, Validators, client, probe};
 pub use reqwest::Url;

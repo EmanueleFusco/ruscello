@@ -102,7 +102,8 @@ for that origin resume. Add also offers **Analyze in browser** for pages with sc
   Windows also offers an optional **Fixed refresh rate (NVIDIA)** setting for hardware rendering. It shows existing
   fixed-refresh profiles and can restore an override applied by Ruscello. Restart the app after changing the profile.
 - **Downloads**: Default folder, max concurrent downloads, max connections per file/host, temporary folder.
-- **Speed**: Global limits, Alternative speed limits (`🐢`), Time-of-day scheduler.
+- **Speed**: Global limits and Alternative speed limits (`🐢`).
+- **Automation**: OS sleep inhibition, Queue completion actions (with cancellable countdown banner), Time-of-Day scheduler rules, automatic checksum verification (`.sfv`/`.md5`/`.sha256`), automatic archive extraction (`.zip`, `.7z`, `.tar.*`, external `.rar` sidecar, password list), post-download command hook, and Watch Folders (`.torrent`, `.dlc`, `.txt`).
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.
 - **Categories & Rules**: User categories, default folders, auto-assignment rules.
 - **Integrations & Remote Web UI**:

@@ -107,7 +107,8 @@ fn reconcile(
             ));
         }
         if download.status() != Status::Completed
-            && let Source::Http { url } | Source::Hoster { url } = &download.source
+            && let Source::Http { url } | Source::Hoster { url } | Source::Ftp { url } =
+                &download.source
         {
             let checkpoint = Url::parse(url).ok().and_then(|url| {
                 checkpoints
@@ -160,13 +161,16 @@ fn reconcile(
                 {
                     continue;
                 }
-                let mut download = Download::new(
-                    id,
+                let source = if matches!(url.scheme(), "ftp" | "ftps") {
+                    Source::Ftp {
+                        url: url.to_string(),
+                    }
+                } else {
                     Source::Http {
                         url: url.to_string(),
-                    },
-                    job.destination.clone(),
-                );
+                    }
+                };
+                let mut download = Download::new(id, source, job.destination.clone());
                 download.transition(Status::Paused)?;
                 apply_checkpoint(&mut download, checkpoint);
                 let entry = QueueEntry {

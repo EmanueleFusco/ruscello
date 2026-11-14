@@ -287,8 +287,14 @@ impl TelemetryHub {
                 };
                 !updated
             }
-            EngineEvent::QueueChanged => true,
-            EngineEvent::Log { .. } => false,
+            EngineEvent::QueueChanged
+            | EngineEvent::AutomationUpdated(_)
+            | EngineEvent::ScheduleChanged(_) => true,
+            EngineEvent::PostProcessing { .. }
+            | EngineEvent::QueueCompleted { .. }
+            | EngineEvent::CompletionCountdown { .. }
+            | EngineEvent::CompletionCountdownCancelled
+            | EngineEvent::Log { .. } => false,
         }
     }
 }

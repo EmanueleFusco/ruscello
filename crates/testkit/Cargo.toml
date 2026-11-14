@@ -12,7 +12,11 @@ publish.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 percent-encoding.workspace = true
-tokio.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "sync"] }
+tokio-rustls.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true

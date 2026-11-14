@@ -68,7 +68,13 @@ impl Status {
             Paused | Failed { .. } => matches!(to, Queued),
             Seeding => matches!(
                 to,
-                Queued | Resolving | Downloading | Paused | Completed | Failed { .. }
+                Queued
+                    | Resolving
+                    | Downloading
+                    | Paused
+                    | PostProcessing
+                    | Completed
+                    | Failed { .. }
             ),
             PostProcessing => matches!(to, Queued | Paused | Seeding | Completed | Failed { .. }),
             Completed => matches!(to, Resolving),
@@ -111,7 +117,7 @@ mod tests {
             [true, true, true, false, true, false, false, false, true],
             [true, true, true, true, true, true, true, true, true],
             [true, false, false, false, true, false, false, false, false],
-            [true, true, false, true, true, true, false, true, true],
+            [true, true, false, true, true, true, true, true, true],
             [true, false, false, false, true, true, true, true, true],
             [false, true, false, false, false, false, false, true, false],
             [true, false, false, false, false, false, false, false, true],

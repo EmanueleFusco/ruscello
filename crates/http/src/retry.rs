@@ -25,9 +25,14 @@ pub enum ErrorClass {
 impl HttpError {
     pub fn classification(&self) -> ErrorClass {
         match self {
-            Self::Status(StatusCode::UNAUTHORIZED | StatusCode::PROXY_AUTHENTICATION_REQUIRED) => {
-                ErrorClass::Authentication
-            }
+            Self::Status(StatusCode::UNAUTHORIZED | StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+            | Self::FtpAuthentication => ErrorClass::Authentication,
+            Self::Ftp {
+                transient: true, ..
+            } => ErrorClass::Transient,
+            Self::Ftp {
+                transient: false, ..
+            } => ErrorClass::Permanent,
             Self::Status(StatusCode::FORBIDDEN | StatusCode::GONE) => ErrorClass::ExpiredLink,
             Self::ExpiredRepresentation => ErrorClass::ExpiredLink,
             Self::Status(code)

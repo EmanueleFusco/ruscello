@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -24,19 +24,34 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AddDownload, CategorySettings, DiskPolicy, EngineError, EngineEvent, EngineLog, EngineOptions,
-    EngineSnapshot, Limits, MediaEngine, MediaPhase, ProgressUpdate, SidecarSettings,
+    AddDownload, AutomationSettings, CategorySettings, Clock, DiskPolicy, EngineError, EngineEvent,
+    EngineLog, EngineOptions, EngineSnapshot, Limits, MediaEngine, MediaPhase, PostProcessStage,
+    PowerController, ProgressUpdate, QueueCompletionAction, ScheduleDecision, SidecarSettings,
+    SleepInhibitor, SystemClock, SystemPowerController, SystemSleepInhibitor,
     TorrentRuntimeProgress,
+    archive::{ArchiveError, parse_archive_volume},
     categories::CategoryBook,
-    handle::{Command, LIMITS_KEY, Reply, TORRENT_SETTINGS_KEY, Update},
+    handle::{AUTOMATION_SETTINGS_KEY, Command, LIMITS_KEY, Reply, TORRENT_SETTINGS_KEY, Update},
     media_bridge::{self, SIDECAR_SETTINGS_KEY},
+    post_process::{
+        PostProcessError, PostProcessJob, PostProcessOutcome, download_target_path,
+        ready_for_archive_extraction, run_post_processing, should_post_process,
+    },
     torrent_bridge,
-    transfer::{self, Published, TransferError, source_url},
+    transfer::{self, Published, TransferError, normalize_ftp_source, source_url},
+    watch::{WatchImportItem, WatchScanner},
 };
 
 const PROGRESS_PERIOD: Duration = Duration::from_millis(250);
+const AUTOMATION_PERIOD: Duration = Duration::from_secs(1);
 const TORRENT_PERSIST_INTERVAL: Duration = Duration::from_secs(5);
 type Outcome = Result<Published, TransferError>;
+
+struct CompletionCountdownState {
+    action: QueueCompletionAction,
+    ends_at: Instant,
+    last_emitted_secs: u64,
+}
 
 pub(super) struct Scheduler {
     storage: Storage,
@@ -49,6 +64,33 @@ pub(super) struct Scheduler {
     limits: Limits,
     torrent_settings: TorrentSettings,
     temporary_bandwidth: Option<std::num::NonZeroU64>,
+    automation: AutomationSettings,
+    clock: Arc<dyn Clock>,
+    sleep_inhibitor: Arc<dyn SleepInhibitor>,
+    sleep_inhibited: bool,
+    power_controller: Arc<dyn PowerController>,
+    ftp_root_certificates: Vec<Vec<u8>>,
+    ftp_credentials: BTreeMap<DownloadId, crate::FtpCredentials>,
+    dlc_service: Option<crate::DlcKeyService>,
+    watch_scanner: Option<WatchScanner>,
+    watch_scans: JoinSet<(WatchScanner, Vec<WatchImportItem>)>,
+    pending_watch_scan_immediate: bool,
+    last_watch_poll: Instant,
+    paused_by_schedule: BTreeSet<DownloadId>,
+    last_schedule: ScheduleDecision,
+    post_processes: JoinSet<(
+        DownloadId,
+        PostProcessJob,
+        Result<PostProcessOutcome, PostProcessError>,
+    )>,
+    post_processing_active: BTreeMap<DownloadId, CancellationToken>,
+    pending_post_stops: BTreeMap<DownloadId, (Stop, Option<Reply<()>>)>,
+    triggered_archive_groups: HashSet<String>,
+    torrent_post_processed: BTreeSet<DownloadId>,
+    stage_tx: mpsc::UnboundedSender<(DownloadId, PostProcessStage)>,
+    stage_rx: mpsc::UnboundedReceiver<(DownloadId, PostProcessStage)>,
+    completed_since_reset: bool,
+    completion_countdown: Option<CompletionCountdownState>,
     events: broadcast::Sender<EngineEvent>,
     hosts: HostConnections,
     http: HttpDownloader,
@@ -121,7 +163,27 @@ impl Scheduler {
         let limits = options.limits;
         let hosts = HostConnections::new(limits.connections_per_host);
         let http = HttpDownloader::with_host_connections(hosts.clone())?;
-        http.global_bandwidth().set_rate(limits.bandwidth);
+        let automation = options.automation.normalized();
+        let clock: Arc<dyn Clock> = options.clock.unwrap_or_else(|| Arc::new(SystemClock));
+        let sleep_inhibitor: Arc<dyn SleepInhibitor> = options
+            .sleep_inhibitor
+            .unwrap_or_else(|| Arc::new(SystemSleepInhibitor::new()));
+        let power_controller: Arc<dyn PowerController> = options
+            .power_controller
+            .unwrap_or_else(|| Arc::new(SystemPowerController::new()));
+        let ftp_root_certificates = options.ftp_root_certificates;
+        let dlc_service = options.dlc_service;
+        let initial_schedule = if automation.schedule.enabled {
+            automation.schedule.evaluate(clock.local_now())
+        } else {
+            ScheduleDecision::default()
+        };
+        http.global_bandwidth()
+            .set_rate(match initial_schedule.speed_limit_bytes_per_sec {
+                Some(0) => None,
+                Some(cap) => std::num::NonZeroU64::new(cap),
+                None => limits.bandwidth,
+            });
         let engine_data_dir = options.data_dir.clone().unwrap_or_else(|| {
             options
                 .database
@@ -190,6 +252,7 @@ impl Scheduler {
             None
         };
 
+        let (stage_tx, stage_rx) = mpsc::unbounded_channel();
         Ok(Self {
             storage,
             recovery,
@@ -201,6 +264,29 @@ impl Scheduler {
             limits,
             torrent_settings,
             temporary_bandwidth: None,
+            automation,
+            clock,
+            sleep_inhibitor,
+            sleep_inhibited: false,
+            power_controller,
+            ftp_root_certificates,
+            ftp_credentials: BTreeMap::new(),
+            dlc_service,
+            watch_scanner: Some(WatchScanner::default()),
+            watch_scans: JoinSet::new(),
+            pending_watch_scan_immediate: false,
+            last_watch_poll: Instant::now() - Duration::from_secs(3600),
+            paused_by_schedule: BTreeSet::new(),
+            last_schedule: initial_schedule,
+            post_processes: JoinSet::new(),
+            post_processing_active: BTreeMap::new(),
+            pending_post_stops: BTreeMap::new(),
+            triggered_archive_groups: HashSet::new(),
+            torrent_post_processed: BTreeSet::new(),
+            stage_tx,
+            stage_rx,
+            completed_since_reset: false,
+            completion_countdown: None,
             events,
             hosts,
             http,
@@ -228,6 +314,8 @@ impl Scheduler {
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         let mut interval = time::interval(PROGRESS_PERIOD);
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut automation_interval = time::interval(AUTOMATION_PERIOD);
+        automation_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut shutdown = None;
         let mut closing = false;
         let mut schedule = true;
@@ -237,14 +325,21 @@ impl Scheduler {
                 && self.torrent_starts.is_empty()
                 && self.torrent_stops.is_empty()
                 && self.verifications.is_empty()
+                && self.post_processes.is_empty()
+                && self.watch_scans.is_empty()
             {
                 break;
             }
             if schedule && !closing {
                 schedule = false;
+                if let Err(error) = self.evaluate_schedule().await {
+                    self.storage_error(None, &error);
+                }
                 if let Err(error) = self.dispatch().await {
                     self.storage_error(None, &error);
                 }
+                self.sync_sleep_inhibition().await;
+                self.check_queue_completion().await;
             }
             tokio::select! {
                 command = commands.recv(), if !closing => {
@@ -267,6 +362,9 @@ impl Scheduler {
                         }
                         for active in self.active_torrents.values() {
                             active.cancellation.cancel();
+                        }
+                        for token in self.post_processing_active.values() {
+                            token.cancel();
                         }
                     }
                 }
@@ -305,11 +403,54 @@ impl Scheduler {
                         schedule = true;
                     }
                 }
+                joined = self.post_processes.join_next(), if !self.post_processes.is_empty() => {
+                    if let Some(joined) = joined {
+                        match joined {
+                            Ok((id, job, result)) => {
+                                self.finish_post_processing(id, job, result, closing).await;
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "Post-processing task panicked or cancelled");
+                            }
+                        }
+                        schedule = true;
+                    }
+                }
+                joined = self.watch_scans.join_next(), if !self.watch_scans.is_empty() => {
+                    if let Some(Ok((scanner, items))) = joined {
+                        self.watch_scanner = Some(scanner);
+                        if !items.is_empty() && !closing {
+                            self.apply_watch_imports(items).await;
+                            schedule = true;
+                        }
+                        if std::mem::take(&mut self.pending_watch_scan_immediate) && !closing {
+                            self.maybe_spawn_watch_scan(true);
+                        }
+                    }
+                }
+                Some((id, stage)) = self.stage_rx.recv() => {
+                    self.emit(EngineEvent::PostProcessing { id, stage });
+                }
                 _ = interval.tick(), if !closing && (!self.active.is_empty() || !self.active_torrents.is_empty() || self.torrent_manager.is_some()) => {
                     self.progress();
                     self.tick_torrents().await;
+                    self.sync_sleep_inhibition().await;
+                    self.check_queue_completion().await;
+                }
+                _ = automation_interval.tick(), if !closing && self.should_tick_automation() => {
+                    if let Err(error) = self.evaluate_schedule().await {
+                        self.storage_error(None, &error);
+                    } else {
+                        schedule = true;
+                    }
+                    self.tick_completion_countdown().await;
+                    self.maybe_spawn_watch_scan(false);
                 }
             }
+        }
+        if self.sleep_inhibited {
+            let _ = self.sleep_inhibitor.set_inhibited(false, "Shutdown").await;
+            self.sleep_inhibited = false;
         }
         self.persist_torrents_on_shutdown().await;
         if let Some(manager) = self.torrent_manager.take() {
@@ -344,6 +485,13 @@ impl Scheduler {
                     Some(manager) => manager.session_telemetry().await,
                     None => TorrentSessionTelemetry::default(),
                 };
+                let completion_countdown = self.completion_countdown.as_ref().map(|c| {
+                    let rem = c
+                        .ends_at
+                        .saturating_duration_since(Instant::now())
+                        .as_secs();
+                    (c.action, rem)
+                });
                 let _ = reply.send(Ok(EngineSnapshot {
                     downloads,
                     packages: self.packages.values().cloned().collect(),
@@ -354,6 +502,9 @@ impl Scheduler {
                     torrent: self.torrent_settings.clone(),
                     telemetry,
                     sidecars: self.sidecar_settings.clone(),
+                    automation: self.automation.clone(),
+                    schedule: self.last_schedule.clone(),
+                    completion_countdown,
                 }));
             }
             Command::TorrentManager(reply) => {
@@ -498,6 +649,8 @@ impl Scheduler {
             .max()
             .map_or(0, |max| max.saturating_add(1));
         let mut cached_files = Vec::new();
+        let mut pending_ftp_creds = Vec::new();
+        let mut any_started = false;
         for (offset, (package, request)) in requests.into_iter().enumerate() {
             if let Some(checksum) = &request.checksum {
                 crate::parse_checksum(checksum)?;
@@ -520,12 +673,18 @@ impl Scheduler {
             };
             let media_state = request.media.as_ref().map(media_bridge::to_queue_state);
             let id = self.allocate_id(&mut ids)?;
-            let mut download = match request.source {
-                Source::Http { .. } | Source::Hoster { .. } => {
-                    let url = source_url(&request.source)?;
+            let (normalized_source, ftp_creds) =
+                normalize_ftp_source(request.source, request.ftp_credentials)?;
+            if let Some(creds) = ftp_creds {
+                pending_ftp_creds.push((id, creds));
+            }
+            any_started |= request.start_immediately;
+            let mut download = match normalized_source {
+                Source::Http { .. } | Source::Hoster { .. } | Source::Ftp { .. } => {
+                    let url = source_url(&normalized_source)?;
                     let category = self.categories.assign(
                         request.category,
-                        request.source.kind(),
+                        normalized_source.kind(),
                         url.as_str(),
                         Some(&url),
                         request.filename_hint.as_deref(),
@@ -537,18 +696,14 @@ impl Scheduler {
                         .transpose()?
                         .or_else(|| category.and_then(|policy| policy.category.destination.clone()))
                         .unwrap_or_else(|| self.destination.clone());
-                    let source = match request.source {
-                        Source::Hoster { .. } => Source::Hoster { url: url.into() },
-                        _ => Source::Http { url: url.into() },
-                    };
-                    let mut dl = Download::new(id, source, destination);
+                    let mut dl = Download::new(id, normalized_source, destination);
                     dl.category = category.map(|policy| policy.category.id);
                     dl.filename = request.filename_hint;
                     dl.total_bytes = request.size_hint;
                     dl
                 }
                 Source::Media { .. } => {
-                    let parsed = source_url(&request.source)?;
+                    let parsed = source_url(&normalized_source)?;
                     let hint = request
                         .filename_hint
                         .clone()
@@ -703,6 +858,12 @@ impl Scheduler {
         changes.extend(packages.iter().cloned().map(Change::SavePackage));
         changes.extend(entries.iter().map(save_entry));
         self.storage.apply(changes).await?;
+        for (id, creds) in pending_ftp_creds {
+            self.ftp_credentials.insert(id, creds);
+        }
+        if any_started {
+            self.cancel_completion_countdown();
+        }
         for package in packages {
             self.packages.insert(package.id, package);
         }
@@ -763,7 +924,7 @@ impl Scheduler {
                 self.hosts.set_limit(limits.connections_per_host);
                 self.http
                     .global_bandwidth()
-                    .set_rate(self.temporary_bandwidth.or(limits.bandwidth));
+                    .set_rate(self.effective_bandwidth());
                 self.sync_torrent_ratelimits().await;
                 self.emit(EngineEvent::QueueChanged);
                 Ok(())
@@ -772,7 +933,7 @@ impl Scheduler {
                 self.temporary_bandwidth = rate;
                 self.http
                     .global_bandwidth()
-                    .set_rate(rate.or(self.limits.bandwidth));
+                    .set_rate(self.effective_bandwidth());
                 self.sync_torrent_ratelimits().await;
                 self.emit(EngineEvent::QueueChanged);
                 Ok(())
@@ -790,6 +951,15 @@ impl Scheduler {
                     .await?;
                 self.sidecar_settings = settings;
                 self.emit(EngineEvent::QueueChanged);
+                Ok(())
+            }
+            Update::AutomationSettings(settings) => self.set_automation_settings(*settings).await,
+            Update::CancelCompletionAction => {
+                self.cancel_completion_countdown();
+                Ok(())
+            }
+            Update::ScanWatchFolders => {
+                self.maybe_spawn_watch_scan(true);
                 Ok(())
             }
             Update::Pause(_) | Update::Cancel(_, _) => Err(EngineError::Stopped),
@@ -824,6 +994,11 @@ impl Scheduler {
     }
 
     async fn resume(&mut self, id: DownloadId) -> Result<(), EngineError> {
+        self.paused_by_schedule.remove(&id);
+        self.torrent_post_processed.remove(&id);
+        if self.post_processing_active.contains_key(&id) {
+            return Err(EngineError::DownloadBusy);
+        }
         if let Some(active) = self.active.get(&id) {
             return if active.stop.is_some() {
                 Err(EngineError::DownloadBusy)
@@ -839,6 +1014,12 @@ impl Scheduler {
             };
         }
         let mut entry = self.entry(id)?.clone();
+        if let Some(path) = entry.download.completed_path.as_deref()
+            && let Some(info) = parse_archive_volume(path)
+        {
+            self.triggered_archive_groups.remove(&info.group_key);
+        }
+        self.cancel_completion_countdown();
         entry.download.transition(Status::Queued)?;
         self.save(entry).await
     }
@@ -899,15 +1080,18 @@ impl Scheduler {
         if free == 0 {
             return Ok(());
         }
+        let schedule_paused = self.last_schedule.pause_queue;
         let mut candidates: Vec<_> = self
             .queue
             .values()
             .filter(|entry| {
                 let id = entry.download.id;
                 entry.download.status() == Status::Queued
+                    && (!schedule_paused || self.forced.contains(&id))
                     && !self.active.contains_key(&id)
                     && !self.active_torrents.contains_key(&id)
                     && !self.pending_torrent_stops.contains_key(&id)
+                    && !self.post_processing_active.contains_key(&id)
             })
             .collect();
         candidates.sort_unstable_by_key(|entry| {
@@ -945,7 +1129,8 @@ impl Scheduler {
         let mut rejected = Vec::new();
         for entry in candidates {
             match &entry.download.source {
-                Source::Http { .. } | Source::Hoster { .. } => {
+                Source::Http { .. } | Source::Hoster { .. } | Source::Ftp { .. } => {
+                    let is_ftp = matches!(entry.download.source, Source::Ftp { .. });
                     let Ok(url) = source_url(&entry.download.source) else {
                         let mut entry = entry.clone();
                         entry.download.transition(Status::Failed {
@@ -961,11 +1146,15 @@ impl Scheduler {
                         .trim_start_matches("www.")
                         .to_owned();
                     let running = host_load.entry(host.clone()).or_default();
-                    let hoster_cap = match self.resolver.limits(&url).await {
-                        Ok(limits) => limits.parallel_downloads,
-                        Err(error) => {
-                            tracing::debug!(%error, "Could not read resolver limits");
-                            None
+                    let hoster_cap = if is_ftp {
+                        None
+                    } else {
+                        match self.resolver.limits(&url).await {
+                            Ok(limits) => limits.parallel_downloads,
+                            Err(error) => {
+                                tracing::debug!(%error, "Could not read resolver limits");
+                                None
+                            }
                         }
                     };
                     let hoster_cap = if matches!(entry.download.source, Source::Hoster { .. })
@@ -997,8 +1186,9 @@ impl Scheduler {
                     }
                     *running += 1;
                     let mut entry = entry.clone();
-                    let status = if matches!(entry.download.source, Source::Hoster { .. })
-                        || self.resolver.builtin(&url).is_some()
+                    let status = if !is_ftp
+                        && (matches!(entry.download.source, Source::Hoster { .. })
+                            || self.resolver.builtin(&url).is_some())
                     {
                         Status::Resolving
                     } else {
@@ -1131,6 +1321,7 @@ impl Scheduler {
                     let cancellation = CancellationToken::new();
                     let (sender, progress) = watch::channel(DownloadProgress::default());
                     let session_version = self.resolver.session_version(&url);
+                    let ftp_credentials = self.ftp_credentials.get(&id).cloned();
                     let task = self.workers.spawn(Box::pin(transfer::run(
                         transfer::Context {
                             http: self.http.clone(),
@@ -1140,6 +1331,8 @@ impl Scheduler {
                             limits: self.limits,
                             bandwidth: self.categories.bucket(entry.download.category),
                             disk: self.disk.clone(),
+                            ftp_credentials,
+                            ftp_root_certificates: self.ftp_root_certificates.clone(),
                         },
                         entry.clone(),
                         url,
@@ -1176,6 +1369,8 @@ impl Scheduler {
                             limits: self.limits,
                             bandwidth: self.categories.bucket(entry.download.category),
                             disk: self.disk.clone(),
+                            ftp_credentials: None,
+                            ftp_root_certificates: Vec::new(),
                         },
                         entry.clone(),
                         url,
@@ -1249,8 +1444,14 @@ impl Scheduler {
     }
 
     async fn stop(&mut self, id: DownloadId, stop: Stop, reply: Reply<()>) {
-        if self.pending_torrent_stops.contains_key(&id) {
+        if self.pending_torrent_stops.contains_key(&id) || self.pending_post_stops.contains_key(&id)
+        {
             let _ = reply.send(Err(EngineError::DownloadBusy));
+            return;
+        }
+        if let Some(token) = self.post_processing_active.get(&id) {
+            token.cancel();
+            self.pending_post_stops.insert(id, (stop, Some(reply)));
             return;
         }
         if let Some(active) = self.active.get_mut(&id) {
@@ -1285,6 +1486,7 @@ impl Scheduler {
     async fn apply_stop(&mut self, mut entry: QueueEntry, stop: Stop) -> Result<(), EngineError> {
         let id = entry.download.id;
         self.forced.remove(&id);
+        self.paused_by_schedule.remove(&id);
         let is_torrent = matches!(entry.download.source, Source::Torrent(_));
         match stop {
             Stop::Pause => {
@@ -1292,6 +1494,8 @@ impl Scheduler {
                 self.save(entry).await
             }
             Stop::Cancel { delete_files } => {
+                self.ftp_credentials.remove(&id);
+                self.torrent_post_processed.remove(&id);
                 if is_torrent {
                     if let Some(manager) = &self.torrent_manager {
                         match manager.remove(id, delete_files).await {
@@ -1429,10 +1633,10 @@ impl Scheduler {
 
     async fn complete(&mut self, mut entry: QueueEntry) -> Result<(), EngineError> {
         let id = entry.download.id;
-        entry.download.transition(Status::Completed)?;
-        self.save(entry.clone()).await?;
+        self.ftp_credentials.remove(&id);
+        let cleanup_entry = entry.clone();
         if let Err(error) =
-            tokio::task::spawn_blocking(move || transfer::discard_work(&entry)).await?
+            tokio::task::spawn_blocking(move || transfer::discard_work(&cleanup_entry)).await?
         {
             tracing::debug!(id = id.0, kind = ?error.kind(), "Could not clean completed staging files");
             self.emit(EngineEvent::Log {
@@ -1440,6 +1644,16 @@ impl Scheduler {
                 message: EngineLog::CleanupFailed,
             });
         }
+        let target_path = download_target_path(&entry.download);
+        if should_post_process(&target_path, &self.automation.post_processing).await {
+            entry.download.transition(Status::PostProcessing)?;
+            self.save(entry.clone()).await?;
+            self.start_post_processing(entry, false);
+            return Ok(());
+        }
+        entry.download.transition(Status::Completed)?;
+        self.save(entry).await?;
+        self.completed_since_reset = true;
         Ok(())
     }
 
@@ -1489,10 +1703,8 @@ impl Scheduler {
         if let Some(manager) = &self.torrent_manager {
             return Ok(manager.clone());
         }
-        let effective = torrent_bridge::effective_settings(
-            &self.torrent_settings,
-            self.temporary_bandwidth.or(self.limits.bandwidth),
-        );
+        let effective =
+            torrent_bridge::effective_settings(&self.torrent_settings, self.effective_bandwidth());
         let manager = TorrentManager::new(
             self.torrent_data_dir.clone(),
             self.destination.clone(),
@@ -1526,7 +1738,7 @@ impl Scheduler {
         if let Some(manager) = &self.torrent_manager {
             let effective = torrent_bridge::effective_settings(
                 &self.torrent_settings,
-                self.temporary_bandwidth.or(self.limits.bandwidth),
+                self.effective_bandwidth(),
             );
             if let Err(error) = manager.apply_settings(effective).await {
                 tracing::debug!(%error, "Failed to update live torrent rate limits");
@@ -1535,10 +1747,7 @@ impl Scheduler {
     }
 
     async fn set_torrent_settings(&mut self, settings: TorrentSettings) -> Result<(), EngineError> {
-        let effective = torrent_bridge::effective_settings(
-            &settings,
-            self.temporary_bandwidth.or(self.limits.bandwidth),
-        );
+        let effective = torrent_bridge::effective_settings(&settings, self.effective_bandwidth());
         if let Some(manager) = &self.torrent_manager {
             manager.apply_settings(effective).await?;
         } else {
@@ -1607,6 +1816,7 @@ impl Scheduler {
         if self.pending_torrent_stops.contains_key(&id) {
             return Err(EngineError::DownloadBusy);
         }
+        self.torrent_post_processed.remove(&id);
         let mut entry = self.entry(id)?.clone();
         let Source::Torrent(torrent_source) = entry.download.source.clone() else {
             return Err(EngineError::UnsupportedSource);
@@ -1849,8 +2059,25 @@ impl Scheduler {
                 }
                 TorrentStopKind::CompleteSeeding => {
                     entry.download.file_type = Some(FileType::Torrents);
+                    if self.post_processing_active.contains_key(&id) {
+                        return self.save(entry).await;
+                    }
+                    let target_path = download_target_path(&entry.download);
+                    if !self.torrent_post_processed.contains(&id)
+                        && should_post_process(&target_path, &self.automation.post_processing).await
+                    {
+                        self.torrent_post_processed.insert(id);
+                        if entry.download.status() == Status::Seeding {
+                            entry.download.transition(Status::PostProcessing)?;
+                            self.save(entry.clone()).await?;
+                            self.start_post_processing(entry, false);
+                            return Ok(());
+                        }
+                    }
                     entry.download.transition(Status::Completed)?;
-                    self.save(entry).await
+                    self.save(entry).await?;
+                    self.completed_since_reset = true;
+                    Ok(())
                 }
             },
             Err(error) => Err(error.into()),
@@ -1994,33 +2221,6 @@ impl Scheduler {
             let _ = torrent_bridge::write_cached_torrent(&self.torrent_data_dir, id.0, bytes).await;
         }
 
-        let target_status = match snap.phase {
-            TorrentPhase::FetchingMetadata | TorrentPhase::Checking { .. } => Status::Resolving,
-            TorrentPhase::Downloading => Status::Downloading,
-            TorrentPhase::Seeding => Status::Seeding,
-            TorrentPhase::Paused => entry.download.status(),
-            TorrentPhase::Failed(_) => Status::Failed {
-                reason: FailureReason::Network,
-            },
-        };
-        if let Some(active) = self.active_torrents.get_mut(&id) {
-            active.is_seeding = matches!(target_status, Status::Seeding);
-        }
-
-        let status_changed = target_status != entry.download.status();
-        if status_changed {
-            if matches!(
-                entry.download.status(),
-                Status::Paused | Status::Failed { .. }
-            ) && target_status != Status::Paused
-            {
-                entry.download.transition(Status::Queued)?;
-            }
-            if entry.download.status() != target_status {
-                entry.download.transition(target_status)?;
-            }
-        }
-
         entry.download.downloaded_bytes = snap.downloaded_bytes;
         if snap.total_bytes.is_some() {
             entry.download.total_bytes = snap.total_bytes;
@@ -2045,6 +2245,58 @@ impl Scheduler {
         }
         ts.uploaded_bytes = snap.uploaded_bytes;
         ts.seed_elapsed_secs = snap.seed_elapsed_secs;
+
+        let target_path = download_target_path(&entry.download);
+        let should_trigger_post = !self.post_processing_active.contains_key(&id)
+            && !self.torrent_post_processed.contains(&id)
+            && matches!(snap.phase, TorrentPhase::Seeding)
+            && should_post_process(&target_path, &self.automation.post_processing).await;
+
+        let target_status = if self.post_processing_active.contains_key(&id) || should_trigger_post
+        {
+            Status::PostProcessing
+        } else {
+            match snap.phase {
+                TorrentPhase::FetchingMetadata | TorrentPhase::Checking { .. } => Status::Resolving,
+                TorrentPhase::Downloading => Status::Downloading,
+                TorrentPhase::Seeding => Status::Seeding,
+                TorrentPhase::Paused => entry.download.status(),
+                TorrentPhase::Failed(_) => Status::Failed {
+                    reason: FailureReason::Network,
+                },
+            }
+        };
+        if let Some(active) = self.active_torrents.get_mut(&id) {
+            active.is_seeding = matches!(snap.phase, TorrentPhase::Seeding);
+        }
+
+        let previous_status = entry.download.status();
+        let status_changed = target_status != previous_status;
+        if status_changed {
+            if matches!(previous_status, Status::Paused | Status::Failed { .. })
+                && target_status != Status::Paused
+            {
+                entry.download.transition(Status::Queued)?;
+            }
+            if entry.download.status() != target_status {
+                entry.download.transition(target_status)?;
+            }
+            if target_status == Status::Seeding
+                && matches!(
+                    previous_status,
+                    Status::Downloading | Status::Resolving | Status::Queued
+                )
+            {
+                self.completed_since_reset = true;
+            }
+        }
+
+        if should_trigger_post {
+            self.torrent_post_processed.insert(id);
+            self.save(entry.clone()).await?;
+            self.start_post_processing(entry, true);
+            return Ok(());
+        }
 
         let should_persist = status_changed
             || self
@@ -2092,6 +2344,569 @@ impl Scheduler {
 
     fn emit(&self, event: EngineEvent) {
         let _ = self.events.send(event);
+    }
+
+    fn effective_bandwidth(&self) -> Option<std::num::NonZeroU64> {
+        if let Some(temp) = self.temporary_bandwidth {
+            return Some(temp);
+        }
+        match self.last_schedule.speed_limit_bytes_per_sec {
+            Some(0) => None,
+            Some(cap) => std::num::NonZeroU64::new(cap),
+            None => self.limits.bandwidth,
+        }
+    }
+
+    fn should_tick_automation(&self) -> bool {
+        self.automation.schedule.enabled
+            || (self.automation.watch_folders.enabled
+                && self
+                    .automation
+                    .watch_folders
+                    .rules
+                    .iter()
+                    .any(|rule| rule.enabled))
+            || self.completion_countdown.is_some()
+            || self.sleep_inhibited
+            || self.completed_since_reset
+    }
+
+    async fn set_automation_settings(
+        &mut self,
+        settings: AutomationSettings,
+    ) -> Result<(), EngineError> {
+        let normalized = settings.normalized();
+        self.storage
+            .apply(vec![Change::SaveSetting {
+                key: AUTOMATION_SETTINGS_KEY.into(),
+                value: serde_json::to_value(&normalized)?,
+            }])
+            .await?;
+        self.automation = normalized.clone();
+        if self.automation.completion_action == QueueCompletionAction::Nothing
+            || self.automation.completion_action == QueueCompletionAction::Notify
+        {
+            self.cancel_completion_countdown();
+        }
+        self.emit(EngineEvent::AutomationUpdated(Box::new(normalized)));
+        self.evaluate_schedule().await?;
+        self.sync_sleep_inhibition().await;
+        if self.automation.watch_folders.enabled {
+            self.maybe_spawn_watch_scan(false);
+        }
+        Ok(())
+    }
+
+    async fn evaluate_schedule(&mut self) -> Result<(), EngineError> {
+        let decision = if self.automation.schedule.enabled {
+            self.automation.schedule.evaluate(self.clock.local_now())
+        } else {
+            ScheduleDecision::default()
+        };
+
+        let decision_changed = decision != self.last_schedule;
+        let was_paused = self.last_schedule.pause_queue;
+        let old_rate = self.effective_bandwidth();
+        self.last_schedule = decision.clone();
+        let new_rate = self.effective_bandwidth();
+
+        if old_rate != new_rate {
+            self.http.global_bandwidth().set_rate(new_rate);
+            self.sync_torrent_ratelimits().await;
+        }
+
+        if decision.pause_queue {
+            let mut paused_any = false;
+            let candidates: Vec<DownloadId> = self
+                .queue
+                .values()
+                .filter(|entry| {
+                    let id = entry.download.id;
+                    !self.forced.contains(&id)
+                        && matches!(
+                            entry.download.status(),
+                            Status::Queued | Status::Downloading | Status::Resolving
+                        )
+                })
+                .map(|entry| entry.download.id)
+                .collect();
+            for id in candidates {
+                if self.pause_for_schedule(id).await {
+                    paused_any = true;
+                }
+            }
+            if !was_paused || paused_any {
+                self.emit(EngineEvent::Log {
+                    id: None,
+                    message: EngineLog::SchedulePausedQueue,
+                });
+            }
+        } else if !self.paused_by_schedule.is_empty() {
+            let to_resume: Vec<DownloadId> = std::mem::take(&mut self.paused_by_schedule)
+                .into_iter()
+                .collect();
+            let mut changes = Vec::new();
+            let mut updated = Vec::new();
+            for id in to_resume {
+                if let Some(mut entry) = self.queue.get(&id).cloned()
+                    && entry.download.status() == Status::Paused
+                {
+                    entry.download.transition(Status::Queued)?;
+                    changes.push(save_entry(&entry));
+                    updated.push(entry);
+                }
+            }
+            if !changes.is_empty() {
+                self.storage.apply(changes).await?;
+                for entry in updated {
+                    self.record(entry);
+                }
+                self.emit(EngineEvent::Log {
+                    id: None,
+                    message: EngineLog::ScheduleResumedQueue,
+                });
+            }
+        }
+
+        if decision_changed {
+            self.emit(EngineEvent::ScheduleChanged(decision));
+        }
+        Ok(())
+    }
+
+    async fn pause_for_schedule(&mut self, id: DownloadId) -> bool {
+        if let Some(active) = self.active.get_mut(&id) {
+            if active.stop.is_none() {
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                active.stop = Some((Stop::Pause, tx));
+                active.cancellation.cancel();
+                self.paused_by_schedule.insert(id);
+                return true;
+            }
+            return false;
+        }
+        if let Some(active) = self.active_torrents.get_mut(&id) {
+            active.cancellation.cancel();
+            if active.start_in_flight {
+                self.pending_torrent_stops
+                    .insert(id, (TorrentStopKind::Pause, None));
+            } else if !self.pending_torrent_stops.contains_key(&id) {
+                self.spawn_torrent_stop(id, TorrentStopKind::Pause, None)
+                    .await;
+            }
+            self.paused_by_schedule.insert(id);
+            return true;
+        }
+        if let Some(mut entry) = self.queue.get(&id).cloned()
+            && entry.download.status() == Status::Queued
+            && entry.download.transition(Status::Paused).is_ok()
+            && self.save(entry).await.is_ok()
+        {
+            self.paused_by_schedule.insert(id);
+            return true;
+        }
+        false
+    }
+
+    async fn sync_sleep_inhibition(&mut self) {
+        let has_active_transfers = !self.active.is_empty()
+            || self.active_torrents.values().any(|t| !t.is_seeding)
+            || !self.post_processes.is_empty();
+        let should_inhibit = self.automation.prevent_sleep_when_active && has_active_transfers;
+        if should_inhibit == self.sleep_inhibited {
+            return;
+        }
+        match self
+            .sleep_inhibitor
+            .set_inhibited(should_inhibit, "Active downloads in progress")
+            .await
+        {
+            Ok(()) => {
+                self.sleep_inhibited = should_inhibit;
+            }
+            Err(error) => {
+                tracing::debug!(%error, should_inhibit, "Could not update OS sleep inhibition");
+            }
+        }
+    }
+
+    fn has_unfinished_work(&self) -> bool {
+        if !self.active.is_empty()
+            || !self.post_processes.is_empty()
+            || self.active_torrents.values().any(|t| !t.is_seeding)
+        {
+            return true;
+        }
+        self.queue.values().any(|entry| {
+            matches!(
+                entry.download.status(),
+                Status::Queued
+                    | Status::Resolving
+                    | Status::Downloading
+                    | Status::PostProcessing
+                    | Status::WaitingUser
+            )
+        })
+    }
+
+    async fn check_queue_completion(&mut self) {
+        if self.has_unfinished_work() {
+            if self.completion_countdown.is_some() {
+                self.cancel_completion_countdown();
+            }
+            return;
+        }
+        if !self.completed_since_reset {
+            return;
+        }
+        self.completed_since_reset = false;
+
+        match self.automation.completion_action {
+            QueueCompletionAction::Nothing => {}
+            QueueCompletionAction::Notify => {
+                self.emit(EngineEvent::QueueCompleted {
+                    action: QueueCompletionAction::Notify,
+                });
+            }
+            action @ (QueueCompletionAction::Sleep | QueueCompletionAction::Shutdown) => {
+                let secs = self.automation.completion_countdown_secs.max(1);
+                self.completion_countdown = Some(CompletionCountdownState {
+                    action,
+                    ends_at: Instant::now() + Duration::from_secs(secs),
+                    last_emitted_secs: secs,
+                });
+                self.emit(EngineEvent::CompletionCountdown {
+                    action,
+                    remaining_secs: secs,
+                });
+            }
+        }
+    }
+
+    async fn tick_completion_countdown(&mut self) {
+        let now = Instant::now();
+        let finished_action = {
+            let Some(state) = &self.completion_countdown else {
+                return;
+            };
+            (now >= state.ends_at).then_some(state.action)
+        };
+        if let Some(action) = finished_action {
+            self.completion_countdown = None;
+            self.execute_completion_action(action).await;
+            return;
+        }
+        let max_secs = self.automation.completion_countdown_secs;
+        let emit_payload = {
+            let Some(state) = &mut self.completion_countdown else {
+                return;
+            };
+            let rem = state
+                .ends_at
+                .saturating_duration_since(now)
+                .as_secs()
+                .saturating_add(1)
+                .min(max_secs);
+            if rem != state.last_emitted_secs {
+                state.last_emitted_secs = rem;
+                Some((state.action, rem))
+            } else {
+                None
+            }
+        };
+        if let Some((action, remaining_secs)) = emit_payload {
+            self.emit(EngineEvent::CompletionCountdown {
+                action,
+                remaining_secs,
+            });
+        }
+    }
+
+    async fn execute_completion_action(&mut self, action: QueueCompletionAction) {
+        self.emit(EngineEvent::QueueCompleted { action });
+        if let Err(error) = self.power_controller.execute(action).await {
+            tracing::warn!(%error, ?action, "Queue completion power action failed");
+            self.emit(EngineEvent::Log {
+                id: None,
+                message: EngineLog::CompletionActionFailed,
+            });
+        }
+    }
+
+    fn cancel_completion_countdown(&mut self) {
+        if self.completion_countdown.take().is_some() {
+            self.emit(EngineEvent::CompletionCountdownCancelled);
+        }
+    }
+
+    fn maybe_spawn_watch_scan(&mut self, force_immediate: bool) {
+        if !force_immediate && !self.automation.watch_folders.enabled {
+            return;
+        }
+        let poll_interval =
+            Duration::from_secs(self.automation.watch_folders.poll_interval_secs.max(1));
+        if !force_immediate && self.last_watch_poll.elapsed() < poll_interval {
+            return;
+        }
+        let rules: Vec<_> = self
+            .automation
+            .watch_folders
+            .rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .cloned()
+            .collect();
+        if rules.is_empty() {
+            return;
+        }
+        let Some(mut scanner) = self.watch_scanner.take() else {
+            if force_immediate {
+                self.pending_watch_scan_immediate = true;
+            }
+            return;
+        };
+        self.last_watch_poll = Instant::now();
+        let dlc = self.dlc_service.clone();
+        self.watch_scans.spawn(async move {
+            let items = scanner
+                .scan_rules(&rules, dlc.as_ref(), force_immediate)
+                .await;
+            (scanner, items)
+        });
+    }
+
+    async fn apply_watch_imports(&mut self, items: Vec<WatchImportItem>) {
+        let categories = self.categories.settings().categories;
+        for item in items {
+            let resolved_category = item.category_name.as_deref().and_then(|name| {
+                categories
+                    .iter()
+                    .find(|cat| cat.category.name.eq_ignore_ascii_case(name))
+                    .map(|cat| cat.category.id)
+            });
+            let groups = item
+                .groups
+                .into_iter()
+                .map(|(pkg, mut requests)| {
+                    if let Some(cat_id) = resolved_category {
+                        for req in &mut requests {
+                            if req.category.is_none() {
+                                req.category = Some(cat_id);
+                            }
+                        }
+                    }
+                    (pkg, requests)
+                })
+                .collect();
+            match self.add(groups).await {
+                Ok(ids) if !ids.is_empty() => {
+                    self.emit(EngineEvent::Log {
+                        id: ids.first().copied(),
+                        message: EngineLog::WatchFolderImported,
+                    });
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        source = %item.source_file.display(),
+                        %error,
+                        "Failed to queue downloads imported from watch folder"
+                    );
+                }
+            }
+        }
+    }
+
+    fn start_post_processing(&mut self, entry: QueueEntry, keep_seeding: bool) {
+        let id = entry.download.id;
+        let target_path = download_target_path(&entry.download);
+        let all_downloads: Vec<&Download> = self.queue.values().map(|e| &e.download).collect();
+        let should_extract = if self.automation.post_processing.auto_extract {
+            if target_path.is_dir() {
+                true
+            } else {
+                ready_for_archive_extraction(
+                    &entry.download,
+                    &target_path,
+                    &all_downloads,
+                    &mut self.triggered_archive_groups,
+                )
+                .unwrap_or(false)
+            }
+        } else {
+            false
+        };
+
+        let display_name = entry
+            .download
+            .filename
+            .clone()
+            .or_else(|| {
+                target_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| format!("download-{}", id.0));
+        let package = entry
+            .download
+            .package
+            .and_then(|pkg_id| self.packages.get(&pkg_id))
+            .map(|pkg| pkg.name.clone());
+        let category = entry
+            .download
+            .category
+            .and_then(|cat_id| self.categories.get(cat_id))
+            .map(|policy| policy.category.name.clone());
+        let source_url = match &entry.download.source {
+            Source::Http { url }
+            | Source::Ftp { url }
+            | Source::Hoster { url }
+            | Source::Media { url } => url.clone(),
+            Source::Torrent(TorrentSource::Magnet(m)) => m.clone(),
+            Source::Torrent(TorrentSource::Url(u)) => u.clone(),
+            Source::Torrent(TorrentSource::File(p)) => p.display().to_string(),
+        };
+
+        let job = PostProcessJob {
+            target_path,
+            display_name,
+            package,
+            category,
+            source_url,
+            settings: self.automation.post_processing.clone(),
+            should_extract,
+            keep_seeding,
+        };
+
+        let cancel = CancellationToken::new();
+        self.post_processing_active.insert(id, cancel.clone());
+        let stage_tx = self.stage_tx.clone();
+        self.post_processes.spawn(async move {
+            let job_clone = job.clone();
+            let result = run_post_processing(job_clone, &cancel, |stage| {
+                let _ = stage_tx.send((id, stage));
+            })
+            .await;
+            (id, job, result)
+        });
+    }
+
+    async fn finish_post_processing(
+        &mut self,
+        id: DownloadId,
+        job: PostProcessJob,
+        result: Result<PostProcessOutcome, PostProcessError>,
+        closing: bool,
+    ) {
+        self.post_processing_active.remove(&id);
+        let pending_stop = self.pending_post_stops.remove(&id);
+
+        let Some(mut entry) = self.queue.get(&id).cloned() else {
+            if let Some((_, Some(reply))) = pending_stop {
+                let _ = reply.send(Err(EngineError::UnknownDownload));
+            }
+            return;
+        };
+
+        if let Some((stop, reply)) = pending_stop {
+            let res = self.apply_stop(entry, stop).await;
+            if let Some(reply) = reply {
+                let _ = reply.send(res);
+            }
+            return;
+        }
+
+        if closing {
+            return;
+        }
+
+        match result {
+            Ok(outcome) => {
+                if !outcome.verified.is_empty() {
+                    self.emit(EngineEvent::Log {
+                        id: Some(id),
+                        message: EngineLog::ChecksumVerified,
+                    });
+                }
+                if !outcome.extracted.is_empty() {
+                    self.emit(EngineEvent::Log {
+                        id: Some(id),
+                        message: EngineLog::ArchiveExtracted,
+                    });
+                }
+                if outcome.hook_executed {
+                    self.emit(EngineEvent::Log {
+                        id: Some(id),
+                        message: EngineLog::PostProcessCommandExecuted,
+                    });
+                }
+
+                let next_status = if job.keep_seeding && self.active_torrents.contains_key(&id) {
+                    Status::Seeding
+                } else {
+                    Status::Completed
+                };
+                if entry.download.status() == Status::PostProcessing
+                    && let Err(error) = entry.download.transition(next_status)
+                {
+                    tracing::warn!(id = id.0, %error, "Failed transitioning after post-processing");
+                    return;
+                }
+                if let Err(error) = self.save(entry).await {
+                    self.storage_error(Some(id), &error);
+                } else {
+                    self.completed_since_reset = true;
+                }
+            }
+            Err(PostProcessError::Cancelled) => {
+                let fallback = if job.keep_seeding && self.active_torrents.contains_key(&id) {
+                    Status::Seeding
+                } else {
+                    Status::Completed
+                };
+                if entry.download.transition(fallback).is_ok() {
+                    let _ = self.save(entry).await;
+                }
+            }
+            Err(error) => {
+                if let Some(info) = parse_archive_volume(&job.target_path) {
+                    self.triggered_archive_groups.remove(&info.group_key);
+                }
+                let (log_msg, reason) = match &error {
+                    PostProcessError::Checksum(_) => {
+                        (EngineLog::ChecksumFailed, FailureReason::IntegrityCheck)
+                    }
+                    PostProcessError::Archive(
+                        ArchiveError::CorruptOrUnsupported(_)
+                        | ArchiveError::PasswordRequiredOrWrong
+                        | ArchiveError::UnsafeEntry(_),
+                    ) => (
+                        EngineLog::ArchiveExtractionFailed,
+                        FailureReason::IntegrityCheck,
+                    ),
+                    PostProcessError::Archive(_) => (
+                        EngineLog::ArchiveExtractionFailed,
+                        FailureReason::FileSystem,
+                    ),
+                    _ => (EngineLog::PostProcessCommandFailed, FailureReason::Internal),
+                };
+                tracing::warn!(id = id.0, %error, "Post-processing failed");
+                self.emit(EngineEvent::Log {
+                    id: Some(id),
+                    message: log_msg,
+                });
+                if job.keep_seeding
+                    && let Some(manager) = &self.torrent_manager
+                {
+                    self.active_torrents.remove(&id);
+                    let _ = manager.remove(id, false).await;
+                }
+                if let Err(err) = self.fail(entry, reason).await {
+                    self.storage_error(Some(id), &err);
+                }
+            }
+        }
     }
 }
 

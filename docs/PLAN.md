@@ -373,18 +373,18 @@ optional live tests behind feature flag.
 
 ## M9 — Automation & Post-Processing
 
-- [ ] **M9.1** Scheduler: time-of-day speed limit profiles and automatic queue start/stop schedule.
-- [ ] **M9.2** Queue completion actions: do nothing / notify / sleep / shut down PC (with cancellable countdown).
-- [ ] **M9.3** Prevent OS sleep while downloads are active (Windows `SetThreadExecutionState`, Linux
+- [x] **M9.1** Scheduler: time-of-day speed limit profiles and automatic queue start/stop schedule.
+- [x] **M9.2** Queue completion actions: do nothing / notify / sleep / shut down PC (with cancellable countdown).
+- [x] **M9.3** Prevent OS sleep while downloads are active (Windows `SetThreadExecutionState`, Linux
       `org.freedesktop.login1` inhibit via `zbus`, macOS `IOPMAssertion`).
-- [ ] **M9.4** Automatic archive extraction: `.zip`, `.7z` (pure Rust crates), `.tar.*`; `.rar` via external
-      `7z`/`unrar` binary if available (UnRAR license is incompatible with static GPL linking — document in ADR).
+- [x] **M9.4** Automatic archive extraction: `.zip`, `.7z` (pure Rust crates), `.tar.*`; `.rar` via external
+      `7z`/`unrar` binary if available (UnRAR license is incompatible with static GPL linking — document in ADR: `docs/adr/0010-archive-extraction-and-os-automation.md`).
       Multi-part archives (`.part1.rar`, `.7z.001`) extracted only once all parts in the Package complete;
       password list support; optional archive deletion after successful extraction.
-- [ ] **M9.5** Automatic checksum verification when a site/package provides `.sfv`, `.md5`, or `.sha256` files.
-- [ ] **M9.6** Watch folder rules for `.torrent`, `.dlc`, and `.txt` link lists.
-- [ ] **M9.7** Optional post-download user command hook.
-- [ ] **M9.8 FTP/FTPS** (`suppaftp` crate) with resume via `REST`, deferred from M1.11.
+- [x] **M9.5** Automatic checksum verification when a site/package provides `.sfv`, `.md5`, or `.sha256` files.
+- [x] **M9.6** Watch folder rules for `.torrent`, `.dlc`, and `.txt` link lists.
+- [x] **M9.7** Optional post-download user command hook.
+- [x] **M9.8 FTP/FTPS** (`suppaftp` crate) with resume via `REST`, deferred from M1.11.
 
 ---
 

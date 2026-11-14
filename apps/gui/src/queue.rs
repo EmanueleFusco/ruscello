@@ -9,7 +9,8 @@ use ruscello_core::{
     CategoryId, Download, DownloadId, FileType, PackageId, Source, Status, TorrentSource,
 };
 use ruscello_engine::{
-    CategorySettings, EngineLog, EngineSnapshot, Limits, ProgressUpdate, TorrentRuntimeProgress,
+    AutomationSettings, CategorySettings, EngineLog, EngineSnapshot, Limits, PostProcessStage,
+    ProgressUpdate, QueueCompletionAction, ScheduleDecision, TorrentRuntimeProgress,
     TorrentSessionTelemetry, Url,
 };
 
@@ -100,6 +101,10 @@ pub(crate) struct Queue {
     status_counts: [usize; StatusFilter::ALL.len()],
     pub(crate) active_count: usize,
     pub(crate) torrent_session: TorrentSessionTelemetry,
+    pub(crate) automation: AutomationSettings,
+    pub(crate) schedule: ScheduleDecision,
+    pub(crate) completion_countdown: Option<(QueueCompletionAction, u64)>,
+    pub(crate) post_processing: HashMap<DownloadId, PostProcessStage>,
     telemetry: HashMap<DownloadId, Telemetry>,
     torrent: HashMap<DownloadId, TorrentRuntimeProgress>,
 }
@@ -129,6 +134,9 @@ impl Queue {
         self.limits = snapshot.limits;
         self.categories = snapshot.categories;
         self.torrent_session = snapshot.telemetry;
+        self.automation = snapshot.automation;
+        self.schedule = snapshot.schedule;
+        self.completion_countdown = snapshot.completion_countdown;
         self.packages = snapshot
             .packages
             .into_iter()
@@ -180,6 +188,11 @@ impl Queue {
             true
         });
         self.logs.retain(|id, _| self.downloads.contains_key(id));
+        self.post_processing.retain(|id, _| {
+            self.downloads
+                .get(id)
+                .is_some_and(|download| download.status() == Status::PostProcessing)
+        });
         if self
             .selected
             .is_some_and(|id| !self.downloads.contains_key(&id))
@@ -359,6 +372,10 @@ impl Queue {
         self.telemetry.get(&id).and_then(|sample| sample.segments)
     }
 
+    pub(crate) fn post_processing_stage(&self, id: DownloadId) -> Option<PostProcessStage> {
+        self.post_processing.get(&id).copied()
+    }
+
     pub(crate) fn log(&mut self, id: DownloadId, message: EngineLog) {
         let logs = self.logs.entry(id).or_default();
         if logs.len() == 32 {
@@ -377,6 +394,7 @@ pub(crate) fn visible_rows(offset: f32, height: f32, len: usize) -> Range<usize>
 pub(crate) fn source_text(source: &Source) -> &str {
     match source {
         Source::Http { url }
+        | Source::Ftp { url }
         | Source::Hoster { url }
         | Source::Media { url }
         | Source::Torrent(TorrentSource::Magnet(url) | TorrentSource::Url(url)) => url,

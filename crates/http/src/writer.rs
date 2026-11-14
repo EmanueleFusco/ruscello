@@ -689,7 +689,7 @@ fn inspect(partial: &Path, sidecar: &Path) -> Result<Checkpoint, WriterError> {
         .and_then(|record| record.source.as_deref())
         .and_then(|url| reqwest::Url::parse(url).ok())
         .filter(|url| {
-            matches!(url.scheme(), "http" | "https")
+            matches!(url.scheme(), "http" | "https" | "ftp" | "ftps")
                 && url.username().is_empty()
                 && url.password().is_none()
                 && url.query().is_none()

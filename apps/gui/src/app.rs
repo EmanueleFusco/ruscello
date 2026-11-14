@@ -20,8 +20,9 @@ use ruscello_api::{
 use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Source, Status, TorrentSource};
 use ruscello_engine::{
     CandidateGroup, EngineEvent, EngineHandle, EngineLog, EngineOptions, EngineSnapshot,
-    MediaError, PageAnalysis, SidecarKind, SidecarSettings, SidecarsStatus, TorrentDetailsSnapshot,
-    TorrentFilePriority, TorrentInspection, TorrentSessionTelemetry, Url,
+    MediaError, PageAnalysis, QueueCompletionAction, SidecarKind, SidecarSettings, SidecarsStatus,
+    TorrentDetailsSnapshot, TorrentFilePriority, TorrentInspection, TorrentSessionTelemetry, Url,
+    WatchProcessedBehavior, WeekdayMask,
 };
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -130,7 +131,7 @@ pub(crate) enum Message {
     Started(Option<EngineHandle>),
     ApiStarted(Option<Box<ApiStartup>>),
     Api(ApiEvent),
-    Snapshot(Option<EngineSnapshot>),
+    Snapshot(Option<Box<EngineSnapshot>>),
     Event(EngineEvent),
     DiskSpace(Option<u64>),
     Close,
@@ -287,6 +288,58 @@ pub(crate) enum Message {
     InstallSidecar(SidecarKind),
     SidecarInstallResult(SidecarKind, Result<SidecarsStatus, &'static str>),
     SidecarAutoUpdated(Option<SidecarsStatus>),
+    Automation(AutomationMsg),
+    CancelCompletionCountdown,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AutomationMsg {
+    TogglePreventSleep(bool),
+    CompletionActionChanged(QueueCompletionAction),
+    CompletionCountdownChanged(String),
+    ToggleScheduleEnabled(bool),
+    OutsideHoursModeChanged(settings::OutsideHoursMode),
+    OutsideHoursSpeedChanged(String),
+    AddScheduleRule,
+    RemoveScheduleRule(usize),
+    ToggleScheduleRuleEnabled(usize, bool),
+    ScheduleRuleName(usize, String),
+    ScheduleRuleStart(usize, String),
+    ScheduleRuleEnd(usize, String),
+    ScheduleRuleDay(usize, u8, bool),
+    ScheduleRuleModeChanged(usize, settings::ScheduleRuleMode),
+    ScheduleRuleSpeedChanged(usize, String),
+    ToggleAutoVerifyChecksums(bool),
+    ToggleAutoExtract(bool),
+    ToggleExtractSubfolder(bool),
+    ToggleDeleteArchives(bool),
+    ArchivePasswordInput(String),
+    AddArchivePassword,
+    RemoveArchivePassword(usize),
+    ExternalExtractorChanged(String),
+    PickExternalExtractor,
+    PickedExternalExtractor(Option<PathBuf>),
+    PostCommandChanged(String),
+    PostTimeoutChanged(String),
+    ToggleWatchEnabled(bool),
+    WatchPollChanged(String),
+    AddWatchRule,
+    PickNewWatchRuleDir,
+    PickedNewWatchRuleDir(Option<PathBuf>),
+    RemoveWatchRule(usize),
+    ToggleWatchRuleEnabled(usize, bool),
+    WatchRuleDirChanged(usize, String),
+    PickWatchRuleDir(usize),
+    PickedWatchRuleDir(usize, Option<PathBuf>),
+    ToggleWatchRuleTorrents(usize, bool),
+    ToggleWatchRuleDlc(usize, bool),
+    ToggleWatchRuleTxt(usize, bool),
+    WatchRuleCategoryChanged(usize, String),
+    WatchRuleBehaviorChanged(usize, WatchProcessedBehavior),
+    Save,
+    Saved(bool),
+    ScanWatchNow,
+    WatchScanned(bool),
 }
 
 pub(crate) struct App {
@@ -353,6 +406,7 @@ pub(crate) struct App {
     pub(crate) cookie_count: Option<usize>,
     pub(crate) update_status: UpdateStatus,
     pub(crate) category_draft: settings::CategoryDraft,
+    pub(crate) automation_draft: settings::AutomationDraft,
     default_destination: PathBuf,
     tray: Option<tray_icon::TrayIcon>,
     tray_events: desktop::Receiver<desktop::Event>,
@@ -462,6 +516,7 @@ impl App {
             cookie_count: None,
             update_status: UpdateStatus::Idle,
             category_draft: settings::CategoryDraft::default(),
+            automation_draft: settings::AutomationDraft::default(),
             default_destination,
             tray: None,
             tray_events: desktop.tray,
@@ -676,7 +731,11 @@ impl App {
                         self.sidecar_draft =
                             settings::SidecarDraft::from_settings(&snapshot.sidecars);
                     }
-                    self.queue.replace(snapshot);
+                    self.queue.replace(*snapshot);
+                    if !self.settings || self.page != Page::Automation {
+                        self.automation_draft =
+                            settings::AutomationDraft::from_settings(&self.queue.automation);
+                    }
                     self.selection
                         .retain(|id| self.queue.downloads.contains_key(id));
                     if self
@@ -744,6 +803,9 @@ impl App {
                 self.banner = Some(view::log_key(message))
             }
             Message::Event(EngineEvent::StatusChanged { id, status }) => {
+                if status != Status::PostProcessing {
+                    self.queue.post_processing.remove(&id);
+                }
                 let notice = if self.preferences.notifications
                     && matches!(status, Status::Completed | Status::Failed { .. })
                 {
@@ -759,7 +821,41 @@ impl App {
                 };
                 return Task::batch([notice, self.check_disk()]);
             }
-            Message::Event(EngineEvent::Removed(_)) => return self.check_disk(),
+            Message::Event(EngineEvent::AutomationUpdated(automation)) => {
+                self.queue.automation = *automation;
+                if !self.settings || self.page != Page::Automation {
+                    self.automation_draft =
+                        settings::AutomationDraft::from_settings(&self.queue.automation);
+                }
+            }
+            Message::Event(EngineEvent::ScheduleChanged(decision)) => {
+                self.queue.schedule = decision;
+            }
+            Message::Event(EngineEvent::PostProcessing { id, stage }) => {
+                self.queue.post_processing.insert(id, stage);
+            }
+            Message::Event(EngineEvent::CompletionCountdown {
+                action,
+                remaining_secs,
+            }) => {
+                self.queue.completion_countdown = Some((action, remaining_secs));
+            }
+            Message::Event(EngineEvent::CompletionCountdownCancelled) => {
+                self.queue.completion_countdown = None;
+            }
+            Message::Event(EngineEvent::QueueCompleted { action }) => {
+                self.queue.completion_countdown = None;
+                if self.preferences.notifications && action == QueueCompletionAction::Notify {
+                    return Task::future(desktop::notify(
+                        self.strings.get("completion-notify-title"),
+                        self.strings.get("completion-notify-body"),
+                    ));
+                }
+            }
+            Message::Event(EngineEvent::Removed(id)) => {
+                self.queue.post_processing.remove(&id);
+                return self.check_disk();
+            }
             Message::Event(_) => {}
             Message::DiskSpace(bytes) => self.disk_space = bytes,
             Message::Close => {
@@ -889,6 +985,8 @@ impl App {
                         self.preferences.alternate_bandwidth,
                         self.preferences.lan_port,
                     );
+                    self.automation_draft =
+                        settings::AutomationDraft::from_settings(&self.queue.automation);
                     #[cfg(windows)]
                     if self.page == Page::General {
                         return Task::batch([self.reset_scroll(), self.read_nvidia_profile()]);
@@ -961,9 +1059,9 @@ impl App {
             Message::Clipboard(Some(value)) => {
                 if let Some(dialog) = &mut self.add
                     && dialog.text.is_empty()
-                    && add::parse(&value)
-                        .iter()
-                        .any(|input| matches!(input, Input::Http(_) | Input::Torrent(_)))
+                    && add::parse(&value).iter().any(|input| {
+                        matches!(input, Input::Http(_) | Input::Ftp(_) | Input::Torrent(_))
+                    })
                 {
                     self.editor = text_editor::Content::with_text(&value);
                     dialog.text = value;
@@ -2008,6 +2106,17 @@ impl App {
             Message::SidecarAutoUpdated(Some(status)) => {
                 self.sidecar_draft.status = Some(status);
             }
+            Message::CancelCompletionCountdown => {
+                self.queue.completion_countdown = None;
+                if let Some(engine) = &self.engine {
+                    let engine = engine.clone();
+                    return Task::perform(
+                        async move { engine.cancel_completion_action().await.is_ok() },
+                        Message::ActionResult,
+                    );
+                }
+            }
+            Message::Automation(msg) => return self.handle_automation(msg),
             _ => {}
         }
         Task::none()
@@ -2045,6 +2154,204 @@ impl App {
                 Message::SidecarStatusLoaded,
             )
         })
+    }
+
+    fn handle_automation(&mut self, msg: AutomationMsg) -> Task<Message> {
+        let draft = &mut self.automation_draft;
+        match msg {
+            AutomationMsg::TogglePreventSleep(enabled) => draft.prevent_sleep_when_active = enabled,
+            AutomationMsg::CompletionActionChanged(action) => draft.completion_action = action,
+            AutomationMsg::CompletionCountdownChanged(value) => {
+                draft.completion_countdown_secs = value
+            }
+            AutomationMsg::ToggleScheduleEnabled(enabled) => draft.schedule_enabled = enabled,
+            AutomationMsg::OutsideHoursModeChanged(mode) => draft.outside_mode = mode,
+            AutomationMsg::OutsideHoursSpeedChanged(value) => draft.outside_speed_bps = value,
+            AutomationMsg::AddScheduleRule => draft.add_schedule_rule(),
+            AutomationMsg::RemoveScheduleRule(index) => {
+                if index < draft.schedule_rules.len() {
+                    draft.schedule_rules.remove(index);
+                }
+            }
+            AutomationMsg::ToggleScheduleRuleEnabled(index, enabled) => {
+                if let Some(rule) = draft.schedule_rules.get_mut(index) {
+                    rule.enabled = enabled;
+                }
+            }
+            AutomationMsg::ScheduleRuleName(index, value) => {
+                if let Some(rule) = draft.schedule_rules.get_mut(index) {
+                    rule.name = value;
+                }
+            }
+            AutomationMsg::ScheduleRuleStart(index, value) => {
+                if let Some(rule) = draft.schedule_rules.get_mut(index) {
+                    rule.start_hhmm = value;
+                }
+            }
+            AutomationMsg::ScheduleRuleEnd(index, value) => {
+                if let Some(rule) = draft.schedule_rules.get_mut(index) {
+                    rule.end_hhmm = value;
+                }
+            }
+            AutomationMsg::ScheduleRuleDay(index, day_bit, enabled) => {
+                if let Some(rule) = draft.schedule_rules.get_mut(index) {
+                    let mask = 1_u8 << (day_bit.min(6));
+                    let next = if enabled {
+                        rule.days.bits() | mask
+                    } else {
+                        rule.days.bits() & !mask
+                    };
+                    rule.days = WeekdayMask::from_bits(next);
+                }
+            }
+            AutomationMsg::ScheduleRuleModeChanged(index, mode) => {
+                if let Some(rule) = draft.schedule_rules.get_mut(index) {
+                    rule.mode = mode;
+                }
+            }
+            AutomationMsg::ScheduleRuleSpeedChanged(index, value) => {
+                if let Some(rule) = draft.schedule_rules.get_mut(index) {
+                    rule.speed_bps = value;
+                }
+            }
+            AutomationMsg::ToggleAutoVerifyChecksums(enabled) => {
+                draft.auto_verify_checksums = enabled
+            }
+            AutomationMsg::ToggleAutoExtract(enabled) => draft.auto_extract = enabled,
+            AutomationMsg::ToggleExtractSubfolder(enabled) => {
+                draft.extract_into_subfolder = enabled
+            }
+            AutomationMsg::ToggleDeleteArchives(enabled) => {
+                draft.delete_archives_after_extraction = enabled
+            }
+            AutomationMsg::ArchivePasswordInput(value) => draft.new_archive_password = value,
+            AutomationMsg::AddArchivePassword => {
+                let candidate = draft.new_archive_password.trim();
+                if !candidate.is_empty() && !draft.archive_passwords.iter().any(|p| p == candidate)
+                {
+                    draft.archive_passwords.push(candidate.to_owned());
+                }
+                draft.new_archive_password.clear();
+            }
+            AutomationMsg::RemoveArchivePassword(index) => {
+                if index < draft.archive_passwords.len() {
+                    draft.archive_passwords.remove(index);
+                }
+            }
+            AutomationMsg::ExternalExtractorChanged(value) => draft.external_extractor_path = value,
+            AutomationMsg::PickExternalExtractor => {
+                return Task::perform(settings::pick_file(), |path| {
+                    Message::Automation(AutomationMsg::PickedExternalExtractor(path))
+                });
+            }
+            AutomationMsg::PickedExternalExtractor(Some(path)) => {
+                draft.external_extractor_path = path.to_string_lossy().into_owned();
+            }
+            AutomationMsg::PickedExternalExtractor(None) => {}
+            AutomationMsg::PostCommandChanged(value) => draft.post_download_command = value,
+            AutomationMsg::PostTimeoutChanged(value) => draft.post_download_timeout_secs = value,
+            AutomationMsg::ToggleWatchEnabled(enabled) => draft.watch_enabled = enabled,
+            AutomationMsg::WatchPollChanged(value) => draft.watch_poll_interval_secs = value,
+            AutomationMsg::AddWatchRule => {
+                draft.add_watch_rule(self.default_destination.clone());
+            }
+            AutomationMsg::PickNewWatchRuleDir => {
+                return Task::perform(settings::pick_folder(), |path| {
+                    Message::Automation(AutomationMsg::PickedNewWatchRuleDir(path))
+                });
+            }
+            AutomationMsg::PickedNewWatchRuleDir(Some(path)) => {
+                draft.add_watch_rule(path);
+            }
+            AutomationMsg::PickedNewWatchRuleDir(None) => {}
+            AutomationMsg::RemoveWatchRule(index) => {
+                if index < draft.watch_rules.len() {
+                    draft.watch_rules.remove(index);
+                }
+            }
+            AutomationMsg::ToggleWatchRuleEnabled(index, enabled) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.enabled = enabled;
+                }
+            }
+            AutomationMsg::WatchRuleDirChanged(index, value) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.directory = value;
+                }
+            }
+            AutomationMsg::PickWatchRuleDir(index) => {
+                return Task::perform(settings::pick_folder(), move |path| {
+                    Message::Automation(AutomationMsg::PickedWatchRuleDir(index, path))
+                });
+            }
+            AutomationMsg::PickedWatchRuleDir(index, Some(path)) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.directory = path.to_string_lossy().into_owned();
+                }
+            }
+            AutomationMsg::PickedWatchRuleDir(_, None) => {}
+            AutomationMsg::ToggleWatchRuleTorrents(index, enabled) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.import_torrents = enabled;
+                }
+            }
+            AutomationMsg::ToggleWatchRuleDlc(index, enabled) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.import_dlc = enabled;
+                }
+            }
+            AutomationMsg::ToggleWatchRuleTxt(index, enabled) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.import_txt = enabled;
+                }
+            }
+            AutomationMsg::WatchRuleCategoryChanged(index, value) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.category = value;
+                }
+            }
+            AutomationMsg::WatchRuleBehaviorChanged(index, behavior) => {
+                if let Some(rule) = draft.watch_rules.get_mut(index) {
+                    rule.processed_behavior = behavior;
+                }
+            }
+            AutomationMsg::Save => {
+                let Some(settings) = draft.to_settings() else {
+                    self.banner = Some("invalid-settings");
+                    return Task::none();
+                };
+                self.queue.automation = settings.clone();
+                if let Some(engine) = &self.engine {
+                    let engine = engine.clone();
+                    return Task::perform(
+                        async move { engine.set_automation_settings(settings).await.is_ok() },
+                        |ok| Message::Automation(AutomationMsg::Saved(ok)),
+                    );
+                }
+            }
+            AutomationMsg::Saved(ok) => {
+                if !ok {
+                    self.banner = Some("action-failed");
+                }
+            }
+            AutomationMsg::ScanWatchNow => {
+                if let Some(engine) = &self.engine {
+                    let engine = engine.clone();
+                    return Task::perform(
+                        async move { engine.scan_watch_folders_now().await.is_ok() },
+                        |ok| Message::Automation(AutomationMsg::WatchScanned(ok)),
+                    );
+                }
+            }
+            AutomationMsg::WatchScanned(ok) => {
+                self.banner = Some(if ok {
+                    "watch-scan-complete"
+                } else {
+                    "action-failed"
+                });
+            }
+        }
+        Task::none()
     }
 
     fn maybe_auto_update_ytdlp(&self) -> Task<Message> {
@@ -2721,7 +3028,8 @@ fn queue_events(source: &QueueSubscription) -> impl Stream<Item = Message> + use
                     .snapshot()
                     .await
                     .inspect_err(|error| tracing::debug!(%error, "Could not refresh the queue"))
-                    .ok();
+                    .ok()
+                    .map(Box::new);
                 return Some((Message::Snapshot(snapshot), (engine, receiver, false)));
             }
             match receiver.recv().await {

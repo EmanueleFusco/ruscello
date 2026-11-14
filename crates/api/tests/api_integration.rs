@@ -613,6 +613,37 @@ async fn downloads_torrent_upload_cookie_forwarding_linkgrabber_and_realtime_str
             .any(|c| c.url.ends_with("/public.bin"))
     );
 
+    // Queue an FTP URL and verify embedded passwords are stripped in queue DTO.
+    let ftp_add: AddDownloadsResponse = client
+        .post(format!("{base}/api/v1/downloads"))
+        .bearer_auth("test-api-token")
+        .json(&serde_json::json!({
+            "urls": ["ftp://alice:ftpsecret@127.0.0.1:2121/pub/release.iso"],
+            "start_immediately": false
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(ftp_add.count, 1);
+    let queue_dto: QueueSnapshotDto = client
+        .get(format!("{base}/api/v1/queue"))
+        .bearer_auth("test-api-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(
+        queue_dto
+            .downloads
+            .iter()
+            .any(|d| d.source_summary == "ftp://alice@127.0.0.1:2121/pub/release.iso"),
+        "expected sanitized FTP summary in {:?}",
+        queue_dto.downloads
+    );
+
     api.shutdown().await;
     engine.shutdown().await?;
     Ok(())
