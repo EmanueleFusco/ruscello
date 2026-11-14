@@ -293,6 +293,10 @@ impl Resolver {
         self.sessions.version(url)
     }
 
+    pub fn session_headers(&self, url: &Url) -> reqwest::header::HeaderMap {
+        self.sessions.headers(url)
+    }
+
     pub fn with_crawler(mut self, crawler: impl CrawlerPlugin + 'static) -> Self {
         self.crawlers.insert(0, Arc::new(crawler));
         self

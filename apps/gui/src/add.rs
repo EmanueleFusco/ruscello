@@ -8,8 +8,8 @@ use std::{
 use ruscello_core::{CategoryId, Source, TorrentSource};
 use ruscello_engine::{
     AddDownload, Candidate, CandidateGroup, ContainerFile, EngineHandle, ImportedLink,
-    ImportedPackage, MediaError, MediaInspection, MediaRequest, PageAnalysis, ResolveError,
-    TorrentInspection, Url, is_manifest_url, links,
+    ImportedPackage, MediaError, MediaInspection, MediaKind, MediaRequest, PageAnalysis,
+    ResolveError, TorrentInspection, Url, is_dash_url, is_hls_url, is_manifest_url, links,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -182,9 +182,6 @@ pub(crate) async fn probe(
     )
     .await
     {
-        Ok(Ok(PageAnalysis::Direct(candidate))) if candidate.group == CandidateGroup::Media => {
-            inspect_media(engine, url, cancellation).await
-        }
         Ok(Ok(PageAnalysis::Page { title, candidates })) => {
             let has_likely = candidates
                 .iter()
@@ -222,9 +219,6 @@ pub(crate) async fn probe(
 
 pub(crate) fn probe_result(result: Result<PageAnalysis, ruscello_engine::EngineError>) -> Probe {
     match result {
-        Ok(PageAnalysis::Direct(candidate)) if candidate.group == CandidateGroup::Media => {
-            Probe::MediaMissingSidecar
-        }
         Ok(PageAnalysis::Direct(candidate)) => Probe::File(candidate.filename, candidate.size),
         Ok(PageAnalysis::Hoster { plugin, .. }) => Probe::Hoster(plugin),
         Ok(PageAnalysis::Page { title, candidates }) => Probe::Web(title, candidates),
@@ -631,11 +625,16 @@ impl Dialog {
                         Some(candidate.filename.clone()),
                         candidate.size,
                     )?;
-                    if candidate.group == CandidateGroup::Media {
+                    if candidate.group == CandidateGroup::Media
+                        && let Some(kind) = manifest_media_kind(&candidate.url)
+                    {
                         request.source = Source::Media {
                             url: candidate.url.to_string(),
                         };
-                        request.media = Some(MediaRequest::default());
+                        request.media = Some(MediaRequest {
+                            kind,
+                            ..MediaRequest::default()
+                        });
                     }
                     Some(request)
                 })
@@ -836,6 +835,16 @@ impl Dialog {
     }
 }
 
+fn manifest_media_kind(url: &Url) -> Option<MediaKind> {
+    if is_hls_url(url) {
+        Some(MediaKind::Hls)
+    } else if is_dash_url(url) {
+        Some(MediaKind::Dash)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,6 +879,62 @@ mod tests {
         assert_eq!(
             load_files(vec![shortcut, PathBuf::from(url.as_str())]).await,
             [Input::Http(url.clone()), Input::Http(url),]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn link_grabber_media_routing_distinguishes_manifests_from_direct_files() -> anyhow::Result<()>
+    {
+        let page_url = Url::parse("https://example.test/watch")?;
+        let mp4_url = Url::parse("https://cdn.example.test/video.mp4")?;
+        let hls_url = Url::parse("https://cdn.example.test/master.m3u8")?;
+        let dash_url = Url::parse("https://cdn.example.test/manifest.mpd")?;
+        let candidates = vec![
+            Candidate {
+                url: mp4_url.clone(),
+                filename: "video.mp4".to_owned(),
+                size: Some(1024),
+                score: 50,
+                group: CandidateGroup::Media,
+                reasons: Vec::new(),
+            },
+            Candidate {
+                url: hls_url.clone(),
+                filename: "master.m3u8".to_owned(),
+                size: None,
+                score: 40,
+                group: CandidateGroup::Media,
+                reasons: Vec::new(),
+            },
+            Candidate {
+                url: dash_url.clone(),
+                filename: "manifest.mpd".to_owned(),
+                size: None,
+                score: 40,
+                group: CandidateGroup::Media,
+                reasons: Vec::new(),
+            },
+        ];
+        let dialog = Dialog {
+            entries: vec![Input::Http(page_url.clone())],
+            previews: HashMap::from([(page_url, Probe::Web("Sample Page".to_owned(), candidates))]),
+            selected_links: [mp4_url, hls_url, dash_url].into_iter().collect(),
+            ..Dialog::default()
+        };
+
+        let groups = dialog.requests("Batch".to_owned());
+        assert_eq!(groups.len(), 1);
+        let reqs = &groups[0].1;
+        assert_eq!(reqs.len(), 3);
+        assert!(matches!(reqs[0].source, Source::Http { .. }));
+        assert!(reqs[0].media.is_none());
+        assert!(matches!(reqs[1].source, Source::Media { .. }));
+        assert_eq!(reqs[1].media.as_ref().map(|m| m.kind), Some(MediaKind::Hls));
+        assert!(matches!(reqs[2].source, Source::Media { .. }));
+        assert_eq!(
+            reqs[2].media.as_ref().map(|m| m.kind),
+            Some(MediaKind::Dash)
         );
         Ok(())
     }

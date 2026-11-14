@@ -464,6 +464,7 @@ fn integrations(app: &App) -> Element<'_, Message> {
         })
         .size(12)
         .style(muted),
+        rule::horizontal(1).style(theme::separator),
         text(l.get("lan-title")).size(18),
         text(l.get("lan-pending")),
         theme::check(app.preferences.lan_enabled)
@@ -501,8 +502,11 @@ fn integrations(app: &App) -> Element<'_, Message> {
             .push(canvas(Qr(code)).width(160).height(160));
     }
     controls
-        .push(text(l.get("browser-extension")))
+        .push(rule::horizontal(1).style(theme::separator))
         .push(sidecars(app))
+        .push(rule::horizontal(1).style(theme::separator))
+        .push(text(l.get("link-imports-title")).size(18))
+        .push(text(l.get("browser-extension")))
         .push(
             theme::check(app.preferences.monitor_clipboard)
                 .label(l.get("clipboard-monitor"))

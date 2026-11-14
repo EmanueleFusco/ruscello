@@ -127,10 +127,10 @@ impl TransferError {
 }
 
 pub(super) fn source_url(source: &Source) -> Result<Url, EngineError> {
-    let (Source::Http { url } | Source::Hoster { url }) = source else {
+    let (Source::Http { url } | Source::Hoster { url } | Source::Media { url }) = source else {
         return Err(EngineError::UnsupportedSource);
     };
-    let mut url = Url::parse(url).map_err(|_| EngineError::InvalidUrl)?;
+    let mut url = Url::parse(url.trim()).map_err(|_| EngineError::InvalidUrl)?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -269,9 +269,7 @@ pub(super) async fn run_media(
         None => {
             let transfer_cancellation = cancellation.child_token();
             let request = media_bridge::from_queue_state(entry.media.as_ref(), &url);
-            let session_headers =
-                media_bridge::session_headers(&context.resolver, &url, &transfer_cancellation)
-                    .await;
+            let session_headers = context.resolver.session_headers(&url);
             let default_connections = context.limits.connections_per_download;
             let concurrency = entry
                 .download

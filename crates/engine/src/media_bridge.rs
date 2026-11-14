@@ -1,36 +1,10 @@
-use ruscello_core::Source;
 use ruscello_http::Url;
 use ruscello_media::{
-    FormatPreset, HeaderMap, MediaKind, MediaRequest, SidecarSettings, is_dash_url, is_hls_url,
+    FormatPreset, MediaKind, MediaRequest, SidecarSettings, is_dash_url, is_hls_url,
 };
 use ruscello_storage::{MediaQueueState, Snapshot};
-use tokio_util::sync::CancellationToken;
-
-use crate::EngineError;
 
 pub(super) const SIDECAR_SETTINGS_KEY: &str = "sidecar_settings";
-
-/// Parses and validates an HTTP(S) media source URL.
-pub(super) fn parse_media_url(raw: &str) -> Result<Url, EngineError> {
-    let mut url = Url::parse(raw.trim()).map_err(|_| EngineError::InvalidUrl)?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err(EngineError::InvalidUrl);
-    }
-    url.set_fragment(None);
-    Ok(url)
-}
-
-/// Extracts and validates the URL inside a `Source::Media`.
-pub(super) fn media_source_url(source: &Source) -> Result<Url, EngineError> {
-    let Source::Media { url } = source else {
-        return Err(EngineError::UnsupportedSource);
-    };
-    parse_media_url(url)
-}
 
 /// Converts a high-level `MediaRequest` into decoupled persistent `MediaQueueState`.
 pub(super) fn to_queue_state(request: &MediaRequest) -> MediaQueueState {
@@ -73,24 +47,6 @@ pub(super) fn load_sidecar_settings(
         Some(value) => serde_json::from_value(value.clone()),
         None => Ok(fallback),
     }
-}
-
-/// Fetches browser session headers/cookies from `Resolver` without invoking hoster scrapers.
-pub(super) async fn session_headers(
-    resolver: &crate::Resolver,
-    url: &Url,
-    cancellation: &CancellationToken,
-) -> HeaderMap {
-    if resolver.builtin(url).is_some() {
-        return HeaderMap::new();
-    }
-    resolver
-        .resolve(url, cancellation)
-        .await
-        .ok()
-        .flatten()
-        .map(|resolution| resolution.headers)
-        .unwrap_or_default()
 }
 
 /// Returns whether a media format selector targets audio-only output.

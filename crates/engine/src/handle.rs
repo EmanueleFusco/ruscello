@@ -614,7 +614,7 @@ impl EngineHandle {
         cancellation: &CancellationToken,
     ) -> Result<MediaInspection, EngineError> {
         let (media, sidecars) = self.request(Command::MediaContext).await?;
-        let headers = media_bridge::session_headers(&self.resolver, url, cancellation).await;
+        let headers = self.resolver.session_headers(url);
         Ok(media
             .inspect(url, &headers, &sidecars, cancellation)
             .await?)

@@ -13,10 +13,10 @@ use std::{
 
 use ruscello_engine::{
     BandwidthContext, BrowserLocale, BrowserOptions, ChecksumAlgorithm, ContainerFile,
-    DownloadOptions, DownloadProgress, EngineHandle, ExpectedChecksum, HeaderMap, HttpDownloader,
-    HttpError, MediaEngine, MediaError, MediaKind, MediaRequest, MediaTransferJob, PageAnalysis,
-    ResolveError, Resolver, SidecarEndpoints, SidecarSettings, Url, is_dash_url, is_hls_url,
-    is_manifest_url, prepare_http_download,
+    DownloadOptions, DownloadProgress, EngineHandle, ExpectedChecksum, HttpDownloader, HttpError,
+    MediaEngine, MediaError, MediaKind, MediaRequest, MediaTransferJob, PageAnalysis, ResolveError,
+    Resolver, SidecarEndpoints, SidecarSettings, Url, is_dash_url, is_hls_url, is_manifest_url,
+    prepare_http_download,
 };
 use ruscello_platform::{language::Language, logging, paths::AppPaths};
 use tokio::sync::watch;
@@ -163,17 +163,7 @@ async fn run_media_download(
         discovered_data_dir().unwrap_or_else(|| arguments.options.directory.join(".ruscello-data"));
     let media = MediaEngine::new(downloader.clone(), data_root, SidecarEndpoints::default())?;
     let cancellation = &arguments.options.cancellation;
-    let headers = if resolver.builtin(&arguments.url).is_none() {
-        resolver
-            .resolve(&arguments.url, cancellation)
-            .await
-            .ok()
-            .flatten()
-            .map(|r| r.headers)
-            .unwrap_or_else(HeaderMap::new)
-    } else {
-        HeaderMap::new()
-    };
+    let headers = resolver.session_headers(&arguments.url);
     let kind = if is_hls_url(&arguments.url) {
         MediaKind::Hls
     } else if is_dash_url(&arguments.url) {
@@ -317,17 +307,7 @@ async fn list_links(command: Command, language: Language) -> anyhow::Result<Vec<
                 let media = MediaEngine::new(downloader, data_root, SidecarEndpoints::default())?;
                 let resolver = resolver()?;
                 let cancel = Default::default();
-                let headers = if resolver.builtin(&url).is_none() {
-                    resolver
-                        .resolve(&url, &cancel)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|r| r.headers)
-                        .unwrap_or_else(HeaderMap::new)
-                } else {
-                    HeaderMap::new()
-                };
+                let headers = resolver.session_headers(&url);
                 let inspected = media
                     .inspect(&url, &headers, &sidecar_settings(ytdlp, ffmpeg), &cancel)
                     .await?;

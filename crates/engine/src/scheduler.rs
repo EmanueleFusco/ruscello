@@ -546,8 +546,8 @@ impl Scheduler {
                     dl.total_bytes = request.size_hint;
                     dl
                 }
-                Source::Media { url } => {
-                    let parsed = media_bridge::parse_media_url(&url)?;
+                Source::Media { .. } => {
+                    let parsed = source_url(&request.source)?;
                     let hint = request
                         .filename_hint
                         .clone()
@@ -1007,7 +1007,7 @@ impl Scheduler {
                     launches.push(Launch::Http(entry, url, host));
                 }
                 Source::Media { .. } => {
-                    let Ok(url) = media_bridge::media_source_url(&entry.download.source) else {
+                    let Ok(url) = source_url(&entry.download.source) else {
                         let mut entry = entry.clone();
                         entry.download.transition(Status::Failed {
                             reason: FailureReason::UnsupportedSource,

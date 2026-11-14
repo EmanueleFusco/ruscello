@@ -1125,6 +1125,7 @@ impl App {
                         };
                         if let Ok(PageAnalysis::Direct(ref candidate)) = result
                             && candidate.group == CandidateGroup::Media
+                            && ruscello_engine::is_manifest_url(&url)
                         {
                             let probe = add::inspect_media(engine, url.clone(), cancellation).await;
                             return (url, probe);
