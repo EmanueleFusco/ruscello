@@ -144,5 +144,7 @@ The software run used Xvfb.
 The hardware renderer exceeded both RAM budgets on this machine. The process-kill benchmark
 observed a 2.001-second checkpoint gap and an upper bound of 3,538,944 bytes to refetch
 at a configured 2 MiB/s. The resumed file matched its fixture's SHA-256.
-The segmented throughput repeat measured 479.9 MiB/s against aria2's 543.5 MiB/s (88.29%),
-below the 95% target. The local kernel restricted access to `perf` counters.
+With 64 KiB write batches, the segmented throughput repeat measured 596.7 MiB/s
+against aria2's 540.3 MiB/s (110.43%). The timed checkpoint test and all three
+ordinary crash-resume tests also passed with the smaller batches. The local kernel
+restricted access to `perf` counters.
