@@ -64,6 +64,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - Moved FTP/FTPS support from M1.11 to M9.8.
 
 ### Fixed
+- Prevented the scheduler from treating a removed BitTorrent handle as a failed download while force recheck
+  replaces it.
 - Fixed a Windows race condition during BitTorrent force recheck where `librqbit`'s fastresume `.bitv` file could
   remain in `DELETE_PENDING` state while its background flusher finished syncing, causing re-add initialization
   to fail with access denied; also logged the underlying `librqbit` failure reason when a torrent errors.
