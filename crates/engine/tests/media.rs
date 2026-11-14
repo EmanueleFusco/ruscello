@@ -70,7 +70,7 @@ fn create_mock_ffmpeg(dir: &Path) -> TestResult<PathBuf> {
             goto loop\r\n\
             :done\r\n\
             ping -n 2 127.0.0.1 >nul\r\n\
-            copy /b \"%v%\"+\"%a%\" \"%out%\" >nul\r\n";
+            copy /b /y \"%v%\"+\"%a%\" \"%out%\" >nul\r\n";
         fs::write(&path, script)?;
         Ok(path)
     }

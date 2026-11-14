@@ -251,7 +251,7 @@ fn publish_staged_file(staged: &Path, destination_dir: &Path) -> io::Result<Path
     }
     if fs::rename(staged, &target).is_err() {
         fs::copy(staged, &target)?;
-        fs::File::open(&target)?.sync_all()?;
+        fs::File::options().write(true).open(&target)?.sync_all()?;
         let _ = fs::remove_file(staged);
     }
     Ok(target)

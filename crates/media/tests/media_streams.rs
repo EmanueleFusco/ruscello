@@ -131,7 +131,7 @@ fn create_mock_ffmpeg(dir: &Path) -> TestResult<PathBuf> {
              shift\r\n\
              goto loop\r\n\
              :done\r\n\
-             copy /b \"%v%\"+\"%a%\" \"%out%\" >nul\r\n",
+             copy /b /y \"%v%\"+\"%a%\" \"%out%\" >nul\r\n",
             log_path.display()
         );
         fs::write(&path, script)?;

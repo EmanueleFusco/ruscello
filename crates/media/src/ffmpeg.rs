@@ -99,7 +99,7 @@ pub(crate) async fn remux_av(
         });
     }
 
-    File::open(&temp_path)?.sync_all()?;
+    File::options().write(true).open(&temp_path)?.sync_all()?;
     temp_path.persist(output).map_err(|error| error.error)?;
     sync_directory(parent)?;
     Ok(())
