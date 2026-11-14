@@ -6,6 +6,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- M7.1–M7.6: Native HLS (`m3u8-rs`) and MPEG-DASH (`quick-xml`) media download engine (`ruscello-media`)
+  supporting master playlist quality selection, parallel segment downloads with global/per-download rate limits,
+  AES-128-CBC decryption, segment-level checkpoint resume, and deterministic output concatenation.
+- Optional, consent-gated sidecar management for official `yt-dlp` GitHub releases and static `ffmpeg` builds
+  with SHA-256 checksum verification, periodic auto-update, and custom executable path overrides.
+- `yt-dlp -J` metadata/format/playlist inspection with hybrid native HTTP/HLS/DASH or `yt-dlp` progress-parsed
+  execution, temporary private Netscape cookie export, `ffmpeg` audio+video remuxing (`Status::PostProcessing`),
+  and multi-item playlist/channel grouping into named packages across the engine, CLI (`get --format`,
+  `inspect`), and desktop GUI (Add dialog format/playlist pickers and Settings -> Integrations sidecar controls
+  localized in English and Italian).
 - M6.1–M6.6: On-demand native browser helper with a persistent profile. A user-completed verification
   resumes waiting downloads for that site. Browser recipes block popups and hand file transfers to the
   HTTP engine. LinkGrabber can discover browser resources, and Integration settings allow site-scoped

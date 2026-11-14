@@ -8,6 +8,7 @@ mod categories;
 mod disk;
 mod file_types;
 mod handle;
+mod media_bridge;
 mod resolution;
 mod scheduler;
 mod startup;
@@ -30,6 +31,12 @@ pub use resolution::{ResolvedDownload, prepare_http_download, resolve_download};
 pub use ruscello_http::{
     ChecksumAlgorithm, ChecksumError, DownloadOptions, DownloadProgress, ErrorClass,
     ExpectedChecksum, HttpDownloader, HttpError, Probe, SegmentProgress, Url, WriterError,
+};
+pub use ruscello_media::{
+    BandwidthContext, FormatPreset, HeaderMap, MediaEngine, MediaError, MediaFormat,
+    MediaInspection, MediaKind, MediaPhase, MediaRequest, MediaTransferJob, PlaylistItem,
+    SidecarBinaryStatus, SidecarEndpoints, SidecarKind, SidecarSettings, SidecarsStatus,
+    is_dash_url, is_hls_url, is_manifest_url,
 };
 pub use ruscello_resolver::{
     BrowserFailure, BrowserLocale, BrowserOptions, Builtin, Candidate, CandidateGroup,

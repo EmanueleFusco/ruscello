@@ -2,6 +2,7 @@ use iced::{
     Alignment, Element, Fill, Point, Rectangle, Renderer as IcedRenderer, Size, Theme, mouse,
     widget::{button, canvas, column, container, keyed_column, row, rule, space, text},
 };
+use ruscello_engine::SidecarKind;
 
 use crate::{
     app::{App, Message},
@@ -463,6 +464,7 @@ fn integrations(app: &App) -> Element<'_, Message> {
         })
         .size(12)
         .style(muted),
+        rule::horizontal(1).style(theme::separator),
         text(l.get("lan-title")).size(18),
         text(l.get("lan-pending")),
         theme::check(app.preferences.lan_enabled)
@@ -500,8 +502,11 @@ fn integrations(app: &App) -> Element<'_, Message> {
             .push(canvas(Qr(code)).width(160).height(160));
     }
     controls
+        .push(rule::horizontal(1).style(theme::separator))
+        .push(sidecars(app))
+        .push(rule::horizontal(1).style(theme::separator))
+        .push(text(l.get("link-imports-title")).size(18))
         .push(text(l.get("browser-extension")))
-        .push(text(l.get("sidecars")))
         .push(
             theme::check(app.preferences.monitor_clipboard)
                 .label(l.get("clipboard-monitor"))
@@ -630,6 +635,114 @@ fn save(app: &App) -> Element<'_, Message> {
     theme::action(text(app.strings.get("save")))
         .style(theme::primary)
         .on_press(Message::SaveLimits)
+        .into()
+}
+
+fn sidecars(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let mut section = column![
+        text(l.get("sidecars-title")).size(18),
+        text(l.get("sidecars-detail")).size(12).style(muted),
+        sidecar_card(app, SidecarKind::YtDlp),
+        sidecar_card(app, SidecarKind::Ffmpeg),
+        row![
+            theme::action(text(l.get("sidecar-apply-path"))).on_press(Message::SaveSidecarSettings)
+        ]
+        .spacing(8),
+    ]
+    .spacing(10);
+    if let Some(key) = app.sidecar_draft.message {
+        section = section.push(text(l.get(key)).size(12).style(muted));
+    }
+    section.into()
+}
+
+fn sidecar_card(app: &App, kind: SidecarKind) -> Element<'_, Message> {
+    let l = &app.strings;
+    let (tool_name, title_key, consent_key, consented, binary_status) = match kind {
+        SidecarKind::YtDlp => (
+            "yt-dlp",
+            "sidecar-ytdlp",
+            "sidecar-ytdlp-consent",
+            app.preferences.sidecars.ytdlp_consent,
+            app.sidecar_draft.status.as_ref().map(|s| &s.ytdlp),
+        ),
+        SidecarKind::Ffmpeg => (
+            "ffmpeg",
+            "sidecar-ffmpeg",
+            "sidecar-ffmpeg-consent",
+            app.preferences.sidecars.ffmpeg_consent,
+            app.sidecar_draft.status.as_ref().map(|s| &s.ffmpeg),
+        ),
+    };
+    let available = binary_status.is_some_and(|status| status.installed);
+    let version = binary_status.and_then(|status| status.version.as_deref());
+    let busy_here = app.sidecar_draft.busy == Some(kind);
+    let status_text = if busy_here {
+        l.get("sidecar-installing")
+    } else if available {
+        match version {
+            Some(version) => l.with("sidecar-installed", [("version", version.to_owned())]),
+            None => l.get("sidecar-installed-unknown"),
+        }
+    } else if consented {
+        l.get("sidecar-not-installed")
+    } else {
+        l.get("sidecar-consent-needed")
+    };
+    let custom_value = app.sidecar_draft.path_for(kind);
+    let action_key = if available && custom_value.trim().is_empty() {
+        "sidecar-update"
+    } else {
+        "sidecar-install"
+    };
+    let can_install = consented && !app.booting && app.sidecar_draft.busy.is_none();
+
+    let mut card = column![
+        row![
+            text(l.get(title_key)).width(Fill),
+            text(status_text).size(12).style(muted),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        theme::check(consented)
+            .label(l.get(consent_key))
+            .on_toggle(move |value| Message::SidecarConsent(kind, value)),
+    ]
+    .spacing(8);
+
+    if kind == SidecarKind::YtDlp {
+        card = card.push(
+            theme::check(app.preferences.sidecars.ytdlp_auto_update)
+                .label(l.get("sidecar-ytdlp-autoupdate"))
+                .on_toggle(Message::SidecarAutoUpdate),
+        );
+    }
+
+    if let Some(path) = binary_status.and_then(|status| status.path.as_ref()) {
+        card = card.push(text(path.display().to_string()).size(11).style(muted));
+    }
+
+    card = card.push(
+        row![
+            theme::field(&l.get("sidecar-custom-path"), custom_value)
+                .on_input(move |value| Message::SidecarCustomPath(kind, value))
+                .width(Fill),
+            theme::action(text(
+                l.with("sidecar-pick-binary", [("name", tool_name.to_owned())])
+            ))
+            .on_press(Message::PickSidecarPath(kind)),
+            theme::action(text(l.with(action_key, [("name", tool_name.to_owned())])))
+                .on_press_maybe(can_install.then_some(Message::InstallSidecar(kind))),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    );
+
+    container(card)
+        .padding(12)
+        .width(Fill)
+        .style(theme::panel)
         .into()
 }
 

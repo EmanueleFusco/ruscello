@@ -58,6 +58,21 @@ pub struct QueueEntry {
     pub torrent: Option<TorrentQueueState>,
     #[serde(default, skip_serializing_if = "HttpQueueState::is_empty")]
     pub http: HttpQueueState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaQueueState>,
+}
+
+/// Optional media stream metadata persisted alongside queued `Source::Media` items.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaQueueState {
+    pub kind: String,
+    pub format_selector: Option<String>,
+    pub title: Option<String>,
+    pub headers: Vec<(String, String)>,
+    pub variant_uri: Option<String>,
+    pub dash_video_id: Option<String>,
+    pub dash_audio_id: Option<String>,
 }
 
 /// Optional file metadata supplied by a downloaded container or the user.

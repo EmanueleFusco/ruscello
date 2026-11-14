@@ -7,9 +7,9 @@ use iced::{
 };
 use ruscello_core::{Download, Source, Status, TorrentSource};
 use ruscello_engine::{
-    CandidateGroup, EngineLog, PieceBucketState, ScoreReason, TorrentDetailsSnapshot,
-    TorrentFilePriority, TorrentPeerState, TorrentPeerTransport, TorrentPieceMap,
-    TorrentTrackerStatus,
+    CandidateGroup, EngineLog, FormatPreset, MediaInspection, MediaKind, PieceBucketState,
+    ScoreReason, TorrentDetailsSnapshot, TorrentFilePriority, TorrentPeerState,
+    TorrentPeerTransport, TorrentPieceMap, TorrentTrackerStatus,
 };
 
 use crate::{
@@ -1163,6 +1163,148 @@ fn torrent_preview_row<'a>(
     .into()
 }
 
+fn format_media_duration(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let mins = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{mins:02}:{secs:02}")
+    } else {
+        format!("{mins:02}:{secs:02}")
+    }
+}
+
+fn media_preview_row<'a>(
+    l: &'a Strings,
+    dialog: &'a crate::add::Dialog,
+    url: &'a ruscello_engine::Url,
+    info: &'a MediaInspection,
+) -> Element<'a, Message> {
+    let kind_label = match info.kind {
+        MediaKind::Hls => l.get("media-kind-hls"),
+        MediaKind::Dash => l.get("media-kind-dash"),
+        MediaKind::YtDlp => l.get("media-kind-ytdlp"),
+        MediaKind::Direct => l.get("media-input"),
+    };
+    let summary = format!("{kind_label} · {}", info.suggested_filename);
+    let selected_format = dialog
+        .media_formats
+        .get(url)
+        .map(String::as_str)
+        .unwrap_or("best");
+
+    let mut details = column![
+        text(info.title.clone()).wrapping(text::Wrapping::None),
+        text(summary).size(12).style(muted),
+    ]
+    .spacing(4);
+
+    let mut format_pills = row![].spacing(5);
+    if info.formats.is_empty() {
+        format_pills = format_pills.push(option(
+            l.get("media-format-best"),
+            selected_format == "best",
+            Message::SelectMediaFormat(url.clone(), "best".to_owned()),
+        ));
+    } else {
+        let mut seen_labels = std::collections::HashSet::new();
+        for format in info.formats.iter().take(10) {
+            let label = if format.id == "best" {
+                l.get("media-format-best")
+            } else if matches!(format.preset, FormatPreset::AudioOnly { mp3: true }) {
+                l.get("media-format-audio-mp3")
+            } else {
+                format.label.clone()
+            };
+            if seen_labels.insert(label.clone()) {
+                format_pills = format_pills.push(option(
+                    label,
+                    selected_format == format.id,
+                    Message::SelectMediaFormat(url.clone(), format.id.clone()),
+                ));
+            }
+        }
+    }
+    details = details.push(
+        row![
+            text(l.get("media-format-label")).size(12).style(muted),
+            theme::horizontal(format_pills),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    );
+
+    if !info.playlist_items.is_empty() {
+        let selected = dialog.media_playlist_items.get(url);
+        let selected_count = info
+            .playlist_items
+            .iter()
+            .filter(|item| selected.is_some_and(|set| set.contains(&item.index)))
+            .count();
+        let pkg_title = info
+            .playlist_title
+            .as_deref()
+            .unwrap_or(&info.title)
+            .to_owned();
+        details = details.push(
+            text(l.with(
+                "media-playlist-summary",
+                [
+                    ("name", pkg_title),
+                    ("selected", selected_count.to_string()),
+                    ("total", info.playlist_items.len().to_string()),
+                ],
+            ))
+            .size(12)
+            .style(muted),
+        );
+        if info.playlist_items.len() > 1 {
+            details = details.push(
+                row![
+                    theme::action(text(l.get("select-all")).size(11))
+                        .padding([4, 8])
+                        .on_press(Message::ToggleAllPlaylistItems(url.clone(), true)),
+                    theme::action(text(l.get("select-none")).size(11))
+                        .padding([4, 8])
+                        .on_press(Message::ToggleAllPlaylistItems(url.clone(), false)),
+                ]
+                .spacing(6),
+            );
+        }
+        for item in &info.playlist_items {
+            let included = selected.is_some_and(|set| set.contains(&item.index));
+            let item_url = url.clone();
+            let index = item.index;
+            let duration = item
+                .duration_secs
+                .map(format_media_duration)
+                .unwrap_or_default();
+            details = details.push(
+                row![
+                    theme::check(included)
+                        .label(format!("{}. {}", item.index, item.title))
+                        .on_toggle(move |_| Message::TogglePlaylistItem(item_url.clone(), index))
+                        .width(Fill),
+                    text(duration).size(11).style(muted),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(6),
+            );
+        }
+    }
+
+    container(
+        row![
+            text(l.get("media-input")).size(12).style(muted).width(152),
+            details.width(Fill),
+        ]
+        .spacing(8),
+    )
+    .clip(true)
+    .padding([6, 9])
+    .into()
+}
+
 fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, Message> {
     let l = &app.strings;
     let mut choices = row![option(
@@ -1183,6 +1325,11 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         if let Input::Torrent(key) = input {
             return torrent_preview_row(l, dialog, key);
         }
+        if let Input::Http(url) = input
+            && let Some(Probe::Media(info)) = dialog.previews.get(url)
+        {
+            return media_preview_row(l, dialog, url, info);
+        }
         let (key, detail) = match input {
             Input::Http(url) => match dialog.previews.get(url) {
                 Some(Probe::File(name, bytes)) => (
@@ -1194,7 +1341,8 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
                 ),
                 Some(Probe::Web(title, _)) => ("web-input", title.clone()),
                 Some(Probe::Hoster(plugin)) => ("hoster-input", plugin.clone()),
-                Some(Probe::Media) => ("media-input", l.get("media-unavailable")),
+                Some(Probe::Media(_)) => ("media-input", String::new()),
+                Some(Probe::MediaMissingSidecar) => ("media-input", l.get("media-missing-sidecar")),
                 Some(Probe::Unavailable) => ("probe-unavailable", String::new()),
                 Some(Probe::Verification) => ("waiting-user", String::new()),
                 Some(Probe::AccountRequired) => ("hoster-input", l.get("hoster-token-required")),
@@ -1219,19 +1367,28 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         ]
         .spacing(8)
         .align_y(Alignment::Center);
-        if app.preferences.browser_helper
-            && let Input::Http(url) = input
-        {
-            let key = match dialog.previews.get(url) {
-                Some(Probe::Verification) => Some(("open-verification", true)),
-                Some(Probe::Web(..)) => Some(("analyze-in-browser", false)),
-                _ => None,
-            };
-            if let Some((key, verify)) = key {
+        if let Input::Http(url) = input {
+            if matches!(
+                dialog.previews.get(url),
+                Some(Probe::Web(..) | Probe::Unavailable)
+            ) {
                 line = line.push(
-                    theme::action(text(l.get(key)).size(12))
-                        .on_press(Message::AnalyzeInBrowser(url.clone(), verify)),
+                    theme::action(text(l.get("media-inspect")).size(12))
+                        .on_press(Message::InspectMedia(url.clone())),
                 );
+            }
+            if app.preferences.browser_helper {
+                let key = match dialog.previews.get(url) {
+                    Some(Probe::Verification) => Some(("open-verification", true)),
+                    Some(Probe::Web(..)) => Some(("analyze-in-browser", false)),
+                    _ => None,
+                };
+                if let Some((key, verify)) = key {
+                    line = line.push(
+                        theme::action(text(l.get(key)).size(12))
+                            .on_press(Message::AnalyzeInBrowser(url.clone(), verify)),
+                    );
+                }
             }
         }
         container(line).clip(true).padding([6, 9]).into()
@@ -1251,15 +1408,12 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
         .spacing(9)
         .into()
     } else {
-        let preview_height = if dialog
-            .entries
-            .iter()
-            .any(|entry| matches!(entry, Input::Torrent(_)))
-        {
-            148
-        } else {
-            90
-        };
+        let has_rich_preview = dialog.entries.iter().any(|entry| match entry {
+            Input::Torrent(_) => true,
+            Input::Http(url) => matches!(dialog.previews.get(url), Some(Probe::Media(_))),
+            _ => false,
+        });
+        let preview_height = if has_rich_preview { 164 } else { 90 };
         theme::vertical(previews)
             .spacing(6)
             .height(preview_height)
@@ -1538,10 +1692,9 @@ fn candidate_row<'a>(
     bytes: Option<u64>,
     candidate: Option<&'a ruscello_engine::Candidate>,
 ) -> Element<'a, Message> {
-    let mut check = theme::check(dialog.selected_links.contains(url)).label(name);
-    if candidate.is_none_or(|candidate| candidate.group != CandidateGroup::Media) {
-        check = check.on_toggle(|checked| Message::SelectLink(url.clone(), checked));
-    }
+    let check = theme::check(dialog.selected_links.contains(url))
+        .label(name)
+        .on_toggle(|checked| Message::SelectLink(url.clone(), checked));
     let mut content = row![
         check.width(Fill),
         text(url.host_str().unwrap_or_default())

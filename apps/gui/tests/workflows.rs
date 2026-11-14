@@ -5,12 +5,12 @@ use iced_test::{
 };
 use ruscello_core::{Download, DownloadId, Source, Status, TorrentSource};
 use ruscello_engine::{
-    DlcKeyService, EngineEvent, EngineHandle, EngineOptions, TorrentDetailsSnapshot,
-    TorrentFilePriority, TorrentFileProgress, TorrentPeerInfo, TorrentPeerState,
-    TorrentPeerTransport, TorrentPieceMap, TorrentRuntimeProgress, TorrentSessionTelemetry,
-    TorrentSettings, TorrentTrackerInfo, TorrentTrackerStatus,
+    DlcKeyService, EngineEvent, EngineHandle, EngineOptions, SidecarEndpoints, SidecarKind,
+    TorrentDetailsSnapshot, TorrentFilePriority, TorrentFileProgress, TorrentPeerInfo,
+    TorrentPeerState, TorrentPeerTransport, TorrentPieceMap, TorrentRuntimeProgress,
+    TorrentSessionTelemetry, TorrentSettings, TorrentTrackerInfo, TorrentTrackerStatus,
 };
-use ruscello_testkit::{FileSpec, TestServer};
+use ruscello_testkit::{FileSpec, Reply, TestServer};
 
 use crate::{
     actions::Action as RowAction,
@@ -857,6 +857,335 @@ async fn shows_verification_action_and_cookie_import_in_both_languages() -> anyh
     let verify = click(&app, "Apri verifica")?;
     apply(&mut app, verify).await;
     assert_eq!(app.banner, Some("browser-disabled"));
+    engine.shutdown().await?;
+    Ok(())
+}
+
+fn click_in(app: &App, size: Size, label: &str) -> anyhow::Result<Message> {
+    let mut ui = simulator_at(app, size);
+    ui.click(label)?;
+    ui.into_messages()
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("No message from {label}"))
+}
+
+fn create_gui_mock_ytdlp(
+    dir: &std::path::Path,
+    ep1_url: &str,
+    ep2_url: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let playlist_json = serde_json::json!({
+        "_type": "playlist",
+        "title": "Season Alpha",
+        "entries": [
+            {
+                "id": "ep1",
+                "title": "Episode 1",
+                "webpage_url": ep1_url,
+                "url": ep1_url,
+                "ext": "mp4",
+                "duration": 90
+            },
+            {
+                "id": "ep2",
+                "title": "Episode 2",
+                "webpage_url": ep2_url,
+                "url": ep2_url,
+                "ext": "mp4",
+                "duration": 120
+            }
+        ]
+    });
+    let json_path = dir.join("playlist.json");
+    std::fs::write(&json_path, serde_json::to_vec(&playlist_json)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("mock-ytdlp.sh");
+        let script = format!(
+            "#!/bin/sh\n\
+            for arg in \"$@\"; do\n\
+              if [ \"$arg\" = \"--version\" ]; then\n\
+                echo \"2026.05.01-mock\"\n\
+                exit 0\n\
+              fi\n\
+              if [ \"$arg\" = \"-J\" ] || [ \"$arg\" = \"--dump-single-json\" ]; then\n\
+                cat \"{}\"\n\
+                exit 0\n\
+              fi\n\
+            done\n\
+            exit 0\n",
+            json_path.display()
+        );
+        std::fs::write(&path, script)?;
+        let mut perms = std::fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms)?;
+        Ok(path)
+    }
+    #[cfg(windows)]
+    {
+        let path = dir.join("mock-ytdlp.cmd");
+        let script = format!(
+            "@echo off\r\n\
+            echo %* | findstr /C:\"--version\" >nul && (echo 2026.05.01-mock & exit /b 0)\r\n\
+            echo %* | findstr /C:\"-J\" >nul && (type \"{}\" & exit /b 0)\r\n\
+            echo %* | findstr /C:\"--dump-single-json\" >nul && (type \"{}\" & exit /b 0)\r\n\
+            exit /b 0\r\n",
+            json_path.display(),
+            json_path.display()
+        );
+        std::fs::write(&path, script)?;
+        Ok(path)
+    }
+}
+
+#[tokio::test]
+async fn inspects_hls_formats_and_downloads_selected_quality() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    app.preferences.notifications = false;
+    let server = TestServer::start().await?;
+    server.route("/hls/720.ts", |_| {
+        Reply::bytes("video/mp2t", b"720_BYTES".to_vec())
+    });
+    server.route("/hls/480.ts", |_| {
+        Reply::bytes("video/mp2t", b"480_SELECTED_STREAM".to_vec())
+    });
+    server.route("/hls/720.m3u8", |_| {
+        Reply::bytes(
+            "application/vnd.apple.mpegurl",
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n/hls/720.ts\n#EXT-X-ENDLIST\n"
+                .to_vec(),
+        )
+    });
+    server.route("/hls/480.m3u8", |_| {
+        Reply::bytes(
+            "application/vnd.apple.mpegurl",
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n/hls/480.ts\n#EXT-X-ENDLIST\n"
+                .to_vec(),
+        )
+    });
+    let master_url = server.route("/hls/demo_video.m3u8", |_| {
+        Reply::bytes(
+            "application/vnd.apple.mpegurl",
+            b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720\n/hls/720.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480\n/hls/480.m3u8\n"
+                .to_vec(),
+        )
+    });
+
+    let engine = EngineHandle::start(EngineOptions::new(
+        temp.path().join("queue.db"),
+        temp.path().join("downloads"),
+    ))
+    .await?;
+    let mut events = engine.subscribe();
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+
+    apply(&mut app, Message::Incoming(vec![master_url.clone()])).await;
+    assert!(simulator(&app).find("demo_video").is_ok());
+    assert!(simulator(&app).find("HLS · demo_video.ts").is_ok());
+    let pick_480 = click_in(&app, Size::new(1120.0, 900.0), "480p (0.8 Mbps)")?;
+    apply(&mut app, pick_480).await;
+
+    let submit = click(&app, "Add")?;
+    apply(&mut app, submit).await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if matches!(
+                events.recv().await?,
+                EngineEvent::StatusChanged {
+                    status: Status::Completed,
+                    ..
+                }
+            ) {
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+
+    let snapshot = engine.snapshot().await?;
+    assert_eq!(snapshot.downloads.len(), 1);
+    let dl = &snapshot.downloads[0];
+    assert_eq!(dl.file_type, Some(ruscello_core::FileType::Video));
+    let completed = dl
+        .completed_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing completed HLS file"))?;
+    assert_eq!(std::fs::read(completed)?, b"480_SELECTED_STREAM");
+
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+    assert_eq!(app.strings.get("media-format-best"), "Migliore");
+    engine.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn manages_sidecars_and_ytdlp_playlists_in_both_languages() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    app.preferences.notifications = false;
+
+    let server = TestServer::start().await?;
+    let payload = b"MOCK_YTDLP_BINARY_BYTES\n".to_vec();
+    let digest = "b2a99f5f3ce5e36005734dba8031a1656192fbf468573da23bd957e32cfd2e74";
+    let bin_url = server.route("/ytdlp/bin", move |_| {
+        Reply::bytes("application/octet-stream", payload.clone())
+    });
+    let sums_url = server.route("/ytdlp/SHA2-256SUMS", move |_| {
+        Reply::bytes(
+            "text/plain",
+            format!(
+                "{digest}  yt-dlp_linux\n\
+                {digest}  yt-dlp_linux_aarch64\n\
+                {digest}  yt-dlp.exe\n\
+                {digest}  yt-dlp_macos\n\
+                {digest}  yt-dlp\n"
+            )
+            .into_bytes(),
+        )
+    });
+    let release_json = serde_json::json!({
+        "tag_name": "2026.05.01",
+        "assets": [
+            { "name": "SHA2-256SUMS", "browser_download_url": sums_url },
+            { "name": "yt-dlp_linux", "browser_download_url": bin_url },
+            { "name": "yt-dlp_linux_aarch64", "browser_download_url": bin_url },
+            { "name": "yt-dlp.exe", "browser_download_url": bin_url },
+            { "name": "yt-dlp_macos", "browser_download_url": bin_url },
+            { "name": "yt-dlp", "browser_download_url": bin_url }
+        ]
+    });
+    let release_url = server.route("/ytdlp/latest", move |_| {
+        Reply::bytes(
+            "application/json",
+            serde_json::to_vec(&release_json).unwrap_or_default(),
+        )
+    });
+
+    server.route("/ep1.ts", |_| {
+        Reply::bytes("video/mp2t", b"EP1_STREAM".to_vec())
+    });
+    server.route("/ep2.ts", |_| {
+        Reply::bytes("video/mp2t", b"EP2_STREAM".to_vec())
+    });
+    let ep1_url = server.route("/ep1.m3u8", |_| {
+        Reply::bytes(
+            "application/vnd.apple.mpegurl",
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n/ep1.ts\n#EXT-X-ENDLIST\n".to_vec(),
+        )
+    });
+    let ep2_url = server.route("/ep2.m3u8", |_| {
+        Reply::bytes(
+            "application/vnd.apple.mpegurl",
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n/ep2.ts\n#EXT-X-ENDLIST\n".to_vec(),
+        )
+    });
+    let playlist_url = server.route("/watch?list=season-alpha", |_| {
+        Reply::html("<title>Season Alpha</title><p>Video playlist page</p>")
+    });
+    let mock_ytdlp = create_gui_mock_ytdlp(temp.path(), &ep1_url, &ep2_url)?;
+
+    let mut options =
+        EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    options.data_dir = Some(temp.path().to_path_buf());
+    options.sidecar_endpoints = Some(SidecarEndpoints {
+        ytdlp_release_url: release_url,
+        ..SidecarEndpoints::default()
+    });
+    let engine = EngineHandle::start(options).await?;
+    let mut events = engine.subscribe();
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+
+    apply(&mut app, Message::Settings(true)).await;
+    apply(&mut app, Message::SettingsPage(Page::Integrations)).await;
+    let tall = Size::new(1120.0, 1600.0);
+    assert!(
+        simulator_at(&app, tall)
+            .find("Enable consent above to allow automatic download")
+            .is_ok()
+    );
+
+    let consent = click_in(
+        &app,
+        tall,
+        "Allow Ruscello to download and manage official yt-dlp releases",
+    )?;
+    apply(&mut app, consent).await;
+    assert!(app.preferences.sidecars.ytdlp_consent);
+
+    let install = click_in(&app, tall, "Install yt-dlp")?;
+    apply(&mut app, install).await;
+    let status = engine.sidecar_status().await?;
+    assert!(status.ytdlp.installed);
+
+    let autoupdate = click_in(&app, tall, "Automatically check for yt-dlp updates")?;
+    apply(&mut app, autoupdate).await;
+    assert!(app.preferences.sidecars.ytdlp_auto_update);
+
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+    assert!(simulator_at(&app, tall).find("Salva percorsi").is_ok());
+    apply(&mut app, Message::Locale(Locale::English)).await;
+
+    apply(
+        &mut app,
+        Message::SidecarCustomPath(SidecarKind::YtDlp, mock_ytdlp.display().to_string()),
+    )
+    .await;
+    let save_paths = click_in(&app, tall, "Save paths")?;
+    apply(&mut app, save_paths).await;
+    assert!(
+        simulator_at(&app, tall)
+            .find("Ready (2026.05.01-mock)")
+            .is_ok()
+    );
+    apply(&mut app, Message::Settings(false)).await;
+
+    apply(&mut app, Message::Incoming(vec![playlist_url])).await;
+    let add_tall = Size::new(1120.0, 1000.0);
+    assert!(simulator_at(&app, add_tall).find("1. Episode 1").is_ok());
+    assert!(simulator_at(&app, add_tall).find("2. Episode 2").is_ok());
+
+    let uncheck_ep2 = click_in(&app, add_tall, "2. Episode 2")?;
+    apply(&mut app, uncheck_ep2).await;
+    let submit = click(&app, "Add")?;
+    apply(&mut app, submit).await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if matches!(
+                events.recv().await?,
+                EngineEvent::StatusChanged {
+                    status: Status::Completed,
+                    ..
+                }
+            ) {
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+
+    let snapshot = engine.snapshot().await?;
+    assert!(
+        snapshot
+            .packages
+            .iter()
+            .any(|package| package.name == "Season Alpha")
+    );
+    assert_eq!(snapshot.downloads.len(), 1);
+    let completed = snapshot.downloads[0]
+        .completed_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing completed playlist episode"))?;
+    assert_eq!(std::fs::read(completed)?, b"EP1_STREAM");
+
     engine.shutdown().await?;
     Ok(())
 }

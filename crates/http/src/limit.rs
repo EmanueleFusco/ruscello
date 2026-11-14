@@ -63,7 +63,7 @@ impl BandwidthLimit {
     }
 
     /// Atomically debits all applicable buckets.
-    pub(crate) async fn acquire(
+    pub async fn acquire(
         &self,
         local: &Self,
         individual: Option<&Self>,

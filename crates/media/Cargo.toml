@@ -1,6 +1,6 @@
 [package]
 name = "ruscello-media"
-description = "Streaming media: native HLS/DASH downloading and management of optional yt-dlp/ffmpeg sidecars (see ADR-0002)."
+description = "Media downloads: native HLS and DASH parsing/downloading, optional yt-dlp and ffmpeg sidecar management."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,35 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+aes.workspace = true
+bytes.workspace = true
+cbc.workspace = true
+flate2.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+lzma-rs.workspace = true
+m3u8-rs.workspace = true
+percent-encoding.workspace = true
+quick-xml = { workspace = true, features = ["serialize"] }
+reqwest = { workspace = true, features = ["rustls", "http2", "json", "stream"] }
+ruscello-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+zip.workspace = true
+
+[features]
+live-tests = []
+
+[dev-dependencies]
+ruscello-testkit.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-use ruscello_engine::{ErrorClass, HttpError, ResolveError, WriterError};
+use ruscello_engine::{ErrorClass, HttpError, MediaError, ResolveError, WriterError};
 use ruscello_platform::language::Language;
 
 pub(crate) struct Messages {
@@ -6,6 +6,9 @@ pub(crate) struct Messages {
     pub restarted: &'static str,
     pub non_resumable: &'static str,
     pub waiting: &'static str,
+    pub media_label: &'static str,
+    pub formats_heading: &'static str,
+    pub playlist_heading: &'static str,
     cancelled: &'static str,
     changed: &'static str,
     checksum_failed: &'static str,
@@ -19,15 +22,20 @@ pub(crate) struct Messages {
     verification: &'static str,
     browser: &'static str,
     dlc_key: &'static str,
+    sidecar_missing: &'static str,
+    media_invalid: &'static str,
 }
 
 const EN: Messages = Messages {
     usage: "Usage: ruscello-cli [--language en|it|system] get <url> [-o directory] [-x connections]\n\
-    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --progress --quiet --browser\n\
-    ruscello-cli inspect <url> [--browser]\nruscello-cli import <file> [--dlc-fallback]",
+    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --format <preset|id> --ytdlp <path> --ffmpeg <path> --progress --quiet --browser\n\
+    ruscello-cli inspect <url> [--browser] [--ytdlp <path>] [--ffmpeg <path>]\nruscello-cli import <file> [--dlc-fallback]",
     restarted: "The previous data could not be resumed. Starting from zero.",
     non_resumable: "Not resumable",
     waiting: "Waiting for network connectivity.",
+    media_label: "Media",
+    formats_heading: "Formats",
+    playlist_heading: "Playlist",
     cancelled: "Download interrupted.",
     changed: "The file on the server changed repeatedly.",
     checksum_failed: "The downloaded file did not match the expected checksum.",
@@ -41,15 +49,20 @@ const EN: Messages = Messages {
     verification: "The host requires verification. Use --browser to open the verification window.",
     browser: "Ruscello could not use the browser helper. Check that ruscello-webview is installed and its profile is available.",
     dlc_key: "Ruscello could not obtain the container key.",
+    sidecar_missing: "This media source requires an external sidecar binary (yt-dlp/ffmpeg). Pass --ytdlp/--ffmpeg or install it from the app Preferences.",
+    media_invalid: "The media stream or playlist manifest could not be parsed or is unsupported.",
 };
 
 const IT: Messages = Messages {
     usage: "Uso: ruscello-cli [--language en|it|system] get <url> [-o cartella] [-x connessioni]\n\
-    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --progress --quiet --browser\n\
-    ruscello-cli inspect <url> [--browser]\nruscello-cli import <file> [--dlc-fallback]",
+    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --format <preset|id> --ytdlp <percorso> --ffmpeg <percorso> --progress --quiet --browser\n\
+    ruscello-cli inspect <url> [--browser] [--ytdlp <percorso>] [--ffmpeg <percorso>]\nruscello-cli import <file> [--dlc-fallback]",
     restarted: "Impossibile riprendere i dati precedenti. Il download riparte da zero.",
     non_resumable: "Non riprendibile",
     waiting: "In attesa della connessione di rete.",
+    media_label: "Media",
+    formats_heading: "Formati",
+    playlist_heading: "Playlist",
     cancelled: "Download interrotto.",
     changed: "Il file sul server è cambiato più volte.",
     checksum_failed: "Il file scaricato non corrisponde al checksum previsto.",
@@ -63,6 +76,8 @@ const IT: Messages = Messages {
     verification: "Il servizio richiede una verifica. Usa --browser per aprire la finestra di verifica.",
     browser: "Impossibile usare il browser integrato. Verifica che ruscello-webview sia installato e che il profilo sia disponibile.",
     dlc_key: "Ruscello non ha potuto ottenere la chiave del contenitore.",
+    sidecar_missing: "Questa sorgente richiede un binario opzionale (yt-dlp/ffmpeg). Passa --ytdlp/--ffmpeg oppure installalo dalle Impostazioni dell’app.",
+    media_invalid: "Il manifest o la playlist multimediale non è valido o non è supportato.",
 };
 
 impl Messages {
@@ -81,6 +96,30 @@ impl Messages {
                 ErrorClass::Permanent => self.failed,
             },
             None => self.destination_failure,
+        }
+    }
+
+    pub(crate) fn media_failure(&self, failure: &MediaError) -> &'static str {
+        if failure.is_cancelled() {
+            self.cancelled
+        } else if failure.is_low_disk() {
+            self.destination_failure
+        } else if failure.is_access_denied() {
+            self.auth
+        } else if failure.is_network() {
+            self.temporary_failure
+        } else {
+            match failure {
+                MediaError::ConsentRequired(_) | MediaError::SidecarMissing(_) => {
+                    self.sidecar_missing
+                }
+                MediaError::ChecksumMismatch { .. } => self.checksum_failed,
+                MediaError::ManifestParse(_) | MediaError::UnsupportedManifest(_) => {
+                    self.media_invalid
+                }
+                MediaError::Io(_) => self.destination_failure,
+                _ => self.failed,
+            }
         }
     }
 

@@ -18,6 +18,7 @@ regex.workspace = true
 ruscello-browser.workspace = true
 ruscello-core.workspace = true
 ruscello-http.workspace = true
+ruscello-media.workspace = true
 ruscello-resolver.workspace = true
 ruscello-storage.workspace = true
 ruscello-torrent.workspace = true

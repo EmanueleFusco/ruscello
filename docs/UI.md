@@ -66,7 +66,8 @@ rather than cluttering toolbars.
    *Hoster «name»*, *Container `.dlc` (decrypted Package)*, *Torrent*, *Media Stream*, or *Web Page → LinkGrabber*).
 3. **LinkGrabber** appears inside Add. Search or filter the collapsible groups *Likely targets* (preselected),
    *Other files*, *Media*, and *Linked pages*. Hover over a score to see how it was calculated. Imported
-   packages keep their names, and **Download selected** queues the checked entries. Stream transfers are planned for M7.
+   packages keep their names, and **Download selected** queues the checked entries. Media streams (HLS,
+   DASH, and optional `yt-dlp` sites) offer quality/format and playlist item selection directly in Add.
 4. Choose a category and destination or use the automatic defaults. **Start immediately** is on by default.
    Advanced options include max connections, bandwidth limit, and expected checksum.
 
