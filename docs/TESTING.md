@@ -129,20 +129,20 @@ and inspect the call stacks with `perf report`. Results depend on the filesystem
 
 ### Linux release validation
 
-The following measurements used the same AMD Lucienne desktop on X11 and optimized builds with
-LTO disabled for the local iteration. The software run used Xvfb.
+The following measurements used the default release profile on an AMD Lucienne desktop with X11.
+The software run used Xvfb.
 
 | Budget | Software 2D | Hardware GPU |
 | --- | ---: | ---: |
-| Idle RAM | 49.2 MB | 130.1 MB |
-| RAM with 10 downloads | 76.1 MB | 154.2 MB |
+| Idle RAM | 46.0 MB | 126.9 MB |
+| RAM with 10 downloads | 77.5 MB | 152.9 MB |
 | Idle CPU | 0.0% | 0.0% |
-| User CPU normalized to 1 Gbit/s | 5.4% | 5.1% |
-| Cold start to usable window | 0.113 s | 0.307 s |
-| Per-row progress updates | 3.00 Hz | 2.96 Hz |
+| User CPU normalized to 1 Gbit/s | 5.6% | 4.5% |
+| Cold start to usable window | 0.115 s | 0.194 s |
+| Per-row progress updates | 2.96 Hz | 2.96 Hz |
 
 The hardware renderer exceeded both RAM budgets on this machine. The process-kill benchmark
 observed a 2.001-second checkpoint gap and an upper bound of 3,538,944 bytes to refetch
 at a configured 2 MiB/s. The resumed file matched its fixture's SHA-256.
-The segmented throughput repeat measured 482.6 MiB/s against aria2's 540.6 MiB/s (89.27%),
+The segmented throughput repeat measured 479.9 MiB/s against aria2's 543.5 MiB/s (88.29%),
 below the 95% target. The local kernel restricted access to `perf` counters.

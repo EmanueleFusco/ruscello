@@ -426,6 +426,15 @@ fn replace_bundle(dmg: &std::path::Path, bundle: &std::path::Path) -> anyhow::Re
         detached?.status.success(),
         "Could not unmount the disk image"
     );
+    swap_macos_bundle(bundle, &next, stage)
+}
+
+#[cfg(target_os = "macos")]
+fn swap_macos_bundle(
+    bundle: &std::path::Path,
+    next: &std::path::Path,
+    stage: tempfile::TempDir,
+) -> anyhow::Result<PathBuf> {
     let executable = std::path::Path::new("Contents/MacOS/ruscello");
     ensure!(
         next.join(executable).is_file() && next.join("Contents/MacOS/ruscello-webview").is_file(),
@@ -433,7 +442,7 @@ fn replace_bundle(dmg: &std::path::Path, bundle: &std::path::Path) -> anyhow::Re
     );
     let previous = stage.path().join("previous.app");
     std::fs::rename(bundle, &previous)?;
-    if let Err(error) = std::fs::rename(&next, bundle) {
+    if let Err(error) = std::fs::rename(next, bundle) {
         if let Err(rollback) = std::fs::rename(&previous, bundle) {
             let backup = stage.keep();
             tracing::error!(path = %backup.display(), %rollback, "The original application could not be restored");
@@ -556,29 +565,24 @@ mod tests {
         let bundle = folder.join("Ruscello.app");
         fs::create_dir_all(bundle.join("Contents/MacOS"))?;
         fs::write(bundle.join(desktop), b"new desktop")?;
-        let disk_image = |name| -> anyhow::Result<_> {
-            let image = root.path().join(name);
-            let result = Command::new("/usr/bin/hdiutil")
-                .args(["create", "-quiet", "-format", "UDRO", "-srcfolder"])
-                .arg(&folder)
-                .arg(&image)
-                .output()?;
-            ensure!(
-                result.status.success(),
-                "Could not create fixture disk image: {}",
-                String::from_utf8_lossy(&result.stderr)
-            );
-            Ok(image)
-        };
-
-        let incomplete = disk_image("incomplete.dmg")?;
-        assert!(replace_bundle(&incomplete, &app).is_err());
+        assert!(swap_macos_bundle(&app, &bundle, tempfile::tempdir_in(root.path())?).is_err());
         assert_eq!(fs::read(app.join(desktop))?, b"old desktop");
         assert_eq!(fs::read(app.join(helper))?, b"old helper");
 
         fs::write(bundle.join(helper), b"new helper")?;
-        let complete = disk_image("complete.dmg")?;
-        let binary = replace_bundle(&complete, &app)?;
+        let image = root.path().join("complete.dmg");
+        let result = Command::new("/usr/bin/hdiutil")
+            .args(["create", "-fs", "HFS+", "-format", "UDZO", "-srcfolder"])
+            .arg(&folder)
+            .arg(&image)
+            .output()?;
+        ensure!(
+            result.status.success(),
+            "Could not create fixture disk image ({}): {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let binary = replace_bundle(&image, &app)?;
         assert_eq!(binary, app.join(desktop));
         assert_eq!(fs::read(binary)?, b"new desktop");
         assert_eq!(fs::read(app.join(helper))?, b"new helper");
