@@ -20,8 +20,10 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    CategorySettings, DiskPolicy, DownloadProgress, HttpError, StartupError,
-    categories::CategoryBook, recover_queue, scheduler::Scheduler,
+    CategorySettings, DiskPolicy, DownloadProgress, HttpError, MediaEngine, MediaError,
+    MediaInspection, MediaRequest, SidecarBinaryStatus, SidecarEndpoints, SidecarKind,
+    SidecarSettings, SidecarsStatus, StartupError, categories::CategoryBook, media_bridge,
+    recover_queue, scheduler::Scheduler,
 };
 
 pub(super) const LIMITS_KEY: &str = "scheduler_limits";
@@ -70,6 +72,10 @@ pub struct EngineOptions {
     pub browser: Option<crate::BrowserOptions>,
     pub browser_enabled: bool,
     pub dlc_service: Option<crate::DlcKeyService>,
+    /// Initial consent, auto-update, and custom path overrides for optional media sidecars.
+    pub sidecars: SidecarSettings,
+    /// Optional custom GitHub release API URLs for sidecars (used in offline tests).
+    pub sidecar_endpoints: Option<SidecarEndpoints>,
 }
 
 impl EngineOptions {
@@ -88,6 +94,8 @@ impl EngineOptions {
             browser: None,
             browser_enabled: true,
             dlc_service: None,
+            sidecars: SidecarSettings::default(),
+            sidecar_endpoints: None,
         }
     }
 }
@@ -123,6 +131,8 @@ pub struct AddDownload {
     pub seed_time_limit_minutes: Option<u64>,
     /// Optional initial peer addresses (primarily for direct peers or tests).
     pub initial_peers: Vec<SocketAddr>,
+    /// Media format/stream selection metadata for HLS, DASH, or `yt-dlp` sources.
+    pub media: Option<MediaRequest>,
 }
 
 impl AddDownload {
@@ -148,6 +158,7 @@ impl AddDownload {
             seed_ratio_millis: None,
             seed_time_limit_minutes: None,
             initial_peers: Vec::new(),
+            media: None,
         }
     }
 }
@@ -161,6 +172,7 @@ pub struct EngineSnapshot {
     pub categories: CategorySettings,
     pub torrent: TorrentSettings,
     pub telemetry: TorrentSessionTelemetry,
+    pub sidecars: SidecarSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +264,8 @@ pub enum EngineError {
     #[error(transparent)]
     Torrent(#[from] TorrentError),
     #[error(transparent)]
+    Media(#[from] MediaError),
+    #[error(transparent)]
     Resolver(#[from] crate::ResolveError),
     #[error("a file operation stopped unexpectedly")]
     Worker(#[from] tokio::task::JoinError),
@@ -267,6 +281,7 @@ pub(super) enum Command {
     Update(Update, Reply<()>),
     Snapshot(Reply<EngineSnapshot>),
     TorrentManager(Reply<Arc<TorrentManager>>),
+    MediaContext(Reply<(MediaEngine, SidecarSettings)>),
     Verify(DownloadId, crate::BrowserLocale, Reply<()>),
     ResumeVerified(crate::Url, Reply<()>),
     Shutdown(Reply<()>),
@@ -285,6 +300,7 @@ pub(super) enum Update {
     TemporaryBandwidth(Option<NonZeroU64>),
     Categories(CategorySettings),
     TorrentSettings(TorrentSettings),
+    SidecarSettings(SidecarSettings),
 }
 
 /// Asynchronous queue control through a bounded mailbox and broadcast events.
@@ -340,6 +356,7 @@ impl EngineHandle {
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or(options.torrent);
+        options.sidecars = media_bridge::load_sidecar_settings(&snapshot, options.sidecars)?;
         let categories = CategoryBook::load(&storage, &snapshot).await?;
         let (commands, receiver) = mpsc::channel(64);
         let (events, _) = broadcast::channel(256);
@@ -587,6 +604,58 @@ impl EngineHandle {
         let manager = self.request(Command::TorrentManager).await?;
         Ok(manager
             .create_and_serve_local(source_path, trackers, piece_length)
+            .await?)
+    }
+
+    /// Inspects an HLS playlist, DASH MPD, or `yt-dlp`-supported media URL without queueing it.
+    pub async fn inspect_media(
+        &self,
+        url: &crate::Url,
+        cancellation: &CancellationToken,
+    ) -> Result<MediaInspection, EngineError> {
+        let (media, sidecars) = self.request(Command::MediaContext).await?;
+        let headers = media_bridge::session_headers(&self.resolver, url, cancellation).await;
+        Ok(media
+            .inspect(url, &headers, &sidecars, cancellation)
+            .await?)
+    }
+
+    /// Returns current sidecar availability, consent, versions, and binary paths.
+    pub async fn sidecar_status(&self) -> Result<SidecarsStatus, EngineError> {
+        let (media, sidecars) = self.request(Command::MediaContext).await?;
+        Ok(media.sidecar_status(&sidecars).await)
+    }
+
+    /// Returns the persisted sidecar consent/path configuration.
+    pub async fn sidecar_settings(&self) -> Result<SidecarSettings, EngineError> {
+        let (_, sidecars) = self.request(Command::MediaContext).await?;
+        Ok(sidecars)
+    }
+
+    /// Persists sidecar consent, auto-update policy, and custom binary paths.
+    pub async fn set_sidecar_settings(&self, settings: SidecarSettings) -> Result<(), EngineError> {
+        self.update(Update::SidecarSettings(settings)).await
+    }
+
+    /// Downloads or updates an optional sidecar binary (requires prior explicit consent).
+    pub async fn install_sidecar(
+        &self,
+        kind: SidecarKind,
+        cancellation: &CancellationToken,
+    ) -> Result<SidecarBinaryStatus, EngineError> {
+        let (media, sidecars) = self.request(Command::MediaContext).await?;
+        Ok(media.install_sidecar(kind, &sidecars, cancellation).await?)
+    }
+
+    /// Checks and installs `yt-dlp` updates if consent + auto-update are enabled.
+    pub async fn maybe_auto_update_ytdlp(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<String>, EngineError> {
+        let (media, sidecars) = self.request(Command::MediaContext).await?;
+        Ok(media
+            .sidecars()
+            .maybe_auto_update_ytdlp(&sidecars, media.client(), cancellation)
             .await?)
     }
 

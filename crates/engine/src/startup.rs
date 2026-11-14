@@ -175,6 +175,7 @@ fn reconcile(
                     working_directory: working_directory.clone(),
                     torrent: None,
                     http: Default::default(),
+                    media: None,
                 };
                 position = position.saturating_add(1);
                 changes.push(Change::SaveDownload(Box::new(entry.clone())));

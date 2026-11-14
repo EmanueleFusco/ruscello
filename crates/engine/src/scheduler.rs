@@ -25,9 +25,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AddDownload, CategorySettings, DiskPolicy, EngineError, EngineEvent, EngineLog, EngineOptions,
-    EngineSnapshot, Limits, ProgressUpdate, TorrentRuntimeProgress,
+    EngineSnapshot, Limits, MediaEngine, MediaPhase, ProgressUpdate, SidecarSettings,
+    TorrentRuntimeProgress,
     categories::CategoryBook,
     handle::{Command, LIMITS_KEY, Reply, TORRENT_SETTINGS_KEY, Update},
+    media_bridge::{self, SIDECAR_SETTINGS_KEY},
     torrent_bridge,
     transfer::{self, Published, TransferError, source_url},
 };
@@ -50,6 +52,8 @@ pub(super) struct Scheduler {
     events: broadcast::Sender<EngineEvent>,
     hosts: HostConnections,
     http: HttpDownloader,
+    media: MediaEngine,
+    sidecar_settings: SidecarSettings,
     resolver: crate::Resolver,
     verifications: JoinSet<(ruscello_http::Url, Result<(), crate::ResolveError>)>,
     pending_verifications: BTreeMap<String, Vec<Reply<()>>>,
@@ -78,6 +82,7 @@ struct Active {
     session_version: u64,
     cancellation: CancellationToken,
     progress: watch::Receiver<DownloadProgress>,
+    media_phase: Option<watch::Receiver<MediaPhase>>,
     stop: Option<(Stop, Reply<()>)>,
 }
 
@@ -117,17 +122,20 @@ impl Scheduler {
         let hosts = HostConnections::new(limits.connections_per_host);
         let http = HttpDownloader::with_host_connections(hosts.clone())?;
         http.global_bandwidth().set_rate(limits.bandwidth);
-        let torrent_data_dir = options
-            .data_dir
-            .clone()
-            .unwrap_or_else(|| {
-                options
-                    .database
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .to_path_buf()
-            })
-            .join("torrent");
+        let engine_data_dir = options.data_dir.clone().unwrap_or_else(|| {
+            options
+                .database
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf()
+        });
+        let media = MediaEngine::new(
+            http.clone(),
+            &engine_data_dir,
+            options.sidecar_endpoints.clone().unwrap_or_default(),
+        )?;
+        let torrent_data_dir = engine_data_dir.join("torrent");
+        let sidecar_settings = options.sidecars;
         let torrent_settings = options.torrent;
         let queue: BTreeMap<DownloadId, QueueEntry> = snapshot
             .queue
@@ -196,6 +204,8 @@ impl Scheduler {
             events,
             hosts,
             http,
+            media,
+            sidecar_settings,
             resolver,
             verifications: JoinSet::new(),
             pending_verifications: BTreeMap::new(),
@@ -342,10 +352,14 @@ impl Scheduler {
                     categories: self.categories.settings(),
                     torrent: self.torrent_settings.clone(),
                     telemetry,
+                    sidecars: self.sidecar_settings.clone(),
                 }));
             }
             Command::TorrentManager(reply) => {
                 let _ = reply.send(self.ensure_torrent_manager().await);
+            }
+            Command::MediaContext(reply) => {
+                let _ = reply.send(Ok((self.media.clone(), self.sidecar_settings.clone())));
             }
             Command::Verify(id, locale, reply) => self.start_verification(id, locale, reply),
             Command::ResumeVerified(url, reply) => {
@@ -503,6 +517,7 @@ impl Scheduler {
                     })
                     .collect::<Result<_, _>>()?,
             };
+            let media_state = request.media.as_ref().map(media_bridge::to_queue_state);
             let id = self.allocate_id(&mut ids)?;
             let mut download = match request.source {
                 Source::Http { .. } | Source::Hoster { .. } => {
@@ -528,6 +543,45 @@ impl Scheduler {
                     let mut dl = Download::new(id, source, destination);
                     dl.category = category.map(|policy| policy.category.id);
                     dl.filename = request.filename_hint;
+                    dl.total_bytes = request.size_hint;
+                    dl
+                }
+                Source::Media { url } => {
+                    let parsed = media_bridge::parse_media_url(&url)?;
+                    let hint = request
+                        .filename_hint
+                        .clone()
+                        .or_else(|| request.media.as_ref().and_then(|m| m.title.clone()));
+                    let category = self.categories.assign(
+                        request.category,
+                        SourceKind::Media,
+                        parsed.as_str(),
+                        Some(&parsed),
+                        hint.as_deref(),
+                    )?;
+                    let destination = request
+                        .destination
+                        .as_deref()
+                        .map(std::path::absolute)
+                        .transpose()?
+                        .or_else(|| category.and_then(|policy| policy.category.destination.clone()))
+                        .unwrap_or_else(|| self.destination.clone());
+                    let mut dl =
+                        Download::new(id, Source::Media { url: parsed.into() }, destination);
+                    dl.category = category.map(|policy| policy.category.id);
+                    dl.file_type = Some(
+                        if media_bridge::is_audio_selector(
+                            request
+                                .media
+                                .as_ref()
+                                .and_then(|m| m.format_selector.as_deref()),
+                        ) {
+                            FileType::Audio
+                        } else {
+                            FileType::Video
+                        },
+                    );
+                    dl.filename = hint;
                     dl.total_bytes = request.size_hint;
                     dl
                 }
@@ -607,10 +661,10 @@ impl Scheduler {
                         working_directory,
                         torrent: Some(torrent_state),
                         http: Default::default(),
+                        media: None,
                     });
                     continue;
                 }
-                _ => return Err(EngineError::UnsupportedSource),
             };
 
             let working_directory = transfer::working_directory(
@@ -634,6 +688,7 @@ impl Scheduler {
                 working_directory,
                 torrent: None,
                 http,
+                media: media_state,
             });
         }
         for (id, bytes) in cached_files {
@@ -725,6 +780,17 @@ impl Scheduler {
             Update::ForceRecheck(id) => self.force_recheck_torrent(id).await,
             Update::SetTorrentFiles(id, only_files) => self.set_torrent_files(id, only_files).await,
             Update::TorrentSettings(settings) => self.set_torrent_settings(settings).await,
+            Update::SidecarSettings(settings) => {
+                self.storage
+                    .apply(vec![Change::SaveSetting {
+                        key: SIDECAR_SETTINGS_KEY.into(),
+                        value: serde_json::to_value(&settings)?,
+                    }])
+                    .await?;
+                self.sidecar_settings = settings;
+                self.emit(EngineEvent::QueueChanged);
+                Ok(())
+            }
             Update::Pause(_) | Update::Cancel(_, _) => Err(EngineError::Stopped),
         }
     }
@@ -870,6 +936,7 @@ impl Scheduler {
 
         enum Launch {
             Http(QueueEntry, ruscello_http::Url, String),
+            Media(QueueEntry, ruscello_http::Url, String),
             Torrent(QueueEntry, TorrentSource),
         }
 
@@ -939,6 +1006,42 @@ impl Scheduler {
                     entry.download.transition(status)?;
                     launches.push(Launch::Http(entry, url, host));
                 }
+                Source::Media { .. } => {
+                    let Ok(url) = media_bridge::media_source_url(&entry.download.source) else {
+                        let mut entry = entry.clone();
+                        entry.download.transition(Status::Failed {
+                            reason: FailureReason::UnsupportedSource,
+                        })?;
+                        rejected.push(entry);
+                        continue;
+                    };
+                    let host = url
+                        .host_str()
+                        .ok_or(EngineError::InvalidUrl)?
+                        .trim_end_matches('.')
+                        .trim_start_matches("www.")
+                        .to_owned();
+                    let running = host_load.entry(host.clone()).or_default();
+                    if *running >= self.limits.connections_per_host.get() {
+                        continue;
+                    }
+                    if let Some(category) = entry.download.category {
+                        let category_running = category_load.entry(category).or_insert(0);
+                        if self
+                            .categories
+                            .get(category)
+                            .and_then(|policy| policy.limits.concurrent_downloads)
+                            .is_some_and(|limit| *category_running >= limit.get())
+                        {
+                            continue;
+                        }
+                        *category_running += 1;
+                    }
+                    *running += 1;
+                    let mut entry = entry.clone();
+                    entry.download.transition(Status::Downloading)?;
+                    launches.push(Launch::Media(entry, url, host));
+                }
                 Source::Torrent(torrent_source) => {
                     if let Some(category) = entry.download.category {
                         let category_running = category_load.entry(category).or_insert(0);
@@ -966,14 +1069,6 @@ impl Scheduler {
                     };
                     entry.download.transition(initial_status)?;
                     launches.push(Launch::Torrent(entry, torrent_source.clone()));
-                }
-                _ => {
-                    let mut entry = entry.clone();
-                    entry.download.transition(Status::Failed {
-                        reason: FailureReason::UnsupportedSource,
-                    })?;
-                    rejected.push(entry);
-                    continue;
                 }
             }
             if launches.len() == free {
@@ -1017,7 +1112,9 @@ impl Scheduler {
                 launches
                     .iter()
                     .map(|launch| match launch {
-                        Launch::Http(entry, _, _) | Launch::Torrent(entry, _) => save_entry(entry),
+                        Launch::Http(entry, _, _)
+                        | Launch::Media(entry, _, _)
+                        | Launch::Torrent(entry, _) => save_entry(entry),
                     })
                     .chain(rejected.iter().map(save_entry))
                     .collect(),
@@ -1036,6 +1133,8 @@ impl Scheduler {
                     let task = self.workers.spawn(Box::pin(transfer::run(
                         transfer::Context {
                             http: self.http.clone(),
+                            media: self.media.clone(),
+                            sidecars: self.sidecar_settings.clone(),
                             resolver: self.resolver.clone(),
                             limits: self.limits,
                             bandwidth: self.categories.bucket(entry.download.category),
@@ -1054,6 +1153,44 @@ impl Scheduler {
                             session_version,
                             cancellation,
                             progress,
+                            media_phase: None,
+                            stop: None,
+                        },
+                    );
+                    self.forced.remove(&id);
+                    self.record(entry);
+                }
+                Launch::Media(entry, url, host) => {
+                    let id = entry.download.id;
+                    let cancellation = CancellationToken::new();
+                    let (sender, progress) = watch::channel(DownloadProgress::default());
+                    let (phase_sender, phase_receiver) = watch::channel(MediaPhase::Downloading);
+                    let session_version = self.resolver.session_version(&url);
+                    let task = self.workers.spawn(Box::pin(transfer::run_media(
+                        transfer::Context {
+                            http: self.http.clone(),
+                            media: self.media.clone(),
+                            sidecars: self.sidecar_settings.clone(),
+                            resolver: self.resolver.clone(),
+                            limits: self.limits,
+                            bandwidth: self.categories.bucket(entry.download.category),
+                            disk: self.disk.clone(),
+                        },
+                        entry.clone(),
+                        url,
+                        cancellation.clone(),
+                        sender,
+                        phase_sender,
+                    )));
+                    self.active.insert(
+                        id,
+                        Active {
+                            task: task.id(),
+                            host,
+                            session_version,
+                            cancellation,
+                            progress,
+                            media_phase: Some(phase_receiver),
                             stop: None,
                         },
                     );
@@ -1074,6 +1211,18 @@ impl Scheduler {
     fn progress(&mut self) {
         let mut updates = Vec::new();
         for (id, active) in &mut self.active {
+            if let Some(ref mut phase_rx) = active.media_phase
+                && phase_rx.has_changed().is_ok_and(|changed| changed)
+                && *phase_rx.borrow_and_update() == MediaPhase::PostProcessing
+                && let Some(entry) = self.queue.get_mut(id)
+                && entry.download.status() == Status::Downloading
+            {
+                let _ = entry.download.transition(Status::PostProcessing);
+                let _ = self.events.send(EngineEvent::StatusChanged {
+                    id: *id,
+                    status: Status::PostProcessing,
+                });
+            }
             if !active.progress.has_changed().is_ok_and(|changed| changed) {
                 continue;
             }

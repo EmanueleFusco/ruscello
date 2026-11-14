@@ -18,7 +18,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{DiskPolicy, EngineError, Limits, RECOVERY_FOLDER, disk::Preparation, file_types};
+use crate::{
+    BandwidthContext, DiskPolicy, EngineError, Limits, MediaEngine, MediaError, MediaPhase,
+    MediaTransferJob, RECOVERY_FOLDER, SidecarSettings, disk::Preparation, file_types,
+    media_bridge,
+};
 
 #[derive(Debug)]
 pub(super) struct Published {
@@ -29,6 +33,8 @@ pub(super) struct Published {
 
 pub(super) struct Context {
     pub http: HttpDownloader,
+    pub media: MediaEngine,
+    pub sidecars: SidecarSettings,
     pub resolver: crate::Resolver,
     pub limits: Limits,
     pub bandwidth: BandwidthLimit,
@@ -39,6 +45,8 @@ pub(super) struct Context {
 pub(super) enum TransferError {
     #[error(transparent)]
     Http(#[from] HttpError),
+    #[error(transparent)]
+    Media(#[from] MediaError),
     #[error("download file operation failed")]
     File(#[from] io::Error),
     #[error("a file operation stopped unexpectedly")]
@@ -53,7 +61,9 @@ impl TransferError {
     pub(super) fn cancelled(&self) -> bool {
         matches!(
             self,
-            Self::Http(HttpError::Cancelled) | Self::Resolver(crate::ResolveError::Cancelled)
+            Self::Http(HttpError::Cancelled)
+                | Self::Resolver(crate::ResolveError::Cancelled)
+                | Self::Media(MediaError::Cancelled)
         )
     }
 
@@ -68,6 +78,7 @@ impl TransferError {
     pub(super) fn low_disk(&self) -> bool {
         matches!(self, Self::File(error) | Self::Http(HttpError::Storage(WriterError::Io(error)))
             if matches!(error.kind(), io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded))
+            || matches!(self, Self::Media(error) if error.is_low_disk())
     }
 
     pub(super) fn reason(&self) -> FailureReason {
@@ -75,6 +86,26 @@ impl TransferError {
             Self::File(_) => FailureReason::FileSystem,
             Self::Worker(_) => FailureReason::Internal,
             Self::Checksum(_) => FailureReason::IntegrityCheck,
+            Self::Media(error) => {
+                if error.is_low_disk() {
+                    FailureReason::FileSystem
+                } else if error.is_access_denied() {
+                    FailureReason::AccessDenied
+                } else if error.is_network() {
+                    FailureReason::Network
+                } else if matches!(
+                    error,
+                    MediaError::InvalidUrl(_) | MediaError::UnsupportedManifest(_)
+                ) {
+                    FailureReason::UnsupportedSource
+                } else if matches!(error, MediaError::ChecksumMismatch { .. }) {
+                    FailureReason::IntegrityCheck
+                } else if matches!(error, MediaError::Io(_)) {
+                    FailureReason::FileSystem
+                } else {
+                    FailureReason::SourceUnavailable
+                }
+            }
             Self::Resolver(crate::ResolveError::Request(_)) => FailureReason::Network,
             Self::Resolver(crate::ResolveError::InvalidLink) => FailureReason::UnsupportedSource,
             Self::Resolver(crate::ResolveError::AccountRequired | crate::ResolveError::Keyring) => {
@@ -208,6 +239,127 @@ pub(super) async fn run(
     let published =
         tokio::task::spawn_blocking(move || publish(&entry, &staged, &context.disk)).await??;
     Ok(published)
+}
+
+pub(super) async fn run_media(
+    context: Context,
+    entry: QueueEntry,
+    url: Url,
+    cancellation: CancellationToken,
+    progress: watch::Sender<DownloadProgress>,
+    phase: watch::Sender<MediaPhase>,
+) -> Result<Published, TransferError> {
+    let (ready, existing) = tokio::task::spawn_blocking({
+        let ready = ready_directory(&entry);
+        let working = entry.working_directory.clone();
+        let disk = context.disk.clone();
+        move || {
+            fs::create_dir_all(&ready)?;
+            let existing = ready_file(&ready)?;
+            if existing.is_none() {
+                disk.check(&working, 0)?;
+            }
+            Ok::<_, io::Error>((ready, existing))
+        }
+    })
+    .await??;
+
+    let staged = match existing {
+        Some(staged) => staged,
+        None => {
+            let transfer_cancellation = cancellation.child_token();
+            let request = media_bridge::from_queue_state(entry.media.as_ref(), &url);
+            let session_headers =
+                media_bridge::session_headers(&context.resolver, &url, &transfer_cancellation)
+                    .await;
+            let default_connections = context.limits.connections_per_download;
+            let concurrency = entry
+                .download
+                .max_connections
+                .unwrap_or(default_connections)
+                .min(default_connections)
+                .min(context.limits.connections_per_host)
+                .get();
+            let bandwidth = BandwidthContext {
+                category: context.bandwidth.clone(),
+                global: context.http.global_bandwidth(),
+                individual: entry
+                    .download
+                    .bandwidth
+                    .map(|rate| BandwidthLimit::new(Some(rate))),
+            };
+            let phase_tx = phase.clone();
+            let on_phase = move |next_phase| {
+                let _ = phase_tx.send(next_phase);
+            };
+            let filename_hint = entry
+                .http
+                .output_filename
+                .as_deref()
+                .or(entry.download.filename.as_deref());
+            let working = entry.working_directory.clone();
+            let job = MediaTransferJob {
+                url: &url,
+                request: &request,
+                session_headers: &session_headers,
+                working_dir: &working,
+                ready_dir: &ready,
+                filename_hint,
+                concurrency,
+                bandwidth: &bandwidth,
+                settings: &context.sidecars,
+                cancellation: &transfer_cancellation,
+                progress: Some(&progress),
+                on_phase: &on_phase,
+            };
+            monitored_media_download(
+                &context.media,
+                job,
+                &working,
+                &context.disk,
+                &transfer_cancellation,
+            )
+            .await?
+        }
+    };
+    if cancellation.is_cancelled() {
+        return Err(MediaError::Cancelled.into());
+    }
+    let published =
+        tokio::task::spawn_blocking(move || publish(&entry, &staged, &context.disk)).await??;
+    Ok(published)
+}
+
+async fn monitored_media_download(
+    media: &MediaEngine,
+    job: MediaTransferJob<'_>,
+    working: &Path,
+    disk: &DiskPolicy,
+    cancellation: &CancellationToken,
+) -> Result<PathBuf, TransferError> {
+    let mut transfer = Box::pin(media.download(job));
+    let period = disk.interval();
+    let mut checks = time::interval_at(Instant::now() + period, period);
+    checks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            result = &mut transfer => return Ok(result?),
+            _ = checks.tick() => {}
+        }
+        let working = working.to_path_buf();
+        let disk = disk.clone();
+        let check = tokio::task::spawn_blocking(move || disk.check(&working, 0));
+        let result = tokio::select! {
+            result = &mut transfer => return Ok(result?),
+            result = check => result.map_err(TransferError::from)
+                .and_then(|check| check.map_err(TransferError::from)),
+        };
+        if let Err(error) = result {
+            cancellation.cancel();
+            let _ = transfer.await;
+            return Err(error);
+        }
+    }
 }
 
 async fn monitored_download(
@@ -522,6 +674,7 @@ mod tests {
             working_directory: working_directory(&destination, id),
             torrent: None,
             http: Default::default(),
+            media: None,
         };
         let ready = ready_directory(&entry);
         fs::create_dir_all(&ready)?;
