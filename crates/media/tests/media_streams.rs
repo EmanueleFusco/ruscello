@@ -111,7 +111,7 @@ fn create_mock_ffmpeg(dir: &Path) -> TestResult<PathBuf> {
         let log_path = dir.join("ffmpeg-args.log");
         let script = format!(
             "@echo off\r\n\
-             if \"%1\"==\"-version\" (\r\n\
+             if \"%~1\"==\"-version\" (\r\n\
                echo ffmpeg version 7.1-mock Copyright\r\n\
                exit /b 0\r\n\
              )\r\n\
@@ -120,14 +120,14 @@ fn create_mock_ffmpeg(dir: &Path) -> TestResult<PathBuf> {
              set a=\r\n\
              set out=\r\n\
              :loop\r\n\
-             if \"%1\"==\"\" goto done\r\n\
-             if \"%1\"==\"-i\" (\r\n\
-               if \"%v%\"==\"\" (set v=%~2) else (set a=%~2)\r\n\
+             if \"%~1\"==\"\" goto done\r\n\
+             if \"%~1\"==\"-i\" (\r\n\
+               if \"%v%\"==\"\" (set \"v=%~2\") else (set \"a=%~2\")\r\n\
                shift\r\n\
                shift\r\n\
                goto loop\r\n\
              )\r\n\
-             set out=%~1\r\n\
+             set \"out=%~1\"\r\n\
              shift\r\n\
              goto loop\r\n\
              :done\r\n\
@@ -198,7 +198,7 @@ fn create_mock_ytdlp(
         fs::write(&sub_data_path, sub_out_bytes)?;
         let script = format!(
             "@echo off\r\n\
-             if \"%1\"==\"--version\" (\r\n\
+             if \"%~1\"==\"--version\" (\r\n\
                echo 2026.01.01\r\n\
                exit /b 0\r\n\
              )\r\n\
@@ -206,13 +206,13 @@ fn create_mock_ytdlp(
              set is_json=0\r\n\
              set out_tmpl=\r\n\
              :loop\r\n\
-             if \"%1\"==\"\" goto run\r\n\
-             if \"%1\"==\"-J\" set is_json=1\r\n\
-             if \"%1\"==\"-o\" (\r\n\
-               set out_tmpl=%~2\r\n\
+             if \"%~1\"==\"\" goto run\r\n\
+             if \"%~1\"==\"-J\" set is_json=1\r\n\
+             if \"%~1\"==\"-o\" (\r\n\
+               set \"out_tmpl=%~2\"\r\n\
                shift\r\n\
              )\r\n\
-             if \"%1\"==\"--cookies\" (\r\n\
+             if \"%~1\"==\"--cookies\" (\r\n\
                copy /y \"%~2\" \"{}\" >nul\r\n\
                shift\r\n\
              )\r\n\
@@ -225,7 +225,7 @@ fn create_mock_ytdlp(
              )\r\n\
              echo RUSCELLO^|50^|100^|100\r\n\
              echo RUSCELLO^|100^|100^|100\r\n\
-             set target=!out_tmpl:%%(ext)s=mp3!\r\n\
+             set \"target=!out_tmpl:%%(ext)s=mp3!\"\r\n\
              copy /y \"{}\" \"!target!\" >nul\r\n\
              echo !target!\r\n",
             cookie_capture.display(),
