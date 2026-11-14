@@ -24,6 +24,12 @@ pub enum HttpError {
     },
     #[error("the representation changed")]
     RepresentationChanged,
+    #[error("the resolved link returned a web page")]
+    ExpiredRepresentation,
+    #[error("the host requires browser verification")]
+    VerificationRequired,
+    #[error("the link could not be resolved")]
+    ResolutionFailed,
     #[error("download cancelled")]
     Cancelled,
     #[error("combining mirrors requires an expected checksum")]
@@ -94,6 +100,7 @@ pub struct Probe {
     pub filename: String,
     pub content_type: Option<String>,
     pub validators: Validators,
+    pub attachment: bool,
 }
 
 /// Builds a reusable HTTP/HTTPS download client with finite connect and read timeouts.
@@ -146,6 +153,7 @@ pub(crate) fn parse_probe(response: &Response) -> Result<Probe, HttpError> {
         .filter(|value| !value.is_empty() && value.len() <= 255)
         .map(str::to_ascii_lowercase);
     let validators = Validators::read(headers);
+    let attachment = attachment(headers);
     tracing::debug!(
         ?size,
         supports_ranges,
@@ -159,7 +167,33 @@ pub(crate) fn parse_probe(response: &Response) -> Result<Probe, HttpError> {
         filename,
         content_type,
         validators,
+        attachment,
     })
+}
+
+fn attachment(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("attachment"))
+}
+
+pub(crate) fn looks_like_page(headers: &HeaderMap) -> bool {
+    is_page(
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+    ) && !attachment(headers)
+}
+
+pub(crate) fn is_page(content_type: Option<&str>) -> bool {
+    content_type
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| {
+            value.trim().eq_ignore_ascii_case("text/html")
+                || value.trim().eq_ignore_ascii_case("application/xhtml+xml")
+        })
 }
 
 fn probe_size(response: &Response) -> Result<(Option<u64>, bool), HttpError> {

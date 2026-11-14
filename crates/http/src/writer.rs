@@ -64,7 +64,9 @@ impl FileWriter {
         filename: &str,
         size: Option<u64>,
     ) -> Result<Self, WriterError> {
-        Ok(Self::start(directory, filename, size, None, None).await?.0)
+        Ok(Self::start(directory, filename, size, None, None, false)
+            .await?
+            .0)
     }
 
     pub(crate) async fn open_download(
@@ -72,8 +74,9 @@ impl FileWriter {
         filename: &str,
         key: TransferKey,
         recovery: Option<Recovery>,
+        resolved: bool,
     ) -> Result<(Self, Vec<Range<u64>>, bool), WriterError> {
-        Self::start(directory, filename, key.size, Some(key), recovery).await
+        Self::start(directory, filename, key.size, Some(key), recovery, resolved).await
     }
 
     async fn start(
@@ -82,6 +85,7 @@ impl FileWriter {
         size: Option<u64>,
         key: Option<TransferKey>,
         recovery: Option<Recovery>,
+        resolved: bool,
     ) -> Result<(Self, Vec<Range<u64>>, bool), WriterError> {
         let directory = directory.to_owned();
         let filename = sanitize_filename(filename);
@@ -90,7 +94,31 @@ impl FileWriter {
         let failure = Arc::new(Mutex::new(None));
         let worker_failure = Arc::clone(&failure);
         let task = tokio::task::spawn_blocking(move || {
-            match Worker::create(&directory, filename, size, key, recovery) {
+            let result = (|| {
+                if resolved && let Some(key) = &key {
+                    for checkpoint in scan_checkpoints(&directory)? {
+                        let Some(name) = checkpoint
+                            .partial
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .and_then(|name| name.strip_suffix(".rscpart"))
+                        else {
+                            continue;
+                        };
+                        if let Some(worker) = Worker::reopen(
+                            &directory,
+                            name,
+                            &checkpoint.partial,
+                            key,
+                            recovery.as_ref(),
+                        )? {
+                            return Ok(worker);
+                        }
+                    }
+                }
+                Worker::create(&directory, filename, size, key, recovery)
+            })();
+            match result {
                 Ok((worker, restarted)) => {
                     if ready
                         .send(Ok((

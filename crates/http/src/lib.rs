@@ -21,7 +21,10 @@ pub use download::{
 pub use limit::BandwidthLimit;
 pub use probe::{HttpError, Probe, Validators, client, probe};
 pub use reqwest::Url;
-pub use retry::{Connectivity, ErrorClass, ExpiredLinkResolver, ResolvedLink, RetryPolicy};
+pub use retry::{
+    Connectivity, ErrorClass, ExpiredLinkResolver, ResolvedLink, ResolvedTransfer, RetryPolicy,
+    TransferLink,
+};
 pub use segments::{
     ConnectionController, DEFAULT_MIN_SEGMENT_SIZE, SegmentAllocator, SegmentError, Work, WorkId,
 };

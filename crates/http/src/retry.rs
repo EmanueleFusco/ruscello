@@ -29,6 +29,7 @@ impl HttpError {
                 ErrorClass::Authentication
             }
             Self::Status(StatusCode::FORBIDDEN | StatusCode::GONE) => ErrorClass::ExpiredLink,
+            Self::ExpiredRepresentation => ErrorClass::ExpiredLink,
             Self::Status(code)
                 if code.is_server_error()
                     || matches!(
@@ -248,9 +249,45 @@ impl Connectivity {
 
 pub type ResolvedLink<'a> = Pin<Box<dyn Future<Output = Result<Url, HttpError>> + Send + 'a>>;
 
+pub type ResolvedTransfer<'a> =
+    Pin<Box<dyn Future<Output = Result<TransferLink, HttpError>> + Send + 'a>>;
+
+/// Ephemeral request metadata for a single resolved URL.
+#[derive(Clone)]
+pub struct TransferLink {
+    pub url: Url,
+    pub headers: header::HeaderMap,
+    pub expires: Option<SystemTime>,
+    pub max_connections: Option<std::num::NonZeroUsize>,
+}
+
+impl TransferLink {
+    pub fn new(url: Url) -> Self {
+        Self {
+            url,
+            headers: header::HeaderMap::new(),
+            expires: None,
+            max_connections: None,
+        }
+    }
+}
+
+impl Debug for TransferLink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TransferLink")
+            .field("expires", &self.expires)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Supplies a fresh direct URL when an authenticated hoster's link expires.
 pub trait ExpiredLinkResolver: Debug + Send + Sync {
     fn resolve<'a>(&'a self, expired: &'a Url) -> ResolvedLink<'a>;
+
+    fn resolve_transfer<'a>(&'a self, expired: &'a Url) -> ResolvedTransfer<'a> {
+        Box::pin(async move { self.resolve(expired).await.map(TransferLink::new) })
+    }
 }
 
 #[cfg(test)]

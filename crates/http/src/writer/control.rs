@@ -28,9 +28,27 @@ pub(crate) struct TransferKey {
 }
 
 impl TransferKey {
-    pub(crate) fn new(source: &Url, probe: &Probe, checksum: Option<&ExpectedChecksum>) -> Self {
+    pub(crate) fn new(
+        source: &Url,
+        probe: &Probe,
+        checksum: Option<&ExpectedChecksum>,
+        resolved: bool,
+    ) -> Self {
         let bytes = |value: &reqwest::header::HeaderValue| value.as_bytes().to_vec();
-        let mut final_url = url_identity(&probe.final_url);
+        // A plugin promises that refreshing a share URL selects the same logical file.
+        // Strong entity tags remain scoped to the same download origin.
+        let mut final_url =
+            if resolved && probe.validators.etag.is_some() && probe.validators.if_range().is_some()
+            {
+                Sha256::digest(format!(
+                    "resolved:{}:{}",
+                    probe.final_url.origin().ascii_serialization(),
+                    source
+                ))
+                .into()
+            } else {
+                url_identity(&probe.final_url)
+            };
         if let Some(checksum) = checksum {
             // Checkpoints containing mirror data must retain the same verification requirement.
             final_url = checksum.bind_identity(final_url);
