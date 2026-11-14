@@ -426,7 +426,46 @@ async fn magnet_category_rule_restart_fastresume_force_recheck_and_cancel_delete
         }
         std::fs::write(&out_file, &corrupted)?;
 
+        #[cfg(windows)]
+        let bitfield = {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            // Keep the old handle in the delete/re-add window across scheduler ticks.
+            const SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(SHARE_READ_WRITE)
+                .open(
+                    leecher_dir
+                        .path()
+                        .join("data/torrent")
+                        .join(format!("{info_hash}.bitv")),
+                )?
+        };
         engine.force_recheck(id).await?;
+        #[cfg(windows)]
+        {
+            assert!(matches!(
+                engine.force_recheck(id).await,
+                Err(EngineError::DownloadBusy)
+            ));
+            let pending = wait_for_status(
+                &engine,
+                &mut events,
+                id,
+                Status::Seeding,
+                Duration::from_millis(900),
+            )
+            .await;
+            let error = pending.expect_err("recheck finished before the bitfield closed");
+            assert!(error.is::<tokio::time::error::Elapsed>(), "{error}");
+            let snapshot = engine.snapshot().await?;
+            assert_eq!(
+                find_download(&snapshot.downloads, id)?.status(),
+                Status::Resolving
+            );
+            drop(bitfield);
+        }
         wait_for_status(
             &engine,
             &mut events,

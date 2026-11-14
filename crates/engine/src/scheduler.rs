@@ -1323,7 +1323,7 @@ impl Scheduler {
             return Err(EngineError::UnsupportedSource);
         };
         if let Some(active) = self.active_torrents.get(&id)
-            && active.is_recheck
+            && active.start_in_flight
         {
             return Err(EngineError::DownloadBusy);
         }
@@ -1580,19 +1580,18 @@ impl Scheduler {
         let mut failed = Vec::new();
 
         for id in ids {
-            if self.pending_torrent_stops.contains_key(&id) {
+            // During recheck the old handle stays registered while its bitfield is being
+            // removed. Only the recheck task can report the result of that transition.
+            if self.pending_torrent_stops.contains_key(&id)
+                || self
+                    .active_torrents
+                    .get(&id)
+                    .is_some_and(|active| active.is_recheck)
+            {
                 continue;
             }
             let snap = match manager.poll_progress(id) {
                 Ok(snap) => snap,
-                Err(TorrentError::NotFound)
-                    if self
-                        .active_torrents
-                        .get(&id)
-                        .is_some_and(|a| a.start_in_flight) =>
-                {
-                    continue;
-                }
                 Err(_) => continue,
             };
 
