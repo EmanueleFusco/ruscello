@@ -305,6 +305,7 @@ impl Scheduler {
         if let Some(manager) = self.torrent_manager.take() {
             manager.shutdown().await;
         }
+        self.resolver.stop_browser_helper().await;
         let closed = self.storage.close().await.map_err(EngineError::from);
         if let Some(reply) = shutdown {
             let _ = reply.send(closed);

@@ -42,6 +42,10 @@ impl NativeBrowser {
         self.enabled.store(enabled, Ordering::Relaxed);
     }
 
+    pub(crate) async fn stop(&self) {
+        self.client.stop().await;
+    }
+
     async fn open(
         &self,
         url: &Url,
@@ -138,7 +142,10 @@ impl Browser for NativeBrowser {
                     session,
                     ..
                 } => {
-                    let direct = crate::plugins::fuckingfast_link(url, &page, &html)
+                    let direct = crate::Builtin::FuckingFast
+                        .matches(url)
+                        .then(|| crate::plugins::fuckingfast_link(url, &page, &html))
+                        .flatten()
                         .or_else(|| crate::plugins::browser_direct_link(&page, &html))
                         .ok_or(ResolveError::NoDownload)?;
                     let session =

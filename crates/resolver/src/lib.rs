@@ -252,6 +252,12 @@ impl Resolver {
         }
     }
 
+    pub async fn stop_browser_helper(&self) {
+        if let Some(browser) = &self.native_browser {
+            browser.stop().await;
+        }
+    }
+
     pub async fn verify(
         &self,
         url: &Url,

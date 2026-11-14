@@ -218,9 +218,6 @@ async fn fuckingfast(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
 }
 
 pub(crate) fn fuckingfast_link(source: &Url, base: &Url, body: &str) -> Option<Url> {
-    if !Builtin::FuckingFast.matches(source) {
-        return None;
-    }
     OPEN.as_ref()?.captures_iter(body).find_map(|capture| {
         http::join(base, capture.get(1)?.as_str())
             .filter(|url| url.origin() == source.origin() && url.path().starts_with("/dl/"))

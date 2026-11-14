@@ -99,8 +99,8 @@ async fn run(mut arguments: Arguments, language: Language) -> anyhow::Result<Pat
         None
     };
     let cancellation = arguments.options.cancellation.clone();
+    let resolver = resolver()?;
     let transfer = async {
-        let resolver = resolver()?;
         prepare_http_download(
             &resolver,
             &arguments.url,
@@ -128,6 +128,7 @@ async fn run(mut arguments: Arguments, language: Language) -> anyhow::Result<Pat
     if let Some(view) = view {
         let _ = view.await;
     }
+    resolver.stop_browser_helper().await;
     result
 }
 

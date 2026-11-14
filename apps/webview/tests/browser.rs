@@ -85,7 +85,7 @@ async fn one_manual_verification_resumes_batch_and_survives_helper_restart() -> 
         fixture.click_verification();
         Ok::<_, anyhow::Error>(())
     };
-    let (verified, clicked) = tokio::join!(verify, user);
+    let (verified, clicked) = timeout(DEADLINE, async { tokio::join!(verify, user) }).await?;
     clicked?;
     verified?;
     wait_for(&engine, &ids, Status::Completed).await?;
@@ -111,37 +111,26 @@ async fn one_manual_verification_resumes_batch_and_survives_helper_restart() -> 
     let client = BrowserClient::new(browser);
     let cancel = CancellationToken::new();
     let url = Url::parse(&fixture.protected[0])?;
-    timeout(DEADLINE, async {
-        loop {
-            match client
-                .request(
-                    Request::Open {
-                        url: url.clone(),
-                        view: View::Session,
-                        steps: Vec::new(),
-                    },
-                    &cancel,
-                )
-                .await
-            {
-                Ok(Response::Session { session }) => {
-                    assert!(
-                        session
-                            .cookies
-                            .iter()
-                            .any(|cookie| cookie.contains("fixture_verified=1")
-                                && cookie.contains("HttpOnly"))
-                    );
-                    break Ok::<_, anyhow::Error>(());
-                }
-                Err(ruscello_browser::protocol::Failure::ProfileInUse) => {
-                    tokio::time::sleep(Duration::from_millis(50)).await
-                }
-                result => anyhow::bail!("Expected persisted native session, got {result:?}"),
-            }
-        }
-    })
-    .await??;
+    let response = client
+        .request(
+            Request::Open {
+                url,
+                view: View::Session,
+                steps: Vec::new(),
+            },
+            &cancel,
+        )
+        .await?;
+    let Response::Session { session } = response else {
+        anyhow::bail!("Expected persisted native session");
+    };
+    assert!(
+        session
+            .cookies
+            .iter()
+            .any(|cookie| cookie.contains("fixture_verified=1") && cookie.contains("HttpOnly"))
+    );
+    client.stop().await;
     Ok(())
 }
 

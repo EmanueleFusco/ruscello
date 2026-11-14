@@ -35,6 +35,8 @@ impl BrowserOptions {
 #[derive(Debug, Clone)]
 pub struct BrowserClient {
     jobs: mpsc::Sender<Job>,
+    shutdown: CancellationToken,
+    stopped: CancellationToken,
 }
 
 struct Job {
@@ -46,8 +48,21 @@ struct Job {
 impl BrowserClient {
     pub fn new(options: BrowserOptions) -> Self {
         let (jobs, receiver) = mpsc::channel(32);
-        tokio::spawn(run(options, receiver));
-        Self { jobs }
+        let shutdown = CancellationToken::new();
+        let stopped = CancellationToken::new();
+        tokio::spawn({
+            let shutdown = shutdown.clone();
+            let stopped = stopped.clone();
+            async move {
+                run(options, receiver, shutdown).await;
+                stopped.cancel();
+            }
+        });
+        Self {
+            jobs,
+            shutdown,
+            stopped,
+        }
     }
 
     pub async fn request(
@@ -68,6 +83,12 @@ impl BrowserClient {
             () = cancellation.cancelled() => Err(Failure::Cancelled),
             resolved = result => resolved.map_err(|_| Failure::Unavailable)?,
         }
+    }
+
+    /// Flushes the persistent profile without starting an idle helper.
+    pub async fn stop(&self) {
+        self.shutdown.cancel();
+        self.stopped.cancelled().await;
     }
 }
 
@@ -138,10 +159,11 @@ impl Process {
     }
 }
 
-async fn run(options: BrowserOptions, mut jobs: mpsc::Receiver<Job>) {
+async fn run(options: BrowserOptions, mut jobs: mpsc::Receiver<Job>, shutdown: CancellationToken) {
     let mut process: Option<Process> = None;
     loop {
         let job = tokio::select! {
+            () = shutdown.cancelled() => break,
             job = jobs.recv() => job,
             () = time::sleep(options.idle_timeout), if process.is_some() => {
                 if let Some(child) = process.take() {
@@ -182,6 +204,7 @@ async fn run(options: BrowserOptions, mut jobs: mpsc::Receiver<Job>) {
             _ => Duration::from_secs(45),
         };
         let result = tokio::select! {
+            () = shutdown.cancelled() => break,
             () = job.cancellation.cancelled() => Err(Failure::Cancelled),
             () = job.reply.closed() => Err(Failure::Cancelled),
             result = time::timeout(timeout, child.exchange(&job.request)) => {
@@ -198,6 +221,7 @@ async fn run(options: BrowserOptions, mut jobs: mpsc::Receiver<Job>) {
             response => Ok(response),
         }));
     }
+    drop(jobs);
     if let Some(child) = process {
         child.stop().await;
     }
