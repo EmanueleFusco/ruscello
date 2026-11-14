@@ -372,6 +372,67 @@ async fn list_links(command: Command, language: Language) -> anyhow::Result<Vec<
                 .collect()),
             ContainerFile::Torrent => Err(ResolveError::InvalidContainer.into()),
         },
+        Command::Queue { urls, paused } => {
+            let data_dir = discovered_data_dir()
+                .ok_or_else(|| anyhow::anyhow!(messages.local_api_unavailable))?;
+            let endpoint = ruscello_api::discover_local_endpoint(&data_dir)
+                .ok_or_else(|| anyhow::anyhow!(messages.local_api_unavailable))?;
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()?;
+            let body = serde_json::json!({
+                "urls": urls,
+                "start_immediately": !paused,
+            });
+            let response = client
+                .post(format!(
+                    "http://127.0.0.1:{}/api/v1/downloads",
+                    endpoint.port
+                ))
+                .bearer_auth(&endpoint.token)
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<ruscello_api::AddDownloadsResponse>()
+                .await?;
+            Ok(vec![format!(
+                "{}: {}",
+                messages.local_api_queued, response.count
+            )])
+        }
+        Command::Status => {
+            let data_dir = discovered_data_dir()
+                .ok_or_else(|| anyhow::anyhow!(messages.local_api_unavailable))?;
+            let endpoint = ruscello_api::discover_local_endpoint(&data_dir)
+                .ok_or_else(|| anyhow::anyhow!(messages.local_api_unavailable))?;
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()?;
+            let snapshot = client
+                .get(format!("http://127.0.0.1:{}/api/v1/queue", endpoint.port))
+                .bearer_auth(&endpoint.token)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<ruscello_api::QueueSnapshotDto>()
+                .await?;
+            let mut lines = vec![format!(
+                "downloads={} down={}B/s up={}B/s alt_speed={} alt_limit={:?}",
+                snapshot.downloads.len(),
+                snapshot.total_download_bps,
+                snapshot.total_upload_bps,
+                snapshot.alternate_speed_enabled,
+                snapshot.alternate_bandwidth_bps,
+            )];
+            for item in snapshot.downloads {
+                lines.push(format!(
+                    "  #{} [{}] {}",
+                    item.id, item.status, item.filename
+                ));
+            }
+            Ok(lines)
+        }
         _ => Err(ResolveError::InvalidLink.into()),
     }
 }
@@ -412,6 +473,11 @@ enum Command {
         path: PathBuf,
         allow_fallback: bool,
     },
+    Queue {
+        urls: Vec<String>,
+        paused: bool,
+    },
+    Status,
 }
 
 fn language(args: &mut Peekable<impl Iterator<Item = OsString>>) -> Result<Language, ()> {
@@ -474,6 +540,27 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
                     allow_fallback,
                 })
                 .ok_or(());
+        }
+        Some("queue") => {
+            let mut urls = Vec::new();
+            let mut paused = false;
+            for arg in args {
+                let text = arg.to_str().ok_or(())?;
+                if text == "--paused" {
+                    paused = true;
+                } else if text.starts_with('-') {
+                    return Err(());
+                } else {
+                    urls.push(text.to_owned());
+                }
+            }
+            if urls.is_empty() {
+                return Err(());
+            }
+            return Ok(Command::Queue { urls, paused });
+        }
+        Some("status") => {
+            return args.next().is_none().then_some(Command::Status).ok_or(());
         }
         Some("get") => {}
         _ => return Err(()),

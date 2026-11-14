@@ -9,6 +9,8 @@ pub(crate) struct Messages {
     pub media_label: &'static str,
     pub formats_heading: &'static str,
     pub playlist_heading: &'static str,
+    pub local_api_unavailable: &'static str,
+    pub local_api_queued: &'static str,
     cancelled: &'static str,
     changed: &'static str,
     checksum_failed: &'static str,
@@ -29,13 +31,18 @@ pub(crate) struct Messages {
 const EN: Messages = Messages {
     usage: "Usage: ruscello-cli [--language en|it|system] get <url> [-o directory] [-x connections]\n\
     Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --format <preset|id> --ytdlp <path> --ffmpeg <path> --progress --quiet --browser\n\
-    ruscello-cli inspect <url> [--browser] [--ytdlp <path>] [--ffmpeg <path>]\nruscello-cli import <file> [--dlc-fallback]",
+    ruscello-cli inspect <url> [--browser] [--ytdlp <path>] [--ffmpeg <path>]\n\
+    ruscello-cli import <file> [--dlc-fallback]\n\
+    ruscello-cli queue <url>... [--paused]\n\
+    ruscello-cli status",
     restarted: "The previous data could not be resumed. Starting from zero.",
     non_resumable: "Not resumable",
     waiting: "Waiting for network connectivity.",
     media_label: "Media",
     formats_heading: "Formats",
     playlist_heading: "Playlist",
+    local_api_unavailable: "No running Ruscello desktop API instance was found in the data directory.",
+    local_api_queued: "Queued downloads via local API",
     cancelled: "Download interrupted.",
     changed: "The file on the server changed repeatedly.",
     checksum_failed: "The downloaded file did not match the expected checksum.",
@@ -56,13 +63,18 @@ const EN: Messages = Messages {
 const IT: Messages = Messages {
     usage: "Uso: ruscello-cli [--language en|it|system] get <url> [-o cartella] [-x connessioni]\n\
     Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --format <preset|id> --ytdlp <percorso> --ffmpeg <percorso> --progress --quiet --browser\n\
-    ruscello-cli inspect <url> [--browser] [--ytdlp <percorso>] [--ffmpeg <percorso>]\nruscello-cli import <file> [--dlc-fallback]",
+    ruscello-cli inspect <url> [--browser] [--ytdlp <percorso>] [--ffmpeg <percorso>]\n\
+    ruscello-cli import <file> [--dlc-fallback]\n\
+    ruscello-cli queue <url>... [--paused]\n\
+    ruscello-cli status",
     restarted: "Impossibile riprendere i dati precedenti. Il download riparte da zero.",
     non_resumable: "Non riprendibile",
     waiting: "In attesa della connessione di rete.",
     media_label: "Media",
     formats_heading: "Formati",
     playlist_heading: "Playlist",
+    local_api_unavailable: "Nessuna istanza locale dell’API Ruscello trovata nella cartella dati.",
+    local_api_queued: "Download aggiunti tramite API locale",
     cancelled: "Download interrotto.",
     changed: "Il file sul server è cambiato più volte.",
     checksum_failed: "Il file scaricato non corrisponde al checksum previsto.",

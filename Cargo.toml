@@ -29,7 +29,7 @@ ruscello-platform = { path = "crates/platform" }
 anyhow = "1.0.104"
 aes = "0.9.4"
 auto-launch = "0.6.0"
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "multipart", "query", "tokio", "ws"] }
 bytes = "1.12.1"
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 cbc = "0.2.1"
@@ -48,6 +48,7 @@ iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny
 iced_test = "0.14.0"
 keyring = "4.2.0"
 librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
+local-ip-address = "0.6.13"
 lzma-rs = "0.3.0"
 m3u8-rs = "6.0.1"
 md-5 = "0.11.0"
@@ -75,6 +76,7 @@ tar = { version = "0.4.46", default-features = false }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "time"] }
+tokio-tungstenite = "0.29.0"
 tokio-util = "0.7.20"
 toml = { version = "1.2.1", default-features = false, features = ["std", "serde", "parse"] }
 tracing = "0.1.44"

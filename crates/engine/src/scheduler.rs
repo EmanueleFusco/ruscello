@@ -348,6 +348,7 @@ impl Scheduler {
                     downloads,
                     packages: self.packages.values().cloned().collect(),
                     limits: self.limits,
+                    temporary_bandwidth: self.temporary_bandwidth,
                     recovery: self.recovery,
                     categories: self.categories.settings(),
                     torrent: self.torrent_settings.clone(),

@@ -10,7 +10,7 @@ mod recipes;
 
 pub use accounts::{HosterAccount, HosterCredentials, KeyringAccounts};
 pub use containers::{
-    ContainerFile, DlcKeyService, ImportedLink, ImportedPackage, import_file, links,
+    ContainerFile, DlcKeyService, ImportedLink, ImportedPackage, import_dlc, import_file, links,
 };
 pub use grabber::{Candidate, CandidateGroup, PageAnalysis, ScoreReason, analyze_html};
 pub use plugins::{Builtin, IndexCrawler};
@@ -286,6 +286,24 @@ impl Resolver {
             .ok_or(BrowserFailure::Unavailable)?;
         let (count, session) = helper.import(browser, url).await?;
         self.sessions.store(url, session, count > 0);
+        Ok(count)
+    }
+
+    /// Stores session cookies, user agent, and optional referer supplied by an authenticated client (e.g. browser extension).
+    pub fn import_session_cookies(
+        &self,
+        url: &Url,
+        mut session: BrowserSession,
+        referer: Option<&str>,
+    ) -> Result<usize, ResolveError> {
+        http::validate(url)?;
+        if session.user_agent.trim().is_empty() {
+            session.user_agent = concat!("Ruscello/", env!("CARGO_PKG_VERSION")).to_owned();
+        }
+        session.cookies.retain(|cookie| !cookie.trim().is_empty());
+        let count = session.cookies.len();
+        self.sessions
+            .store_with_referer(url, session, referer, true);
         Ok(count)
     }
 

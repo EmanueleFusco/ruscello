@@ -293,6 +293,33 @@ struct MetalinkResources {
     urls: Vec<String>,
 }
 
+/// Decrypts a `.dlc` container payload into validated packages.
+pub async fn import_dlc(
+    raw: &str,
+    name_fallback: &str,
+    dlc: &DlcKeyService,
+) -> Result<Vec<ImportedPackage>, ResolveError> {
+    if raw.len() > LIMIT {
+        return Err(ResolveError::TooLarge);
+    }
+    let raw = raw.trim_start_matches('\u{feff}');
+    finish(decrypt_dlc_packages(raw, name_fallback, dlc).await?)
+}
+
+async fn decrypt_dlc_packages(
+    raw: &str,
+    name_fallback: &str,
+    dlc: &DlcKeyService,
+) -> Result<Vec<ImportedPackage>, ResolveError> {
+    let mut packages = dlc.decrypt(raw).await?;
+    for package in &mut packages {
+        if package.name.is_empty() && !name_fallback.is_empty() {
+            package.name = name_fallback.to_owned();
+        }
+    }
+    Ok(packages)
+}
+
 pub async fn import_file(path: &Path, dlc: &DlcKeyService) -> Result<ContainerFile, ResolveError> {
     let ext = path
         .extension()
@@ -316,15 +343,7 @@ pub async fn import_file(path: &Path, dlc: &DlcKeyService) -> Result<ContainerFi
         .file_stem()
         .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let packages = match ext.as_str() {
-        "dlc" => {
-            let mut packages = dlc.decrypt(raw).await?;
-            for package in &mut packages {
-                if package.name.is_empty() {
-                    package.name.clone_from(&name);
-                }
-            }
-            packages
-        }
+        "dlc" => decrypt_dlc_packages(raw, &name, dlc).await?,
         "txt" | "m3u" | "m3u8" => vec![ImportedPackage {
             name,
             links: links(raw).into_iter().map(ImportedLink::new).collect(),

@@ -27,6 +27,7 @@ open.workspace = true
 qrcode.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
 rfd.workspace = true
+ruscello-api.workspace = true
 ruscello-core.workspace = true
 ruscello-engine.workspace = true
 ruscello-platform.workspace = true

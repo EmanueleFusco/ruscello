@@ -39,9 +39,10 @@ pub use ruscello_media::{
     is_dash_url, is_hls_url, is_manifest_url,
 };
 pub use ruscello_resolver::{
-    BrowserFailure, BrowserLocale, BrowserOptions, Builtin, Candidate, CandidateGroup,
-    ContainerFile, DlcKeyService, HosterAccount, HosterCredentials, ImportedLink, ImportedPackage,
-    InstalledBrowser, KeyringAccounts, PageAnalysis, ResolveError, Resolver, ScoreReason, links,
+    BrowserFailure, BrowserLocale, BrowserOptions, BrowserSession, Builtin, Candidate,
+    CandidateGroup, ContainerFile, DlcKeyService, HosterAccount, HosterCredentials, ImportedLink,
+    ImportedPackage, InstalledBrowser, KeyringAccounts, PageAnalysis, ResolveError, Resolver,
+    ScoreReason, import_dlc, links,
 };
 pub use ruscello_torrent::{
     PieceBucketState, TorrentDetailsSnapshot, TorrentError, TorrentFilePriority,

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ruscello Settings</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="options-body">
+  <header class="header">
+    <div class="brand">
+      <span class="badge">R</span>
+      <span id="options-title"></span>
+    </div>
+  </header>
+
+  <form id="options-form" class="card">
+    <label>
+      <span id="api-port-label"></span>
+      <input id="api-port" type="number" min="1" max="65535" required>
+    </label>
+
+    <label>
+      <span id="min-size-label"></span>
+      <input id="min-size" type="number" min="0" max="10240" required>
+    </label>
+
+    <label>
+      <span id="mime-label"></span>
+      <input id="mime-prefixes" type="text">
+    </label>
+
+    <label>
+      <span id="language-label"></span>
+      <select id="language-select">
+        <option value="auto">Auto</option>
+        <option value="en">English</option>
+        <option value="it">Italiano</option>
+      </select>
+    </label>
+
+    <button id="save-btn" type="submit" class="btn btn-primary"></button>
+    <p id="saved-msg" class="status-msg hidden"></p>
+  </form>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

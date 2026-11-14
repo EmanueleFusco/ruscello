@@ -59,3 +59,55 @@ async fn downloads_to_a_new_directory_and_reports_non_resumable_progress() -> Te
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn queues_and_queries_status_through_loopback_api() -> TestResult {
+    let server = TestServer::start().await?;
+    let file = server.file(FileSpec::random(88, 16 * 1024).filename("cli-api.bin"));
+    let directory = tempfile::tempdir()?;
+    let mut engine_options = ruscello_engine::EngineOptions::new(
+        directory.path().join("queue.db"),
+        directory.path().join("downloads"),
+    );
+    engine_options.data_dir = Some(directory.path().to_path_buf());
+    let engine = ruscello_engine::EngineHandle::start(engine_options).await?;
+    let api_config = ruscello_api::ApiConfig {
+        data_dir: Some(directory.path().to_path_buf()),
+        local_port: 0,
+        fallback_to_ephemeral_local_port: false,
+        ..ruscello_api::ApiConfig::default()
+    };
+    let api = ruscello_api::ApiServer::start(engine.clone(), api_config).await?;
+
+    let queued = Command::new(env!("CARGO_BIN_EXE_ruscello-cli"))
+        .args(["--language", "en", "queue", file.url(), "--paused"])
+        .env("RUSCELLO_DATA_DIR", directory.path())
+        .env("RUSCELLO_LOG_DIR", directory.path().join("logs"))
+        .output()
+        .await?;
+    assert!(
+        queued.status.success(),
+        "queue stderr: {}",
+        String::from_utf8_lossy(&queued.stderr)
+    );
+    assert!(String::from_utf8(queued.stdout)?.contains(": 1"));
+
+    let status = Command::new(env!("CARGO_BIN_EXE_ruscello-cli"))
+        .args(["--language", "en", "status"])
+        .env("RUSCELLO_DATA_DIR", directory.path())
+        .env("RUSCELLO_LOG_DIR", directory.path().join("logs"))
+        .output()
+        .await?;
+    assert!(
+        status.status.success(),
+        "status stderr: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status_out = String::from_utf8(status.stdout)?;
+    assert!(status_out.contains("downloads=1"));
+    assert!(status_out.contains("cli-api.bin"));
+
+    api.shutdown().await;
+    engine.shutdown().await?;
+    Ok(())
+}

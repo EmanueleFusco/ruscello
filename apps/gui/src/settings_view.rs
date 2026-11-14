@@ -466,7 +466,19 @@ fn integrations(app: &App) -> Element<'_, Message> {
         .style(muted),
         rule::horizontal(1).style(theme::separator),
         text(l.get("lan-title")).size(18),
-        text(l.get("lan-pending")),
+        text(if !app.preferences.lan_enabled {
+            l.get("lan-status-disabled")
+        } else {
+            match &app.lan_status {
+                ruscello_api::LanStatus::Active { display_url, .. } => {
+                    l.with("lan-status-active", [("url", display_url.clone())])
+                }
+                ruscello_api::LanStatus::Error(error) => {
+                    l.with("lan-status-error", [("error", error.clone())])
+                }
+                ruscello_api::LanStatus::Disabled => l.get("lan-status-disabled"),
+            }
+        }),
         theme::check(app.preferences.lan_enabled)
             .label(l.get("lan-enabled"))
             .on_toggle(Message::LanEnabled),
@@ -476,8 +488,21 @@ fn integrations(app: &App) -> Element<'_, Message> {
             .on_toggle(Message::LanAuth),
         save(app),
     ]
-    .spacing(10);
+    .spacing(8);
+    if let Some(control) = app.api_control.as_ref() {
+        controls = controls.push(
+            text(l.with(
+                "lan-local-api",
+                [("port", control.local_addr().port().to_string())],
+            ))
+            .size(12)
+            .style(muted),
+        );
+    }
     if app.preferences.lan_auth {
+        if app.lan_password_hash.is_none() {
+            controls = controls.push(text(l.get("lan-password-missing")).size(12).style(muted));
+        }
         controls = controls.push(
             row![
                 theme::field(&l.get("lan-password"), &app.lan_password.0)
@@ -497,16 +522,78 @@ fn integrations(app: &App) -> Element<'_, Message> {
         && let Some(url) = app.lan_url()
         && let Ok(code) = qrcode::QrCode::new(&url)
     {
-        controls = controls
-            .push(theme::action(text(url)).on_press(Message::CopyLanUrl))
-            .push(canvas(Qr(code)).width(160).height(160));
+        controls = controls.push(
+            row![
+                canvas(Qr(code)).width(150).height(150),
+                column![
+                    theme::action(text(url)).on_press(Message::CopyLanUrl),
+                    row![
+                        theme::action(text(l.get("lan-copy-url"))).on_press(Message::CopyLanUrl),
+                        theme::action(text(l.get("lan-open-url"))).on_press(Message::OpenLanUrl),
+                    ]
+                    .spacing(8),
+                    text(l.get("lan-qr-caption")).size(12).style(muted),
+                ]
+                .spacing(8),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(12),
+        );
     }
-    controls
+    let mut controls = controls
         .push(rule::horizontal(1).style(theme::separator))
         .push(sidecars(app))
         .push(rule::horizontal(1).style(theme::separator))
         .push(text(l.get("link-imports-title")).size(18))
-        .push(text(l.get("browser-extension")))
+        .push(text(l.get("extension-pair-detail")).size(12).style(muted))
+        .push(text(l.with(
+            "extension-paired-count",
+            [("count", app.pairing.paired_count.to_string())],
+        )));
+    let mut pair_actions = row![if app.pairing.window_active {
+        theme::action(text(l.get("extension-pair-cancel"))).on_press(Message::CancelPairing)
+    } else {
+        theme::action(text(l.get("extension-pair-start")))
+            .on_press_maybe(app.api_control.as_ref().map(|_| Message::StartPairing))
+    }]
+    .spacing(8);
+    if app.pairing.paired_count > 0 && app.api_control.is_some() {
+        pair_actions = pair_actions.push(
+            theme::action(text(l.get("extension-pair-revoke"))).on_press(Message::RevokePairing),
+        );
+    }
+    controls = controls.push(pair_actions);
+    if app.pairing.window_active
+        && let Some(pin) = app.pairing.pin.as_ref()
+    {
+        controls = controls.push(text(l.with(
+            "extension-pair-active",
+            [
+                ("seconds", app.pairing.remaining_secs.to_string()),
+                ("pin", pin.clone()),
+            ],
+        )));
+    }
+    for req in &app.pairing.pending {
+        controls = controls.push(
+            row![
+                text(l.with(
+                    "extension-pair-pending",
+                    [
+                        ("client", req.client_name.clone()),
+                        ("origin", req.origin.clone()),
+                    ],
+                )),
+                theme::action(text(l.get("extension-pair-approve")))
+                    .on_press(Message::ApprovePairing(req.request_id.clone())),
+                theme::action(text(l.get("extension-pair-reject")))
+                    .on_press(Message::RejectPairing(req.request_id.clone())),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        );
+    }
+    controls
         .push(
             theme::check(app.preferences.monitor_clipboard)
                 .label(l.get("clipboard-monitor"))

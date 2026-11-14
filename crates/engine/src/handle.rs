@@ -168,6 +168,7 @@ pub struct EngineSnapshot {
     pub downloads: Vec<Download>,
     pub packages: Vec<Package>,
     pub limits: Limits,
+    pub temporary_bandwidth: Option<NonZeroU64>,
     pub recovery: DatabaseRecovery,
     pub categories: CategorySettings,
     pub torrent: TorrentSettings,
@@ -430,6 +431,37 @@ impl EngineHandle {
                 .await?;
         }
         Ok(count)
+    }
+
+    /// Stores session cookies, user agent, and optional referer forwarded by an authenticated client.
+    pub async fn import_session_cookies(
+        &self,
+        url: &crate::Url,
+        session: crate::BrowserSession,
+        referer: Option<&str>,
+    ) -> Result<usize, EngineError> {
+        let count = self
+            .resolver
+            .import_session_cookies(url, session, referer)?;
+        self.request(|reply| Command::ResumeVerified(url.clone(), reply))
+            .await?;
+        Ok(count)
+    }
+
+    /// Decrypts a `.dlc` container string into validated packages using the configured DLC service.
+    pub async fn import_dlc_str(
+        &self,
+        raw: &str,
+        name_fallback: Option<&str>,
+        allow_dlc_fallback: bool,
+    ) -> Result<Vec<crate::ImportedPackage>, EngineError> {
+        let fallback = name_fallback.unwrap_or_default();
+        if let Some(service) = &self.dlc_service {
+            Ok(crate::import_dlc(raw, fallback, service).await?)
+        } else {
+            let service = crate::DlcKeyService::production(allow_dlc_fallback)?;
+            Ok(crate::import_dlc(raw, fallback, &service).await?)
+        }
     }
 
     pub async fn import_links(

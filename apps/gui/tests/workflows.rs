@@ -1189,3 +1189,318 @@ async fn manages_sidecars_and_ytdlp_playlists_in_both_languages() -> anyhow::Res
     engine.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn lan_webui_settings_display_qr_auth_and_live_toggle() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+
+    let mut options =
+        EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    options.data_dir = Some(temp.path().to_path_buf());
+    let engine = EngineHandle::start(options).await?;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+
+    let free_port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+
+    apply(&mut app, Message::Settings(true)).await;
+    apply(&mut app, Message::SettingsPage(Page::Integrations)).await;
+    let tall = Size::new(1120.0, 1600.0);
+    assert!(
+        simulator_at(&app, tall)
+            .find("Remote LAN control is turned off.")
+            .is_ok()
+    );
+    assert!(simulator_at(&app, tall).find("lan-pending").is_err());
+
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+    assert!(
+        simulator_at(&app, tall)
+            .find("Il controllo remoto LAN è disattivato.")
+            .is_ok()
+    );
+    apply(&mut app, Message::Locale(Locale::English)).await;
+
+    apply(
+        &mut app,
+        Message::SettingNumber(crate::settings::Number::Port, free_port.to_string()),
+    )
+    .await;
+    let save_limits = click_in(&app, tall, "Save")?;
+    apply(&mut app, save_limits).await;
+
+    apply(
+        &mut app,
+        Message::LanPassword(crate::settings::LanPassword("pin-9876".into())),
+    )
+    .await;
+    let save_pw = click_in(&app, tall, "Save password")?;
+    apply(&mut app, save_pw).await;
+    assert!(app.lan_password_hash.is_some());
+
+    let toggle_lan = click_in(&app, tall, "Enable remote control on the local network")?;
+    apply(&mut app, toggle_lan).await;
+
+    let lan_url = match &app.lan_status {
+        ruscello_api::LanStatus::Active { display_url, .. } => display_url.clone(),
+        other => anyhow::bail!("expected active LAN listener, got {other:?}"),
+    };
+    let expected_status = format!("Listening on LAN at {lan_url}");
+    assert!(
+        simulator_at(&app, tall)
+            .find(expected_status.as_str())
+            .is_ok()
+    );
+    assert!(
+        simulator_at(&app, tall)
+            .find("Scan this QR code on your phone or tablet on the same Wi-Fi network.")
+            .is_ok()
+    );
+
+    let lan_base = format!("http://127.0.0.1:{free_port}");
+    let client = reqwest::Client::builder().cookie_store(true).build()?;
+    let html = client
+        .get(format!("{lan_base}/"))
+        .send()
+        .await?
+        .text()
+        .await?;
+    assert!(html.contains("Ruscello Remote"));
+
+    let unauth = client
+        .get(format!("{lan_base}/api/v1/queue"))
+        .send()
+        .await?;
+    assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let login = client
+        .post(format!("{lan_base}/api/v1/auth/login"))
+        .json(&serde_json::json!({ "password": "pin-9876" }))
+        .send()
+        .await?;
+    assert_eq!(login.status(), reqwest::StatusCode::OK);
+
+    let mut api_rx = app
+        .api_control
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing api_control"))?
+        .subscribe();
+
+    let alt_resp = client
+        .post(format!("{lan_base}/api/v1/speed/alternate"))
+        .json(&serde_json::json!({ "enabled": true }))
+        .send()
+        .await?;
+    assert_eq!(alt_resp.status(), reqwest::StatusCode::OK);
+
+    let alt_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Ok(event @ ruscello_api::ApiEvent::AlternateSpeedChanged(_)) =
+                api_rx.recv().await
+            {
+                return Ok::<_, anyhow::Error>(event);
+            }
+        }
+    })
+    .await??;
+    apply(&mut app, Message::Api(alt_event)).await;
+    assert!(app.alternate_speed());
+
+    let disable_auth = click_in(&app, tall, "Require a password")?;
+    apply(&mut app, disable_auth).await;
+    let anon_client = reqwest::Client::new();
+    let q_resp = anon_client
+        .get(format!("{lan_base}/api/v1/queue"))
+        .send()
+        .await?;
+    assert_eq!(q_resp.status(), reqwest::StatusCode::OK);
+
+    apply(&mut app, Message::Close).await;
+    assert!(!temp.path().join("local-api.json").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_click_extension_pairing_forwards_linkgrabber_and_revokes() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+
+    let server = TestServer::start().await?;
+    let protected_file = server.file(FileSpec::random(55, 4096).filename("ext-sample.zip"));
+    let target_url = protected_file.url().to_owned();
+    let page_url = server.route("/protected", move |_req| {
+        Reply::html(format!(
+            "<title>Extension Target</title><a download href=\"{target_url}\">Download</a>"
+        ))
+    });
+
+    let mut options =
+        EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    options.data_dir = Some(temp.path().to_path_buf());
+    let engine = EngineHandle::start(options).await?;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+
+    let control = app
+        .api_control
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing api_control"))?
+        .clone();
+    let local_base = format!("http://127.0.0.1:{}", control.local_addr().port());
+    let mut api_rx = control.subscribe();
+
+    apply(&mut app, Message::Settings(true)).await;
+    apply(&mut app, Message::SettingsPage(Page::Integrations)).await;
+    let tall = Size::new(1120.0, 1600.0);
+
+    let start_pair = click_in(&app, tall, "One-click pair extension")?;
+    apply(&mut app, start_pair).await;
+    assert!(app.pairing.window_active);
+    let pin = app
+        .pairing
+        .pin
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("missing pairing PIN"))?;
+    let active_text = format!(
+        "Pairing window open ({}s remaining). PIN: {pin}",
+        app.pairing.remaining_secs
+    );
+    assert!(simulator_at(&app, tall).find(active_text.as_str()).is_ok());
+
+    // Cancel pairing button closes the window; then re-open for 1-click pairing.
+    let cancel_pair = click_in(&app, tall, "Cancel pairing")?;
+    apply(&mut app, cancel_pair).await;
+    assert!(!app.pairing.window_active);
+
+    let start_pair = click_in(&app, tall, "One-click pair extension")?;
+    apply(&mut app, start_pair).await;
+    assert!(app.pairing.window_active);
+
+    let ext_origin = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let ext_client = reqwest::Client::new();
+
+    // Active pairing window immediately pairs with one click and auto-closes.
+    let instant_pair: ruscello_api::PairingResponse = ext_client
+        .post(format!("{local_base}/api/v1/pair/request"))
+        .header("Origin", ext_origin)
+        .json(&serde_json::json!({ "client_name": "Chrome Quick Pair" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(instant_pair.status, "paired");
+    let ext_token_1 = instant_pair
+        .token
+        .ok_or_else(|| anyhow::anyhow!("missing instant pairing token"))?;
+
+    let pairing_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Ok(ruscello_api::ApiEvent::PairingChanged(ov)) = api_rx.recv().await
+                && ov.paired_count == 1
+            {
+                return Ok::<_, anyhow::Error>(ruscello_api::ApiEvent::PairingChanged(ov));
+            }
+        }
+    })
+    .await??;
+    apply(&mut app, Message::Api(pairing_event)).await;
+    assert_eq!(app.pairing.paired_count, 1);
+    assert!(!app.pairing.window_active);
+
+    // With pairing window closed, exercise pending request + explicit Approve flow.
+
+    let pair_req: ruscello_api::PairingResponse = ext_client
+        .post(format!("{local_base}/api/v1/pair/request"))
+        .header("Origin", ext_origin)
+        .json(&serde_json::json!({ "client_name": "Chrome MV3 Test" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(pair_req.status, "pending");
+    let request_id = pair_req
+        .request_id
+        .ok_or_else(|| anyhow::anyhow!("missing request_id"))?;
+
+    let pairing_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Ok(ruscello_api::ApiEvent::PairingChanged(ov)) = api_rx.recv().await
+                && !ov.pending.is_empty()
+            {
+                return Ok::<_, anyhow::Error>(ruscello_api::ApiEvent::PairingChanged(ov));
+            }
+        }
+    })
+    .await??;
+    apply(&mut app, Message::Api(pairing_event)).await;
+
+    let pending_text = format!("Extension pairing request from Chrome MV3 Test ({ext_origin})");
+    assert!(simulator_at(&app, tall).find(pending_text.as_str()).is_ok());
+
+    let approve = click_in(&app, tall, "Approve")?;
+    apply(&mut app, approve).await;
+    assert_eq!(app.pairing.paired_count, 2);
+
+    let status_resp: ruscello_api::PairingResponse = ext_client
+        .get(format!("{local_base}/api/v1/pair/status/{request_id}"))
+        .header("Origin", ext_origin)
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(status_resp.status, "paired");
+    let ext_token = status_resp
+        .token
+        .ok_or_else(|| anyhow::anyhow!("missing issued extension token"))?;
+
+    let analyze = ext_client
+        .post(format!("{local_base}/api/v1/linkgrabber/analyze"))
+        .header("Origin", ext_origin)
+        .bearer_auth(&ext_token)
+        .json(&serde_json::json!({
+            "url": page_url,
+            "cookies": ["session=abc123"],
+            "user_agent": "ExtAgent/1.0",
+            "referer": "https://referrer.test/",
+            "open_in_ui": true
+        }))
+        .send()
+        .await?;
+    assert_eq!(analyze.status(), reqwest::StatusCode::OK);
+
+    let analyze_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Ok(event @ ruscello_api::ApiEvent::AnalyzePage { .. }) = api_rx.recv().await {
+                return Ok::<_, anyhow::Error>(event);
+            }
+        }
+    })
+    .await??;
+    apply(&mut app, Message::Api(analyze_event)).await;
+    assert!(app.add.is_some());
+    apply(&mut app, Message::CloseAdd).await;
+
+    apply(&mut app, Message::Settings(true)).await;
+    apply(&mut app, Message::SettingsPage(Page::Integrations)).await;
+    let revoke = click_in(&app, tall, "Revoke all paired extensions")?;
+    apply(&mut app, revoke).await;
+    assert_eq!(app.pairing.paired_count, 0);
+
+    for token in [&ext_token_1, &ext_token] {
+        let rejected = ext_client
+            .get(format!("{local_base}/api/v1/queue"))
+            .header("Origin", ext_origin)
+            .bearer_auth(token)
+            .send()
+            .await?;
+        assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    apply(&mut app, Message::Close).await;
+    Ok(())
+}

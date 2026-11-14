@@ -351,23 +351,23 @@ optional live tests behind feature flag.
 
 ## M8 — Local API, LAN Remote Web UI & Browser Extension (crate `ruscello-api`, `extensions/browser`)
 
-- [ ] **M8.1** HTTP/WebSocket API server (`axum` in `ruscello-api`):
+- [x] **M8.1** HTTP/WebSocket API server (`axum` in `ruscello-api`):
   - **Loopback mode (`127.0.0.1`)** for the browser extension and CLI (token-authenticated, strict CORS);
   - **LAN Remote Control mode (`0.0.0.0:<port>`)** when enabled by the user in Settings (requirement R17, qBittorrent Web UI style);
   - **Optional authentication**: user can choose **no password** (instant access on a trusted home LAN) or **password protection**
     (username/password or PIN → session cookie / token, with brute-force rate limiting).
   - Endpoints: real-time queue & package status, speed telemetry (SSE/WebSocket), pause/resume/cancel (single or all),
     add URLs / `.torrent` / `.dlc` containers, toggle alternative speed limit (`🐢`).
-- [ ] **M8.2** **Embedded Mobile-Friendly LAN Web UI**:
+- [x] **M8.2** **Embedded Mobile-Friendly LAN Web UI**:
   - Clean, lightweight, responsive HTML/CSS/JS web interface bundled directly into the Rust binary (zero external runtime dependencies)
     so opening `http://<pc-lan-ip>:<port>` from a smartphone, tablet, or another PC browser shows live download progress, speeds, ETAs,
     and packages, and allows pausing/resuming/adding downloads remotely;
   - Settings page in the desktop app displays the LAN URL (`http://192.168.x.x:<port>`) and a scannable **QR Code** for instant phone access;
   - Localization in both **English (`en`)** and **Italian (`it`)** matching the desktop app.
-- [ ] **M8.3** Manifest V3 browser extension (Chrome + Firefox) with minimal TS/JS code: optional browser download
+- [x] **M8.3** Manifest V3 browser extension (Chrome + Firefox) with minimal TS/JS code: optional browser download
       interception (filtered by MIME/file size), context menu "Download with Ruscello" on links/selection/page
       ("Analyze page with LinkGrabber"), automatic forwarding of domain cookies for authenticated downloads.
-- [ ] **M8.4** Simple one-click pairing between extension and desktop app in Settings.
+- [x] **M8.4** Simple one-click pairing between extension and desktop app in Settings.
 
 ---
 

@@ -1,7 +1,7 @@
 use std::{
-    net::{IpAddr, UdpSocket},
+    net::IpAddr,
     num::{NonZeroU16, NonZeroU64, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -166,14 +166,7 @@ pub(crate) async fn pick_folder() -> Option<PathBuf> {
 }
 
 pub(crate) async fn lan_address() -> Option<IpAddr> {
-    tokio::task::spawn_blocking(|| {
-        let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-        socket.connect("192.0.2.1:9").ok()?;
-        Some(socket.local_addr().ok()?.ip())
-    })
-    .await
-    .ok()
-    .flatten()
+    ruscello_api::discover_lan_ip_async().await
 }
 
 #[derive(Clone)]
@@ -252,14 +245,80 @@ impl std::fmt::Debug for LanPassword {
     }
 }
 
-pub(crate) async fn save_lan_password(password: LanPassword) -> bool {
-    tokio::task::spawn_blocking(move || {
+#[derive(Debug, Clone)]
+pub(crate) struct LanPasswordOutcome {
+    pub(crate) keyring_saved: bool,
+    pub(crate) hash: Option<String>,
+}
+
+const LAN_HASH_FILE: &str = "lan-auth.hash";
+
+pub(crate) async fn load_lan_password_hash(data_dir: Option<PathBuf>) -> Option<String> {
+    if let Some(dir) = data_dir.as_ref() {
+        let path = dir.join(LAN_HASH_FILE);
+        if let Ok(raw) = tokio::fs::read_to_string(&path).await {
+            let trimmed = raw.trim().to_owned();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    let from_keyring = tokio::task::spawn_blocking(|| {
+        keyring::Entry::new("Ruscello LAN Web UI", "remote-control")
+            .and_then(|entry| entry.get_password())
+            .ok()
+            .filter(|password| !password.is_empty())
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let hash = ruscello_api::hash_password_async(from_keyring).await.ok()?;
+    if let Some(dir) = data_dir.as_ref() {
+        let _ = write_lan_hash_file(dir, &hash);
+    }
+    Some(hash)
+}
+
+pub(crate) async fn save_lan_password(
+    data_dir: Option<PathBuf>,
+    password: LanPassword,
+) -> LanPasswordOutcome {
+    let hash = ruscello_api::hash_password_async(password.0.clone())
+        .await
+        .ok();
+    if let (Some(dir), Some(digest)) = (data_dir.as_ref(), hash.as_ref())
+        && let Err(error) = write_lan_hash_file(dir, digest)
+    {
+        tracing::debug!(%error, "Could not persist LAN verifier hash");
+    }
+    let keyring_saved = tokio::task::spawn_blocking(move || {
         keyring::Entry::new("Ruscello LAN Web UI", "remote-control")
             .and_then(|entry| entry.set_password(&password.0))
             .is_ok()
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or(false);
+    LanPasswordOutcome {
+        keyring_saved,
+        hash,
+    }
+}
+
+fn write_lan_hash_file(dir: &Path, hash: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    std::fs::create_dir_all(dir)?;
+    let target = dir.join(LAN_HASH_FILE);
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(hash.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(target)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
