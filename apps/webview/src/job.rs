@@ -112,6 +112,7 @@ impl Job {
         &mut self,
         webview: &WebView,
         proxy: &EventLoopProxy<Message>,
+        blank_ready: bool,
     ) -> Option<Response> {
         let now = Instant::now();
         if now >= self.deadline || now >= self.step_deadline {
@@ -121,7 +122,7 @@ impl Job {
             return None;
         }
         self.next_tick = now + TICK;
-        if self.loading || self.evaluating {
+        if self.loading || self.evaluating || !self.navigating && !blank_ready {
             return None;
         }
         let html = match &self.current {

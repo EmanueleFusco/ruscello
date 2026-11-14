@@ -25,6 +25,8 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebView, WebViewBuilder}
 use job::Job;
 
 const TICK: Duration = Duration::from_millis(150);
+const BLANK_PAGE: &str =
+    "<!doctype html><html><head><title>Ruscello</title></head><body></body></html>";
 
 #[derive(Debug)]
 enum Message {
@@ -32,6 +34,7 @@ enum Message {
     Closed,
     LoadStarted,
     LoadFinished,
+    BlankReady,
     Evaluated(u64, String),
     Download(Url),
 }
@@ -101,6 +104,7 @@ fn run() -> anyhow::Result<()> {
     })?;
     let mut job = None::<Job>;
     let mut generation = 0;
+    let mut blank_ready = false;
     events.run_return(|event, _, control| {
         let result = match event {
             Event::UserEvent(Message::Input(Request::Shutdown) | Message::Closed) => {
@@ -142,6 +146,10 @@ fn run() -> anyhow::Result<()> {
                 }
                 None
             }
+            Event::UserEvent(Message::BlankReady) => {
+                blank_ready = true;
+                None
+            }
             Event::UserEvent(Message::Evaluated(id, payload)) => job
                 .as_mut()
                 .filter(|active| active.id == id)
@@ -151,13 +159,14 @@ fn run() -> anyhow::Result<()> {
                 .and_then(|active| active.download(&webview, url)),
             Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. }) => job
                 .as_mut()
-                .and_then(|active| active.tick(&webview, &proxy)),
+                .and_then(|active| active.tick(&webview, &proxy, blank_ready)),
             _ => None,
         };
         if let Some(response) = result {
             job = None;
             window.set_visible(false);
-            let _ = webview.load_url("about:blank");
+            blank_ready = false;
+            let _ = webview.load_html(BLANK_PAGE);
             if reply(&response).is_err() {
                 *control = ControlFlow::Exit;
                 return;
@@ -215,7 +224,7 @@ fn webview(
     let load_proxy = proxy.clone();
     let download_proxy = proxy.clone();
     let builder = WebViewBuilder::new_with_web_context(context)
-        .with_url("about:blank")
+        .with_html(BLANK_PAGE)
         .with_devtools(false)
         .with_navigation_handler(|target| {
             target == "about:blank" || Url::parse(&target).is_ok_and(|url| web_url(&url))
@@ -231,7 +240,11 @@ fn webview(
             false
         })
         .with_on_page_load_handler(move |event, url| {
-            if url != "about:blank" {
+            if url == "about:blank" || url.is_empty() || url.starts_with("data:text/html") {
+                if matches!(event, PageLoadEvent::Finished) {
+                    let _ = load_proxy.send_event(Message::BlankReady);
+                }
+            } else {
                 let _ = load_proxy.send_event(match event {
                     PageLoadEvent::Started => Message::LoadStarted,
                     PageLoadEvent::Finished => Message::LoadFinished,

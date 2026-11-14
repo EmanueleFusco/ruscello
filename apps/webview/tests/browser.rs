@@ -14,6 +14,13 @@ use tokio_util::sync::CancellationToken;
 
 const DEADLINE: Duration = Duration::from_secs(60);
 
+fn trace() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+        .with_test_writer()
+        .try_init();
+}
+
 fn options(directory: &Path) -> BrowserOptions {
     BrowserOptions {
         executable: env!("CARGO_BIN_EXE_ruscello-webview").into(),
@@ -55,6 +62,7 @@ async fn wait_for(engine: &EngineHandle, ids: &[DownloadId], status: Status) -> 
 #[tokio::test]
 #[ignore = "requires a native desktop session"]
 async fn one_manual_verification_resumes_batch_and_survives_helper_restart() -> anyhow::Result<()> {
+    trace();
     let temp = tempfile::tempdir()?;
     let server = TestServer::start().await?;
     let fixture = BrowserFixture::register(&server);
@@ -137,6 +145,7 @@ async fn one_manual_verification_resumes_batch_and_survives_helper_restart() -> 
 #[tokio::test]
 #[ignore = "requires a native desktop session"]
 async fn native_popup_blocking_intercepts_download_and_captures_resources() -> anyhow::Result<()> {
+    trace();
     let temp = tempfile::tempdir()?;
     let server = TestServer::start().await?;
     let fixture = BrowserFixture::register(&server);

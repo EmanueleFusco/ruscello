@@ -5922,6 +5922,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tracing-subscriber",
  "wry",
 ]
 
