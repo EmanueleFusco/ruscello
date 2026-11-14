@@ -14,8 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+reqwest = { workspace = true, features = ["rustls", "json"] }
+ruscello-api.workspace = true
 ruscello-engine.workspace = true
 ruscello-platform.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "signal"] }
 tracing.workspace = true
 

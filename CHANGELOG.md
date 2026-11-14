@@ -6,6 +6,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- M8.1–M8.4: Local loopback API server & LAN Remote Web UI (`ruscello-api`, `axum`), integrated into
+  `ruscello-gui` and `ruscello-cli` (`queue`, `status`), with dual listeners (`127.0.0.1` Bearer auth +
+  strict extension-origin CORS and discovery file, plus dynamically toggleable `0.0.0.0:<port>` LAN mode with
+  optional passwordless access or salted PBKDF2-HMAC-SHA256 + `HttpOnly` cookie sessions and per-IP rate limiting).
+- REST, WebSocket (`/api/v1/ws`), and SSE (`/api/v1/events`) telemetry endpoints for queue/packages/speeds,
+  pause/resume/cancel (single or bulk), adding URLs/magnets/`.torrent`/`.dlc`, toggling alternative speed limits (`🐢`),
+  LinkGrabber page analysis, domain cookie/header forwarding, and one-click browser extension pairing.
+- Responsive mobile-friendly LAN Web UI embedded directly into the Rust binary (localized in English and Italian),
+  with live LAN status, copyable/openable URL, scannable QR code, and pairing controls in Settings -> Integrations.
+- Manifest V3 browser extension (`extensions/browser`) for Chrome/Chromium and Firefox (Gecko) with optional
+  download interception (MIME type and minimum file size filters), localized `en`/`it` context menus
+  ("Download with Ruscello" / "Analyze page with LinkGrabber"), automatic domain cookie forwarding, and one-click pairing.
 - M7.1–M7.6: Native HLS (`m3u8-rs`) and MPEG-DASH (`quick-xml`) media download engine (`ruscello-media`)
   supporting master playlist quality selection, parallel segment downloads with global/per-download rate limits,
   AES-128-CBC decryption, segment-level checkpoint resume, and deterministic output concatenation.

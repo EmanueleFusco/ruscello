@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -11,6 +12,10 @@ use iced::{
     keyboard,
     widget::{operation, scrollable::AbsoluteOffset, text_editor},
     window,
+};
+use ruscello_api::{
+    ApiConfig, ApiController, ApiEvent, ApiHandle, ApiRuntimeUpdate, ApiServer, DEFAULT_LOCAL_PORT,
+    LanStatus, PairingOverview,
 };
 use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Source, Status, TorrentSource};
 use ruscello_engine::{
@@ -101,10 +106,30 @@ impl Column {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct ApiStartup {
+    pub(crate) handle: Arc<tokio::sync::Mutex<Option<ApiHandle>>>,
+    pub(crate) controller: ApiController,
+    pub(crate) lan_status: LanStatus,
+    pub(crate) pairing: PairingOverview,
+    pub(crate) password_hash: Option<String>,
+}
+
+impl std::fmt::Debug for ApiStartup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiStartup")
+            .field("local_addr", &self.controller.local_addr())
+            .field("lan_status", &self.lan_status)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Noop,
     Started(Option<EngineHandle>),
+    ApiStarted(Option<Box<ApiStartup>>),
+    Api(ApiEvent),
     Snapshot(Option<EngineSnapshot>),
     Event(EngineEvent),
     DiskSpace(Option<u64>),
@@ -211,10 +236,18 @@ pub(crate) enum Message {
     LanEnabled(bool),
     LanAuth(bool),
     LanAddress(Option<std::net::IpAddr>),
+    LanStatusUpdated(Option<LanStatus>),
     LanPassword(settings::LanPassword),
     SaveLanPassword,
-    LanPasswordSaved(bool),
+    LanPasswordSaved(settings::LanPasswordOutcome),
     CopyLanUrl,
+    OpenLanUrl,
+    StartPairing,
+    CancelPairing,
+    ApprovePairing(String),
+    RejectPairing(String),
+    RevokePairing,
+    PairingTick,
     CheckAutomatically(bool),
     CheckUpdates,
     UpdateChecked(UpdateStatus),
@@ -262,6 +295,9 @@ pub(crate) struct App {
     frame: Instant,
     window: window::Id,
     engine: Option<EngineHandle>,
+    data_dir: Option<PathBuf>,
+    api: Option<Arc<tokio::sync::Mutex<Option<ApiHandle>>>>,
+    pub(crate) api_control: Option<ApiController>,
     pub(crate) queue: Queue,
     pub(crate) strings: Strings,
     pub(crate) preferences: Preferences,
@@ -306,7 +342,10 @@ pub(crate) struct App {
     #[cfg(windows)]
     nvidia_busy: bool,
     pub(crate) lan_address: Option<std::net::IpAddr>,
+    pub(crate) lan_status: LanStatus,
     pub(crate) lan_password: settings::LanPassword,
+    pub(crate) lan_password_hash: Option<String>,
+    pub(crate) pairing: PairingOverview,
     pub(crate) hoster_draft: settings::HosterDraft,
     pub(crate) sidecar_draft: settings::SidecarDraft,
     pub(crate) cookie_site: String,
@@ -357,6 +396,7 @@ impl App {
             options.torrent = torrent;
         }
         options.sidecars = preferences.sidecars.clone();
+        let data_dir = options.data_dir.clone();
         let sidecar_draft = settings::SidecarDraft::from_settings(&preferences.sidecars);
         let app = Self {
             selection_motion: view_animation(true),
@@ -364,6 +404,9 @@ impl App {
             frame: Instant::now(),
             window,
             engine: None,
+            data_dir,
+            api: None,
+            api_control: None,
             queue: Queue::default(),
             strings,
             renderer: preferences.renderer,
@@ -408,7 +451,10 @@ impl App {
             page: Page::General,
             settings_draft: Draft::default(),
             lan_address: None,
+            lan_status: LanStatus::Disabled,
             lan_password: settings::LanPassword(String::new()),
+            lan_password_hash: None,
+            pairing: PairingOverview::default(),
             hoster_draft: settings::HosterDraft::default(),
             sidecar_draft,
             cookie_site: String::new(),
@@ -467,8 +513,26 @@ impl App {
                     queue_events,
                 )
             });
+        let api = self
+            .api_control
+            .as_ref()
+            .map_or_else(Subscription::none, |control| {
+                Subscription::run_with(
+                    ApiSubscription {
+                        window: self.window,
+                        control: control.clone(),
+                    },
+                    api_events,
+                )
+            });
         Subscription::batch([
             engine,
+            api,
+            if self.pairing.window_active {
+                iced::time::every(Duration::from_secs(1)).map(|_| Message::PairingTick)
+            } else {
+                Subscription::none()
+            },
             if self.preferences.monitor_clipboard {
                 iced::time::every(Duration::from_secs(2)).map(|_| Message::ClipboardTick)
             } else {
@@ -566,18 +630,45 @@ impl App {
                         Task::none()
                     };
                     let auto_update = self.maybe_auto_update_ytdlp();
+                    let start_api = self.start_api();
                     Task::batch([
                         self.check_disk(),
                         check,
                         self.run_probes(),
                         self.refresh_sidecar_status(),
                         auto_update,
+                        start_api,
                     ])
                 };
             }
+            Message::ApiStarted(Some(startup)) => {
+                self.api = Some(startup.handle);
+                self.api_control = Some(startup.controller);
+                self.lan_status = startup.lan_status;
+                self.pairing = startup.pairing;
+                self.lan_password_hash = startup.password_hash;
+                if let LanStatus::Active {
+                    bind_addr: _,
+                    display_url: _,
+                } = &self.lan_status
+                {
+                    return Task::perform(settings::lan_address(), Message::LanAddress);
+                }
+            }
+            Message::ApiStarted(None) => {}
+            Message::Api(event) => match event {
+                ApiEvent::LanStatusChanged(status) => self.lan_status = status,
+                ApiEvent::PairingChanged(overview) => self.pairing = overview,
+                ApiEvent::AlternateSpeedChanged(rate) => self.alternate_speed = rate.is_some(),
+                ApiEvent::QueueRequested { .. } => {}
+                ApiEvent::AnalyzePage { url, .. } => {
+                    return self.update(Message::Incoming(vec![url]));
+                }
+            },
             Message::Snapshot(snapshot) => {
                 self.booting = false;
                 if let Some(snapshot) = snapshot {
+                    self.alternate_speed = snapshot.temporary_bandwidth.is_some();
                     if self.preferences.sidecars == SidecarSettings::default()
                         && snapshot.sidecars != SidecarSettings::default()
                     {
@@ -813,7 +904,7 @@ impl App {
                 {
                     self.tray = Some(tray);
                 }
-                return self.save_preferences();
+                return Task::batch([self.save_preferences(), self.sync_api()]);
             }
             Message::Appearance(appearance) => {
                 self.preferences.appearance = appearance;
@@ -1461,7 +1552,7 @@ impl App {
                         Message::ActionResult,
                     )
                 });
-                return Task::batch([change, self.save_preferences()]);
+                return Task::batch([change, self.save_preferences(), self.sync_api()]);
             }
             Message::ChooseFolder(folder) => {
                 return Task::perform(settings::pick_folder(), move |path| {
@@ -1493,34 +1584,111 @@ impl App {
             }
             Message::LanEnabled(value) => {
                 self.preferences.lan_enabled = value;
-                return self.save_preferences();
+                return Task::batch([
+                    self.save_preferences(),
+                    self.sync_api(),
+                    if value {
+                        Task::perform(settings::lan_address(), Message::LanAddress)
+                    } else {
+                        Task::none()
+                    },
+                ]);
             }
             Message::LanAuth(value) => {
                 self.preferences.lan_auth = value;
-                return self.save_preferences();
+                return Task::batch([self.save_preferences(), self.sync_api()]);
             }
             Message::LanAddress(address) => self.lan_address = address,
+            Message::LanStatusUpdated(Some(status)) => self.lan_status = status,
+            Message::LanStatusUpdated(None) => {}
             Message::LanPassword(password) => self.lan_password = password,
             Message::SaveLanPassword => {
                 if self.lan_password.0.is_empty() {
                     return Task::none();
                 }
                 let password = settings::LanPassword(std::mem::take(&mut self.lan_password.0));
+                let data_dir = self.data_dir.clone();
                 return Task::perform(
-                    settings::save_lan_password(password),
+                    settings::save_lan_password(data_dir, password),
                     Message::LanPasswordSaved,
                 );
             }
-            Message::LanPasswordSaved(saved) => {
-                self.banner = Some(if saved {
+            Message::LanPasswordSaved(outcome) => {
+                if let Some(hash) = outcome.hash {
+                    self.lan_password_hash = Some(hash);
+                }
+                self.banner = Some(if outcome.keyring_saved {
                     "lan-password-saved"
                 } else {
                     "lan-password-failed"
                 });
+                return self.sync_api();
             }
             Message::CopyLanUrl => {
                 if let Some(url) = self.lan_url() {
+                    self.banner = Some("lan-url-copied");
                     return clipboard::write(url);
+                }
+            }
+            Message::OpenLanUrl => {
+                if let Some(url) = self.lan_url() {
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || open::that_detached(url).is_ok())
+                                .await
+                                .unwrap_or(false)
+                        },
+                        Message::ActionResult,
+                    );
+                }
+            }
+            Message::StartPairing => {
+                if let Some(control) = self.api_control.as_ref() {
+                    match control.start_pairing_window() {
+                        Ok(overview) => self.pairing = overview,
+                        Err(_) => self.banner = Some("action-failed"),
+                    }
+                }
+            }
+            Message::CancelPairing => {
+                if let Some(control) = self.api_control.as_ref() {
+                    control.cancel_pairing_window();
+                    self.pairing = control.pairing_status();
+                }
+            }
+            Message::ApprovePairing(request_id) => {
+                if let Some(control) = self.api_control.as_ref() {
+                    match control.approve_pairing(&request_id) {
+                        Ok(overview) => {
+                            self.pairing = overview;
+                            self.banner = Some("extension-pair-approved");
+                        }
+                        Err(_) => self.banner = Some("action-failed"),
+                    }
+                }
+            }
+            Message::RejectPairing(request_id) => {
+                if let Some(control) = self.api_control.as_ref() {
+                    match control.reject_pairing(&request_id) {
+                        Ok(overview) => self.pairing = overview,
+                        Err(_) => self.banner = Some("action-failed"),
+                    }
+                }
+            }
+            Message::RevokePairing => {
+                if let Some(control) = self.api_control.as_ref() {
+                    match control.revoke_extension_tokens() {
+                        Ok(_) => {
+                            self.pairing = control.pairing_status();
+                            self.banner = Some("extension-pair-revoked");
+                        }
+                        Err(_) => self.banner = Some("action-failed"),
+                    }
+                }
+            }
+            Message::PairingTick => {
+                if let Some(control) = self.api_control.as_ref() {
+                    self.pairing = control.pairing_status();
                 }
             }
             Message::CheckAutomatically(value) => {
@@ -1917,8 +2085,87 @@ impl App {
     }
 
     pub(crate) fn lan_url(&self) -> Option<String> {
+        if let LanStatus::Active { display_url, .. } = &self.lan_status {
+            return Some(display_url.clone());
+        }
         self.lan_address
             .map(|ip| format!("http://{ip}:{}", self.preferences.lan_port))
+    }
+
+    fn start_api(&self) -> Task<Message> {
+        let Some(engine) = self.engine.clone() else {
+            return Task::none();
+        };
+        let data_dir = self.data_dir.clone();
+        let config_lan_enabled = self.preferences.lan_enabled;
+        let lan_port = self.preferences.lan_port.get();
+        let lan_auth_required = self.preferences.lan_auth;
+        let alternate_bandwidth = self.preferences.alternate_bandwidth;
+        let locale = self.preferences.locale.language();
+        let allow_dlc_fallback = self.preferences.dlc_fallback;
+        Task::perform(
+            async move {
+                let password_hash = settings::load_lan_password_hash(data_dir.clone()).await;
+                let config = ApiConfig {
+                    data_dir,
+                    local_port: DEFAULT_LOCAL_PORT,
+                    fallback_to_ephemeral_local_port: true,
+                    cli_token: None,
+                    extension_token_hashes: Vec::new(),
+                    lan_enabled: config_lan_enabled,
+                    lan_port,
+                    lan_auth_required,
+                    lan_password_hash: password_hash.clone(),
+                    alternate_bandwidth,
+                    locale,
+                    allow_dlc_fallback,
+                };
+                match ApiServer::start(engine, config).await {
+                    Ok(handle) => {
+                        let controller = handle.controller();
+                        let lan_status = handle.lan_status();
+                        let pairing = handle.pairing_status();
+                        Some(Box::new(ApiStartup {
+                            handle: Arc::new(tokio::sync::Mutex::new(Some(handle))),
+                            controller,
+                            lan_status,
+                            pairing,
+                            password_hash,
+                        }))
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "Could not start the local API server");
+                        None
+                    }
+                }
+            },
+            Message::ApiStarted,
+        )
+    }
+
+    fn sync_api(&self) -> Task<Message> {
+        let Some(api) = self.api.clone() else {
+            return Task::none();
+        };
+        let update = ApiRuntimeUpdate {
+            lan_enabled: self.preferences.lan_enabled,
+            lan_port: self.preferences.lan_port.get(),
+            lan_auth_required: self.preferences.lan_auth,
+            lan_password_hash: self.lan_password_hash.clone(),
+            alternate_bandwidth: self.preferences.alternate_bandwidth,
+            locale: self.preferences.locale.language(),
+        };
+        Task::perform(
+            async move {
+                let mut guard = api.lock().await;
+                if let Some(handle) = guard.as_mut() {
+                    Some(handle.apply_update(update).await)
+                } else {
+                    None
+                }
+            },
+            Message::LanStatusUpdated,
+        )
     }
 
     fn refresh_add(&mut self) -> Task<Message> {
@@ -2299,8 +2546,15 @@ impl App {
             return Task::none();
         }
         if let Some(engine) = self.engine.take() {
+            let api = self.api.take();
+            self.api_control = None;
             return Task::perform(
                 async move {
+                    if let Some(api) = api
+                        && let Some(handle) = api.lock().await.take()
+                    {
+                        handle.shutdown().await;
+                    }
                     engine
                         .shutdown()
                         .await
@@ -2419,6 +2673,30 @@ fn tray_events(
 fn ipc_events(source: &DesktopSubscription<Vec<String>>) -> impl Stream<Item = Message> + use<> {
     use iced::futures::StreamExt;
     desktop::events(&source.1).map(Message::Incoming)
+}
+
+struct ApiSubscription {
+    window: window::Id,
+    control: ApiController,
+}
+
+impl Hash for ApiSubscription {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.window.hash(state);
+    }
+}
+
+fn api_events(source: &ApiSubscription) -> impl Stream<Item = Message> + use<> {
+    let receiver = source.control.subscribe();
+    stream::unfold(receiver, |mut receiver| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => return Some((Message::Api(event), receiver)),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    })
 }
 
 struct QueueSubscription {
