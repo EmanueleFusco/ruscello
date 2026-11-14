@@ -64,6 +64,10 @@ pub struct DownloadOptions {
     /// Optional staging directory on the same volume as the partial file.
     pub completion_directory: Option<PathBuf>,
     pub preparation: Option<Arc<dyn DownloadPreparation>>,
+    /// Optional transient credentials for FTP/FTPS URLs (never written to checkpoints).
+    pub ftp_credentials: Option<crate::FtpCredentials>,
+    /// Additional DER-encoded trusted certificates for FTPS servers (primarily for tests).
+    pub ftp_root_certificates: Vec<Vec<u8>>,
 }
 
 impl Default for DownloadOptions {
@@ -85,12 +89,14 @@ impl Default for DownloadOptions {
             checkpoint_job: None,
             completion_directory: None,
             preparation: None,
+            ftp_credentials: None,
+            ftp_root_certificates: Vec::new(),
         }
     }
 }
 
 impl DownloadOptions {
-    fn report(&self, progress: DownloadProgress) {
+    pub(crate) fn report(&self, progress: DownloadProgress) {
         if let Some(sender) = &self.progress {
             sender.send_if_modified(|current| {
                 let changed = *current != progress;
@@ -100,7 +106,7 @@ impl DownloadOptions {
         }
     }
 
-    fn waiting(&self, waiting: bool) {
+    pub(crate) fn waiting(&self, waiting: bool) {
         if let Some(sender) = &self.progress {
             sender.send_if_modified(|current| {
                 let changed = current.waiting_for_network != waiting;
@@ -180,6 +186,10 @@ impl HttpDownloader {
         url: &Url,
         options: DownloadOptions,
     ) -> Result<PathBuf, HttpError> {
+        if matches!(url.scheme(), "ftp" | "ftps") {
+            return crate::ftp::download(url, options, &self.global_bandwidth, &self.connectivity)
+                .await;
+        }
         if !options.mirrors.is_empty() && options.expected_checksum.is_none() {
             return Err(HttpError::MirrorChecksumRequired);
         }
@@ -473,14 +483,14 @@ impl DownloadState {
 }
 
 #[derive(Clone)]
-struct TransferLimits {
-    global: BandwidthLimit,
-    local: BandwidthLimit,
-    individual: Option<BandwidthLimit>,
+pub(crate) struct TransferLimits {
+    pub(crate) global: BandwidthLimit,
+    pub(crate) local: BandwidthLimit,
+    pub(crate) individual: Option<BandwidthLimit>,
 }
 
 impl TransferLimits {
-    async fn next_chunk(&self, bytes: &Bytes, offset: usize) -> Bytes {
+    pub(crate) async fn next_chunk(&self, bytes: &Bytes, offset: usize) -> Bytes {
         let requested = (bytes.len() - offset).min(MAX_CHUNK_BYTES);
         let granted = self
             .global

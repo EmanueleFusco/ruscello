@@ -8,8 +8,9 @@ use std::{
 
 use ruscello_core::{DownloadId, FailureReason, FileType, Source};
 use ruscello_http::{
-    BandwidthLimit, CheckpointJob, DownloadOptions, DownloadProgress, ErrorClass, HttpDownloader,
-    HttpError, RetryPolicy, Url, WriterError, filename_candidate, scan_checkpoints,
+    BandwidthLimit, CheckpointJob, DownloadOptions, DownloadProgress, ErrorClass, FtpCredentials,
+    HttpDownloader, HttpError, RetryPolicy, Url, WriterError, filename_candidate, sanitize_ftp_url,
+    scan_checkpoints,
 };
 use ruscello_storage::QueueEntry;
 use tokio::{
@@ -39,6 +40,8 @@ pub(super) struct Context {
     pub limits: Limits,
     pub bandwidth: BandwidthLimit,
     pub disk: DiskPolicy,
+    pub ftp_credentials: Option<FtpCredentials>,
+    pub ftp_root_certificates: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -127,19 +130,68 @@ impl TransferError {
 }
 
 pub(super) fn source_url(source: &Source) -> Result<Url, EngineError> {
-    let (Source::Http { url } | Source::Hoster { url } | Source::Media { url }) = source else {
-        return Err(EngineError::UnsupportedSource);
+    match source {
+        Source::Http { url } | Source::Hoster { url } | Source::Media { url } => {
+            let mut url = Url::parse(url.trim()).map_err(|_| EngineError::InvalidUrl)?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                return Err(EngineError::InvalidUrl);
+            }
+            url.set_fragment(None);
+            Ok(url)
+        }
+        Source::Ftp { url } => {
+            let mut url = Url::parse(url.trim()).map_err(|_| EngineError::InvalidUrl)?;
+            if !matches!(url.scheme(), "ftp" | "ftps") || url.host_str().is_none() {
+                return Err(EngineError::InvalidUrl);
+            }
+            url.set_fragment(None);
+            Ok(url)
+        }
+        Source::Torrent(_) => Err(EngineError::UnsupportedSource),
+    }
+}
+
+pub(super) fn normalize_ftp_source(
+    source: Source,
+    explicit_creds: Option<FtpCredentials>,
+) -> Result<(Source, Option<FtpCredentials>), EngineError> {
+    let Source::Ftp { url } = source else {
+        return Ok((source, explicit_creds));
     };
-    let mut url = Url::parse(url.trim()).map_err(|_| EngineError::InvalidUrl)?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
+    let mut parsed = Url::parse(url.trim()).map_err(|_| EngineError::InvalidUrl)?;
+    if !matches!(parsed.scheme(), "ftp" | "ftps") || parsed.host_str().is_none() {
         return Err(EngineError::InvalidUrl);
     }
-    url.set_fragment(None);
-    Ok(url)
+    parsed.set_fragment(None);
+    let url_creds =
+        (!parsed.username().is_empty() || parsed.password().is_some()).then(|| FtpCredentials {
+            username: if parsed.username().is_empty() {
+                "anonymous".to_owned()
+            } else {
+                percent_encoding::percent_decode_str(parsed.username())
+                    .decode_utf8_lossy()
+                    .into_owned()
+            },
+            password: parsed
+                .password()
+                .map(|pw| {
+                    percent_encoding::percent_decode_str(pw)
+                        .decode_utf8_lossy()
+                        .into_owned()
+                })
+                .unwrap_or_default(),
+        });
+    let sanitized = sanitize_ftp_url(&parsed);
+    Ok((
+        Source::Ftp {
+            url: sanitized.into(),
+        },
+        explicit_creds.or(url_creds),
+    ))
 }
 
 pub(super) fn working_directory(root: &Path, id: DownloadId) -> PathBuf {
@@ -213,16 +265,20 @@ pub(super) async fn run(
                     id: entry.download.id.0,
                     url: url.clone(),
                 })),
+                ftp_credentials: context.ftp_credentials.clone(),
+                ftp_root_certificates: context.ftp_root_certificates.clone(),
                 ..DownloadOptions::default()
             };
-            crate::resolution::prepare_http_download(
-                &context.resolver,
-                &url,
-                &mut options,
-                matches!(entry.download.source, Source::Hoster { .. }),
-                None,
-            )
-            .await?;
+            if !matches!(entry.download.source, Source::Ftp { .. }) {
+                crate::resolution::prepare_http_download(
+                    &context.resolver,
+                    &url,
+                    &mut options,
+                    matches!(entry.download.source, Source::Hoster { .. }),
+                    None,
+                )
+                .await?;
+            }
             monitored_download(
                 &context.http,
                 &url,

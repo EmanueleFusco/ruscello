@@ -1,5 +1,5 @@
 use std::{
-    io,
+    fmt, io,
     net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
     path::{Path, PathBuf},
@@ -20,14 +20,16 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    CategorySettings, DiskPolicy, DownloadProgress, HttpError, MediaEngine, MediaError,
-    MediaInspection, MediaRequest, SidecarBinaryStatus, SidecarEndpoints, SidecarKind,
-    SidecarSettings, SidecarsStatus, StartupError, categories::CategoryBook, media_bridge,
-    recover_queue, scheduler::Scheduler,
+    AutomationSettings, CategorySettings, Clock, DiskPolicy, DownloadProgress, FtpCredentials,
+    HttpError, MediaEngine, MediaError, MediaInspection, MediaRequest, PostProcessStage,
+    PowerController, QueueCompletionAction, ScheduleDecision, SidecarBinaryStatus,
+    SidecarEndpoints, SidecarKind, SidecarSettings, SidecarsStatus, SleepInhibitor, StartupError,
+    categories::CategoryBook, media_bridge, recover_queue, scheduler::Scheduler,
 };
 
 pub(super) const LIMITS_KEY: &str = "scheduler_limits";
 pub(super) const TORRENT_SETTINGS_KEY: &str = "torrent_settings";
+pub(super) const AUTOMATION_SETTINGS_KEY: &str = "automation_settings";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -51,7 +53,7 @@ impl Default for Limits {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineOptions {
     pub database: PathBuf,
     pub destination: PathBuf,
@@ -76,6 +78,31 @@ pub struct EngineOptions {
     pub sidecars: SidecarSettings,
     /// Optional custom GitHub release API URLs for sidecars (used in offline tests).
     pub sidecar_endpoints: Option<SidecarEndpoints>,
+    /// Initial scheduler, completion action, sleep inhibition, extraction, and watch folder settings.
+    pub automation: AutomationSettings,
+    /// Optional clock override for deterministic scheduler tests.
+    pub clock: Option<Arc<dyn Clock>>,
+    /// Optional sleep inhibitor override (defaults to OS platform inhibitor).
+    pub sleep_inhibitor: Option<Arc<dyn SleepInhibitor>>,
+    /// Optional system power controller override (defaults to OS sleep/shutdown).
+    pub power_controller: Option<Arc<dyn PowerController>>,
+    /// Additional DER-encoded trusted root certificates for FTPS transfers (primarily for tests).
+    pub ftp_root_certificates: Vec<Vec<u8>>,
+}
+
+impl fmt::Debug for EngineOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EngineOptions")
+            .field("database", &self.database)
+            .field("destination", &self.destination)
+            .field("limits", &self.limits)
+            .field("automation", &self.automation)
+            .field("has_custom_clock", &self.clock.is_some())
+            .field("has_sleep_inhibitor", &self.sleep_inhibitor.is_some())
+            .field("has_power_controller", &self.power_controller.is_some())
+            .field("ftp_root_certs_count", &self.ftp_root_certificates.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl EngineOptions {
@@ -96,6 +123,11 @@ impl EngineOptions {
             dlc_service: None,
             sidecars: SidecarSettings::default(),
             sidecar_endpoints: None,
+            automation: AutomationSettings::default(),
+            clock: None,
+            sleep_inhibitor: None,
+            power_controller: None,
+            ftp_root_certificates: Vec::new(),
         }
     }
 }
@@ -133,6 +165,8 @@ pub struct AddDownload {
     pub initial_peers: Vec<SocketAddr>,
     /// Media format/stream selection metadata for HLS, DASH, or `yt-dlp` sources.
     pub media: Option<MediaRequest>,
+    /// Optional transient credentials for FTP/FTPS downloads (held in memory only).
+    pub ftp_credentials: Option<FtpCredentials>,
 }
 
 impl AddDownload {
@@ -159,6 +193,7 @@ impl AddDownload {
             seed_time_limit_minutes: None,
             initial_peers: Vec::new(),
             media: None,
+            ftp_credentials: None,
         }
     }
 }
@@ -174,6 +209,9 @@ pub struct EngineSnapshot {
     pub torrent: TorrentSettings,
     pub telemetry: TorrentSessionTelemetry,
     pub sidecars: SidecarSettings,
+    pub automation: AutomationSettings,
+    pub schedule: ScheduleDecision,
+    pub completion_countdown: Option<(QueueCompletionAction, u64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +244,16 @@ pub enum EngineLog {
     DiskSpaceLow,
     TorrentSessionInitFailed,
     VerificationRequired,
+    ChecksumVerified,
+    ChecksumFailed,
+    ArchiveExtracted,
+    ArchiveExtractionFailed,
+    PostProcessCommandExecuted,
+    PostProcessCommandFailed,
+    WatchFolderImported,
+    SchedulePausedQueue,
+    ScheduleResumedQueue,
+    CompletionActionFailed,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +268,20 @@ pub enum EngineEvent {
         status: Status,
     },
     QueueChanged,
+    AutomationUpdated(Box<AutomationSettings>),
+    ScheduleChanged(ScheduleDecision),
+    PostProcessing {
+        id: DownloadId,
+        stage: PostProcessStage,
+    },
+    QueueCompleted {
+        action: QueueCompletionAction,
+    },
+    CompletionCountdown {
+        action: QueueCompletionAction,
+        remaining_secs: u64,
+    },
+    CompletionCountdownCancelled,
     Log {
         id: Option<DownloadId>,
         message: EngineLog,
@@ -302,6 +364,9 @@ pub(super) enum Update {
     Categories(CategorySettings),
     TorrentSettings(TorrentSettings),
     SidecarSettings(SidecarSettings),
+    AutomationSettings(Box<AutomationSettings>),
+    CancelCompletionAction,
+    ScanWatchFolders,
 }
 
 /// Asynchronous queue control through a bounded mailbox and broadcast events.
@@ -325,7 +390,7 @@ impl EngineHandle {
         } else {
             resolver
         };
-        let dlc_service = options.dlc_service.take();
+        let dlc_service = options.dlc_service.clone();
         options.temporary_directory = options
             .temporary_directory
             .as_deref()
@@ -358,6 +423,14 @@ impl EngineHandle {
             .transpose()?
             .unwrap_or(options.torrent);
         options.sidecars = media_bridge::load_sidecar_settings(&snapshot, options.sidecars)?;
+        options.automation = snapshot
+            .settings
+            .get(AUTOMATION_SETTINGS_KEY)
+            .cloned()
+            .map(serde_json::from_value::<AutomationSettings>)
+            .transpose()?
+            .unwrap_or(options.automation)
+            .normalized();
         let categories = CategoryBook::load(&storage, &snapshot).await?;
         let (commands, receiver) = mpsc::channel(64);
         let (events, _) = broadcast::channel(256);
@@ -667,6 +740,25 @@ impl EngineHandle {
     /// Persists sidecar consent, auto-update policy, and custom binary paths.
     pub async fn set_sidecar_settings(&self, settings: SidecarSettings) -> Result<(), EngineError> {
         self.update(Update::SidecarSettings(settings)).await
+    }
+
+    /// Persists and applies scheduler, post-processing, completion action, sleep inhibition, and watch folder rules.
+    pub async fn set_automation_settings(
+        &self,
+        settings: AutomationSettings,
+    ) -> Result<(), EngineError> {
+        self.update(Update::AutomationSettings(Box::new(settings.normalized())))
+            .await
+    }
+
+    /// Cancels an active queue-completion Sleep/Shutdown countdown before execution.
+    pub async fn cancel_completion_action(&self) -> Result<(), EngineError> {
+        self.update(Update::CancelCompletionAction).await
+    }
+
+    /// Immediately scans enabled watch folders for `.torrent`, `.dlc`, and `.txt` imports.
+    pub async fn scan_watch_folders_now(&self) -> Result<(), EngineError> {
+        self.update(Update::ScanWatchFolders).await
     }
 
     /// Downloads or updates an optional sidecar binary (requires prior explicit consent).

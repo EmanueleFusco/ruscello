@@ -30,7 +30,7 @@ pub(crate) struct Messages {
 
 const EN: Messages = Messages {
     usage: "Usage: ruscello-cli [--language en|it|system] get <url> [-o directory] [-x connections]\n\
-    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --format <preset|id> --ytdlp <path> --ffmpeg <path> --progress --quiet --browser\n\
+    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --ftp-user <user> --ftp-password <password> --format <preset|id> --ytdlp <path> --ffmpeg <path> --progress --quiet --browser\n\
     ruscello-cli inspect <url> [--browser] [--ytdlp <path>] [--ffmpeg <path>]\n\
     ruscello-cli import <file> [--dlc-fallback]\n\
     ruscello-cli queue <url>... [--paused]\n\
@@ -62,7 +62,7 @@ const EN: Messages = Messages {
 
 const IT: Messages = Messages {
     usage: "Uso: ruscello-cli [--language en|it|system] get <url> [-o cartella] [-x connessioni]\n\
-    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --format <preset|id> --ytdlp <percorso> --ffmpeg <percorso> --progress --quiet --browser\n\
+    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --ftp-user <utente> --ftp-password <password> --format <preset|id> --ytdlp <percorso> --ffmpeg <percorso> --progress --quiet --browser\n\
     ruscello-cli inspect <url> [--browser] [--ytdlp <percorso>] [--ffmpeg <percorso>]\n\
     ruscello-cli import <file> [--dlc-fallback]\n\
     ruscello-cli queue <url>... [--paused]\n\

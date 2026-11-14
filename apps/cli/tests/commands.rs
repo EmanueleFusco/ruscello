@@ -111,3 +111,102 @@ async fn queues_and_queries_status_through_loopback_api() -> TestResult {
     engine.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn downloads_ftp_with_credentials_and_queues_via_api() -> TestResult {
+    let ftp = ruscello_testkit::MockFtpServer::start(ruscello_testkit::FtpServerOptions {
+        credentials: Some(("alice".to_owned(), "secret".to_owned())),
+        allow_tls: false,
+        require_tls: false,
+        drop_first_after_bytes: Some(2048),
+        ..ruscello_testkit::FtpServerOptions::default()
+    })
+    .await;
+    let payload: Vec<u8> = (0..(24 * 1024_usize))
+        .map(|index| ((index * 31) % 251) as u8)
+        .collect();
+    ftp.register_file("/pub/remote.bin", payload.clone());
+
+    let directory = tempfile::tempdir()?;
+    let destination = directory.path().join("ftp-dest");
+    let get_output = Command::new(env!("CARGO_BIN_EXE_ruscello-cli"))
+        .args([
+            "--language",
+            "en",
+            "get",
+            &ftp.url("ftp", "/pub/remote.bin"),
+            "--ftp-user",
+            "alice",
+            "--ftp-password",
+            "secret",
+            "--quiet",
+            "-o",
+        ])
+        .arg(&destination)
+        .env("RUSCELLO_LOG_DIR", directory.path().join("logs"))
+        .output()
+        .await?;
+    assert!(
+        get_output.status.success(),
+        "ftp get stderr: {}",
+        String::from_utf8_lossy(&get_output.stderr)
+    );
+    assert_eq!(std::fs::read(destination.join("remote.bin"))?, payload);
+    assert!(
+        ftp.observed_commands()
+            .iter()
+            .any(|cmd| cmd.starts_with("REST 2048")),
+        "expected REST resume in {:?}",
+        ftp.observed_commands()
+    );
+
+    let engine_dir = directory.path().join("engine");
+    let mut engine_options = ruscello_engine::EngineOptions::new(
+        engine_dir.join("queue.db"),
+        engine_dir.join("downloads"),
+    );
+    engine_options.data_dir = Some(engine_dir.clone());
+    let engine = ruscello_engine::EngineHandle::start(engine_options).await?;
+    let api_config = ruscello_api::ApiConfig {
+        data_dir: Some(engine_dir.clone()),
+        local_port: 0,
+        fallback_to_ephemeral_local_port: false,
+        ..ruscello_api::ApiConfig::default()
+    };
+    let api = ruscello_api::ApiServer::start(engine.clone(), api_config).await?;
+
+    let queued = Command::new(env!("CARGO_BIN_EXE_ruscello-cli"))
+        .args([
+            "--language",
+            "it",
+            "queue",
+            &format!("ftp://alice:secret@127.0.0.1:{}/pub/remote.bin", ftp.port()),
+            "--paused",
+        ])
+        .env("RUSCELLO_DATA_DIR", &engine_dir)
+        .env("RUSCELLO_LOG_DIR", directory.path().join("logs"))
+        .output()
+        .await?;
+    assert!(
+        queued.status.success(),
+        "ftp queue stderr: {}",
+        String::from_utf8_lossy(&queued.stderr)
+    );
+    assert!(String::from_utf8(queued.stdout)?.contains(": 1"));
+
+    let status = Command::new(env!("CARGO_BIN_EXE_ruscello-cli"))
+        .args(["--language", "en", "status"])
+        .env("RUSCELLO_DATA_DIR", &engine_dir)
+        .env("RUSCELLO_LOG_DIR", directory.path().join("logs"))
+        .output()
+        .await?;
+    assert!(status.status.success());
+    let status_out = String::from_utf8(status.stdout)?;
+    assert!(status_out.contains("remote.bin"));
+    // Verify embedded password is never exposed in status or snapshot
+    assert!(!status_out.contains("secret"));
+
+    api.shutdown().await;
+    engine.shutdown().await?;
+    Ok(())
+}

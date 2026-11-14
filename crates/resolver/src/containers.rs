@@ -14,7 +14,7 @@ const TAIL: usize = 88;
 const SERVICE_KEY: &[u8; 16] = b"cb99b5cbc24db398";
 const SERVICE_IV: &[u8; 16] = b"9bc24cb995cb8db3";
 static LINK: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r#"(?i)(?:https?://|magnet:\?)[^\s<>"']+"#).ok());
+    LazyLock::new(|| Regex::new(r#"(?i)(?:https?://|ftps?://|magnet:\?)[^\s<>"']+"#).ok());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedLink {
@@ -78,6 +78,11 @@ fn parse_link(value: &str) -> Option<Url> {
             .query_pairs()
             .any(|(name, _)| name == "xt")
             .then_some(url);
+    }
+    if matches!(url.scheme(), "ftp" | "ftps") {
+        url.host_str()?;
+        url.set_fragment(None);
+        return Some(url);
     }
     http::validate(&url).ok()?;
     url.set_fragment(None);
@@ -517,5 +522,21 @@ mod tests {
         assert_eq!(packages[0].links[0].filename.as_deref(), Some("file.jar"));
         assert_eq!(packages[0].links[0].mirrors.len(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn extracts_ftp_and_ftps_links() {
+        let extracted = links(
+            "Download ftp://files.example.org/pub/archive.tar.xz and ftps://alice:secret@secure.example.org:990/drop/part1.rar#top!",
+        );
+        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted[0].scheme(), "ftp");
+        assert_eq!(
+            extracted[0].as_str(),
+            "ftp://files.example.org/pub/archive.tar.xz"
+        );
+        assert_eq!(extracted[1].scheme(), "ftps");
+        assert_eq!(extracted[1].fragment(), None);
+        assert_eq!(extracted[1].username(), "alice");
     }
 }

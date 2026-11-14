@@ -6,6 +6,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- M9.1–M9.8: Automation & Post-Processing (`ruscello-platform`, `ruscello-http`, `ruscello-engine`,
+  `ruscello-api`, `ruscello-cli`, `ruscello-gui`):
+  - Time-of-day scheduler (`ScheduleSettings`, `ScheduleRule`, `WeekdayMask`, injectable `Clock`) with
+    speed-cap windows and automatic queue start/pause profiles, status bar indicator, and SQLite settings persistence.
+  - Queue completion actions (`DoNothing`, `Notify`, `Sleep`, `Shutdown`) with cancellable countdown banner,
+    notification/power backends across Windows/Linux/macOS (`SetThreadExecutionState`, `logind` D-Bus / `systemctl`,
+    `IOPMAssertion` / `pmset`), and active-download OS sleep inhibition.
+  - Sidecar checksum verification (`.sfv` CRC32, `.md5`, `.sha256` in GNU/BSD/bare formats with path-traversal
+    rejection), automatic post-download archive extraction in pure Rust (`.zip` deflate/AES/ZipCrypto, `.7z` with
+    password list, `.tar` / `.tar.gz` / `.tar.bz2` / `.tar.xz`, split `.001` parts), optional external `7z`/`unrar`
+    sidecar extraction for `.rar` (documented in `docs/adr/0010-archive-extraction-and-os-automation.md`),
+    multi-part package wait barrier, and optional archive cleanup.
+  - Watch folder scanner importing `.torrent`, `.dlc`, and `.txt` batches with stability checks and
+    configurable processed-file behavior (`MoveToProcessed`, `Delete`, `KeepTracked`).
+  - Quote-safe post-download user command hook with `{file}`, `{dir}`, `{name}`, `{package}`, `{category}`, `{url}`,
+    `{extracted_dir}` placeholders, `RUSCELLO_*` environment variables, and cancellation/timeout enforcement.
+  - Plain FTP and explicit FTPS (`suppaftp` + `rustls`) transfers with `SIZE`, `PASV`, TLS upgrades (`AUTH TLS`,
+    `PROT P`), and byte-offset resume via `REST`, redacting FTP passwords from logs, events, API responses,
+    checkpoints, GUI displays, and SQLite persistence; plus localized `Settings -> Automation` UI in English and Italian.
 - M8.1–M8.4: Local loopback API server & LAN Remote Web UI (`ruscello-api`, `axum`), integrated into
   `ruscello-gui` and `ruscello-cli` (`queue`, `status`), with dual listeners (`127.0.0.1` Bearer auth +
   strict extension-origin CORS and discovery file, plus dynamically toggleable `0.0.0.0:<port>` LAN mode with

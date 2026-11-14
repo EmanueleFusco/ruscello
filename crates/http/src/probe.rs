@@ -9,7 +9,7 @@ use crate::filename::suggest_filename;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
-    #[error("only HTTP and HTTPS URLs are supported")]
+    #[error("only HTTP, HTTPS, FTP, and FTPS URLs are supported")]
     UnsupportedScheme,
     #[error("HTTP request failed")]
     Request(#[source] reqwest::Error),
@@ -28,6 +28,10 @@ pub enum HttpError {
     ExpiredRepresentation,
     #[error("the host requires browser verification")]
     VerificationRequired,
+    #[error("FTP authentication failed")]
+    FtpAuthentication,
+    #[error("FTP transfer failed: {message}")]
+    Ftp { message: String, transient: bool },
     #[error("the link could not be resolved")]
     ResolutionFailed,
     #[error("download cancelled")]

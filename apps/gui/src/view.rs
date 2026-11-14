@@ -8,7 +8,7 @@ use iced::{
 use ruscello_core::{Download, Source, Status, TorrentSource};
 use ruscello_engine::{
     CandidateGroup, EngineLog, FormatPreset, MediaInspection, MediaKind, PieceBucketState,
-    ScoreReason, TorrentDetailsSnapshot, TorrentFilePriority, TorrentPeerState,
+    PostProcessStage, ScoreReason, TorrentDetailsSnapshot, TorrentFilePriority, TorrentPeerState,
     TorrentPeerTransport, TorrentPieceMap, TorrentTrackerStatus,
 };
 
@@ -19,7 +19,7 @@ use crate::{
     i18n::{self, Strings},
     icons::{self, icon},
     queue::{self, FILE_TYPES, ListRow, ROW_HEIGHT, StatusFilter},
-    settings::{Page, UpdateStatus},
+    settings::{self, Page, UpdateStatus},
     settings_view, theme,
 };
 
@@ -58,6 +58,31 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
         .into()
     };
     let mut body = column![content].spacing(8);
+    if let Some((action, remaining_secs)) = app.queue.completion_countdown {
+        body = body.push(
+            container(
+                row![
+                    text(app.strings.with(
+                        "completion-countdown-banner",
+                        [
+                            (
+                                "action",
+                                app.strings.get(settings::completion_action_key(action))
+                            ),
+                            ("seconds", remaining_secs.to_string()),
+                        ],
+                    ))
+                    .width(Fill),
+                    theme::action(text(app.strings.get("cancel")))
+                        .on_press(Message::CancelCompletionCountdown),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(8),
+            )
+            .padding([6, 10])
+            .style(theme::panel),
+        );
+    }
     if let Some(message) = app.banner {
         body = body.push(
             container(
@@ -604,6 +629,13 @@ fn status_key(q: &queue::Queue, download: &Download) -> &'static str {
         "offline"
     } else if matches!(download.source, Source::Torrent(_)) && status == Status::Resolving {
         "fetching-metadata"
+    } else if status == Status::PostProcessing {
+        match q.post_processing_stage(download.id) {
+            Some(PostProcessStage::VerifyingChecksum) => "post-verifying-checksum",
+            Some(PostProcessStage::ExtractingArchive) => "post-extracting-archive",
+            Some(PostProcessStage::RunningCommand) => "post-running-command",
+            None => "post-processing",
+        }
     } else {
         i18n::status(status)
     }
@@ -1016,6 +1048,20 @@ fn status_bar(app: &App) -> Element<'_, Message> {
                 .style(muted),
         );
     }
+    if q.schedule.pause_queue {
+        status = status.push(
+            text(l.get("schedule-paused-indicator"))
+                .size(12)
+                .style(muted),
+        );
+    } else if let Some(sched_bps) = q.schedule.speed_limit_bytes_per_sec {
+        let label = if sched_bps == 0 {
+            l.get("schedule-full-speed-indicator")
+        } else {
+            l.with("schedule-limit-indicator", [("speed", rate(l, sched_bps))])
+        };
+        status = status.push(text(label).size(12).style(muted));
+    }
     status = status
         .push(space::horizontal().width(Fill))
         .push(icon('\u{e0ed}').size(14).style(muted))
@@ -1073,6 +1119,16 @@ pub(crate) fn log_key(message: EngineLog) -> &'static str {
         EngineLog::DiskSpaceLow => "log-disk",
         EngineLog::TorrentSessionInitFailed => "log-torrent-session",
         EngineLog::VerificationRequired => "waiting-user",
+        EngineLog::ChecksumVerified => "log-checksum-verified",
+        EngineLog::ChecksumFailed => "log-checksum-failed",
+        EngineLog::ArchiveExtracted => "log-archive-extracted",
+        EngineLog::ArchiveExtractionFailed => "log-archive-extraction-failed",
+        EngineLog::PostProcessCommandExecuted => "log-post-command-executed",
+        EngineLog::PostProcessCommandFailed => "log-post-command-failed",
+        EngineLog::WatchFolderImported => "log-watch-imported",
+        EngineLog::SchedulePausedQueue => "log-schedule-paused",
+        EngineLog::ScheduleResumedQueue => "log-schedule-resumed",
+        EngineLog::CompletionActionFailed => "log-completion-failed",
     }
 }
 

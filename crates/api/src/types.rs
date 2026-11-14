@@ -270,7 +270,10 @@ pub(crate) fn file_type_name(ft: FileType) -> &'static str {
 
 pub(crate) fn source_summary(source: &Source) -> String {
     match source {
-        Source::Http { url } | Source::Hoster { url } | Source::Media { url } => url.clone(),
+        Source::Http { url }
+        | Source::Ftp { url }
+        | Source::Hoster { url }
+        | Source::Media { url } => url.clone(),
         Source::Torrent(TorrentSource::Magnet(uri)) => uri.clone(),
         Source::Torrent(TorrentSource::Url(url)) => url.clone(),
         Source::Torrent(TorrentSource::File(path)) => path.to_string_lossy().into_owned(),

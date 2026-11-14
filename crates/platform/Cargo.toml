@@ -11,11 +11,25 @@ publish.workspace = true
 [dependencies]
 ruscello-core.workspace = true
 directories.workspace = true
+serde.workspace = true
 sys-locale.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "sync"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Power",
+    "Win32_System_Shutdown",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

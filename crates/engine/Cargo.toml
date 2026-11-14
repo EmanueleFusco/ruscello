@@ -9,9 +9,16 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+bzip2-rs.workspace = true
+chrono.workspace = true
+crc32fast.workspace = true
+flate2.workspace = true
 fs4.workspace = true
 getrandom.workspace = true
+hex.workspace = true
 infer.workspace = true
+lzma-rs.workspace = true
+md-5.workspace = true
 mime_guess.workspace = true
 percent-encoding.workspace = true
 regex.workspace = true
@@ -19,19 +26,28 @@ ruscello-browser.workspace = true
 ruscello-core.workspace = true
 ruscello-http.workspace = true
 ruscello-media.workspace = true
+ruscello-platform.workspace = true
 ruscello-resolver.workspace = true
 ruscello-storage.workspace = true
 ruscello-torrent.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sevenz-rust2.workspace = true
+sha2.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "sync"] }
+tokio = { workspace = true, features = ["fs", "process", "sync"] }
 tokio-util.workspace = true
 tracing.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
+aes.workspace = true
+base64.workspace = true
+cbc.workspace = true
 ruscello-testkit.workspace = true
+sevenz-rust2 = { workspace = true, features = ["compress"] }
 
 [lints]
 workspace = true

@@ -89,11 +89,7 @@ impl ExpectedChecksum {
         digest.finalize().into()
     }
 
-    pub(crate) fn verify(
-        &self,
-        reader: impl Read,
-        cancellation: &CancellationToken,
-    ) -> io::Result<bool> {
+    pub fn verify(&self, reader: impl Read, cancellation: &CancellationToken) -> io::Result<bool> {
         let expected = self.value.as_slice();
         match self.algorithm {
             ChecksumAlgorithm::Md5 => verify_digest::<Md5>(reader, expected, cancellation),

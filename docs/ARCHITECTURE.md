@@ -191,7 +191,7 @@ expect_download = true
 | Config / Serde | `serde`, `toml` |
 | Webview | `wry`, `tao` (isolated to `apps/webview`) |
 | OS Integration & Updater | `directories`, `keyring`, `single-instance` (or custom named pipe / Unix socket), `sysinfo` (disk space), `zbus` (Linux), `windows` (Win32), `semver`, `self-replace` (in-app GitHub Release self-updater) |
-| Files / Archives / Crypto | `infer` (magic bytes), `zip`, `sevenz-rust2`, `tar`, `flate2`, `sha2`, `md-5`, `sha1`, `crc32fast`, `aes`, `cbc`, `base64` (`.dlc` container decryption & HLS AES-128) |
+| Files / Archives / Crypto | `infer` (magic bytes), `zip`, `sevenz-rust2`, `tar`, `flate2`, `bzip2-rs`, `lzma-rs`, `sha2`, `md-5`, `sha1`, `crc32fast`, `aes`, `cbc`, `base64` (`.dlc` container decryption & HLS AES-128) |
 | Logging | `tracing`, `tracing-subscriber`, `tracing-appender` |
 | Localization (i18n) | `fluent`, `fluent-langneg`, `sys-locale` (`en` + `it` bundles, runtime switchable) |
 | Testing | `proptest`, `insta`, `tempfile`, `axum` (testkit), `criterion`, `cargo-nextest`, `cargo-fuzz` |

@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Input {
     Http(Url),
+    Ftp(Url),
     Torrent(String),
     Dlc(PathBuf),
     Text(PathBuf),
@@ -47,6 +48,10 @@ impl Input {
         {
             return Some(Self::Torrent(value.to_owned()));
         }
+        if matches!(url.scheme(), "ftp" | "ftps") && url.host_str().is_some() {
+            url.set_fragment(None);
+            return Some(Self::Ftp(url));
+        }
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -64,6 +69,7 @@ impl Input {
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Http(url) => url.to_string(),
+            Self::Ftp(url) => ruscello_engine::sanitize_ftp_url(url).to_string(),
             Self::Torrent(value) | Self::Invalid(value) => value.clone(),
             Self::Dlc(path) | Self::Text(path) => path.to_string_lossy().into_owned(),
         }
@@ -72,6 +78,7 @@ impl Input {
     pub(crate) fn key(&self) -> &'static str {
         match self {
             Self::Http(_) => "direct-link",
+            Self::Ftp(_) => "ftp-link",
             Self::Torrent(_) => "torrent-input",
             Self::Dlc(_) => "dlc-input",
             Self::Text(_) => "link-list",
@@ -377,6 +384,7 @@ impl Dialog {
             && (!self.selected_links.is_empty()
                 || self.entries.iter().any(|input| match input {
                     Input::Http(url) => self.is_ready(url),
+                    Input::Ftp(_) => true,
                     Input::Torrent(key) => self.is_torrent_submittable(key),
                     _ => false,
                 }))
@@ -730,6 +738,12 @@ impl Dialog {
                     }
                     Some(request)
                 }
+                Input::Ftp(url) => {
+                    if !seen.insert(url.clone()) {
+                        return None;
+                    }
+                    self.link_request(url, None, None)
+                }
                 Input::Torrent(key) => {
                     if !self.is_torrent_submittable(key)
                         || Url::parse(key).is_ok_and(|url| !seen.insert(url))
@@ -764,7 +778,7 @@ impl Dialog {
 
     fn imported_request(&self, link: &ImportedLink) -> Option<AddDownload> {
         let mut request = self.link_request(&link.url, link.filename.clone(), link.size)?;
-        if matches!(request.source, Source::Http { .. }) {
+        if matches!(request.source, Source::Http { .. } | Source::Ftp { .. }) {
             request.output_filename.clone_from(&link.filename);
             if request.checksum.is_none() {
                 request.checksum.clone_from(&link.checksum);
@@ -818,6 +832,7 @@ impl Dialog {
     ) -> Option<AddDownload> {
         let source = match Input::url(url.as_str())? {
             Input::Http(url) => Source::Http { url: url.into() },
+            Input::Ftp(url) => Source::Ftp { url: url.into() },
             Input::Torrent(key) => Source::Torrent(torrent_source(&key)),
             _ => return None,
         };
@@ -936,6 +951,40 @@ mod tests {
             reqs[2].media.as_ref().map(|m| m.kind),
             Some(MediaKind::Dash)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recognizes_ftp_and_ftps_inputs_and_masks_label_passwords() -> anyhow::Result<()> {
+        let entries = parse(
+            "ftp://alice:secret@files.example.test/archive.zip#frag\nftps://mirror.example.test/backup.tar.gz\n",
+        );
+        assert_eq!(
+            entries.iter().map(Input::key).collect::<Vec<_>>(),
+            ["ftp-link", "ftp-link"]
+        );
+        assert_eq!(
+            entries[0].label(),
+            "ftp://alice@files.example.test/archive.zip"
+        );
+        assert!(!entries[0].label().contains("secret"));
+
+        let dialog = Dialog {
+            entries,
+            ..Dialog::default()
+        };
+        assert!(dialog.can_submit());
+        let groups = dialog.requests("Batch".to_owned());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1.len(), 2);
+        assert!(matches!(
+            &groups[0].1[0].source,
+            Source::Ftp { url } if url == "ftp://alice:secret@files.example.test/archive.zip"
+        ));
+        assert!(matches!(
+            &groups[0].1[1].source,
+            Source::Ftp { url } if url == "ftps://mirror.example.test/backup.tar.gz"
+        ));
         Ok(())
     }
 }

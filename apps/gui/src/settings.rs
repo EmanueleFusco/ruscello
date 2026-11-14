@@ -5,7 +5,11 @@ use std::{
     time::Duration,
 };
 
-use ruscello_engine::Limits;
+use ruscello_engine::{
+    AutomationSettings, Limits, OutsideHoursAction, PostProcessingSettings, QueueCompletionAction,
+    ScheduleAction, ScheduleRule, ScheduleSettings, WatchFolderRule, WatchFolderSettings,
+    WatchProcessedBehavior, WeekdayMask, format_minutes, parse_hhmm,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +18,7 @@ pub(crate) enum Page {
     General,
     Downloads,
     Speed,
+    Automation,
     Torrent,
     Categories,
     Integrations,
@@ -23,10 +28,11 @@ pub(crate) enum Page {
 }
 
 impl Page {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::General,
         Self::Downloads,
         Self::Speed,
+        Self::Automation,
         Self::Torrent,
         Self::Categories,
         Self::Integrations,
@@ -40,6 +46,7 @@ impl Page {
             Self::General => "general",
             Self::Downloads => "downloads",
             Self::Speed => "speed",
+            Self::Automation => "automation",
             Self::Torrent => "torrent-input",
             Self::Categories => "categories",
             Self::Integrations => "integrations",
@@ -163,6 +170,368 @@ pub(crate) async fn pick_folder() -> Option<PathBuf> {
         .pick_folder()
         .await
         .map(|folder| folder.path().to_path_buf())
+}
+
+pub(crate) async fn pick_file() -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .pick_file()
+        .await
+        .map(|file| file.path().to_path_buf())
+}
+
+pub(crate) const COMPLETION_ACTIONS: [QueueCompletionAction; 4] = [
+    QueueCompletionAction::Nothing,
+    QueueCompletionAction::Notify,
+    QueueCompletionAction::Sleep,
+    QueueCompletionAction::Shutdown,
+];
+
+pub(crate) const WATCH_BEHAVIORS: [WatchProcessedBehavior; 3] = [
+    WatchProcessedBehavior::MoveToProcessed,
+    WatchProcessedBehavior::Delete,
+    WatchProcessedBehavior::KeepTracked,
+];
+
+pub(crate) fn completion_action_key(action: QueueCompletionAction) -> &'static str {
+    match action {
+        QueueCompletionAction::Nothing => "completion-nothing",
+        QueueCompletionAction::Notify => "completion-notify",
+        QueueCompletionAction::Sleep => "completion-sleep",
+        QueueCompletionAction::Shutdown => "completion-shutdown",
+    }
+}
+
+pub(crate) fn watch_behavior_key(behavior: WatchProcessedBehavior) -> &'static str {
+    match behavior {
+        WatchProcessedBehavior::MoveToProcessed => "watch-behavior-move",
+        WatchProcessedBehavior::Delete => "watch-behavior-delete",
+        WatchProcessedBehavior::KeepTracked => "watch-behavior-keep",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutsideHoursMode {
+    UseGlobalDefault,
+    LimitSpeed,
+    PauseQueue,
+}
+
+impl OutsideHoursMode {
+    pub(crate) const ALL: [Self; 3] = [Self::UseGlobalDefault, Self::LimitSpeed, Self::PauseQueue];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::UseGlobalDefault => "schedule-outside-global",
+            Self::LimitSpeed => "schedule-outside-limit",
+            Self::PauseQueue => "schedule-outside-pause",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScheduleRuleMode {
+    FullSpeed,
+    SpeedLimit,
+    PauseQueue,
+}
+
+impl ScheduleRuleMode {
+    pub(crate) const ALL: [Self; 3] = [Self::FullSpeed, Self::SpeedLimit, Self::PauseQueue];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::FullSpeed => "schedule-action-full",
+            Self::SpeedLimit => "schedule-action-limit",
+            Self::PauseQueue => "schedule-action-pause",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ScheduleRuleDraft {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) days: WeekdayMask,
+    pub(crate) start_hhmm: String,
+    pub(crate) end_hhmm: String,
+    pub(crate) mode: ScheduleRuleMode,
+    pub(crate) speed_bps: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WatchFolderDraft {
+    pub(crate) id: String,
+    pub(crate) enabled: bool,
+    pub(crate) directory: String,
+    pub(crate) import_torrents: bool,
+    pub(crate) import_dlc: bool,
+    pub(crate) import_txt: bool,
+    pub(crate) category: String,
+    pub(crate) processed_behavior: WatchProcessedBehavior,
+}
+
+#[derive(Clone)]
+pub(crate) struct AutomationDraft {
+    pub(crate) prevent_sleep_when_active: bool,
+    pub(crate) completion_action: QueueCompletionAction,
+    pub(crate) completion_countdown_secs: String,
+    pub(crate) schedule_enabled: bool,
+    pub(crate) outside_mode: OutsideHoursMode,
+    pub(crate) outside_speed_bps: String,
+    pub(crate) schedule_rules: Vec<ScheduleRuleDraft>,
+    pub(crate) auto_verify_checksums: bool,
+    pub(crate) auto_extract: bool,
+    pub(crate) extract_into_subfolder: bool,
+    pub(crate) delete_archives_after_extraction: bool,
+    pub(crate) archive_passwords: Vec<String>,
+    pub(crate) new_archive_password: String,
+    pub(crate) external_extractor_path: String,
+    pub(crate) post_download_command: String,
+    pub(crate) post_download_timeout_secs: String,
+    pub(crate) watch_enabled: bool,
+    pub(crate) watch_poll_interval_secs: String,
+    pub(crate) watch_rules: Vec<WatchFolderDraft>,
+}
+
+impl std::fmt::Debug for AutomationDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AutomationDraft")
+            .field("prevent_sleep_when_active", &self.prevent_sleep_when_active)
+            .field("completion_action", &self.completion_action)
+            .field("schedule_enabled", &self.schedule_enabled)
+            .field("schedule_rules", &self.schedule_rules.len())
+            .field("auto_verify_checksums", &self.auto_verify_checksums)
+            .field("auto_extract", &self.auto_extract)
+            .field("archive_passwords", &self.archive_passwords.len())
+            .field("watch_enabled", &self.watch_enabled)
+            .field("watch_rules", &self.watch_rules.len())
+            .finish()
+    }
+}
+
+impl Default for AutomationDraft {
+    fn default() -> Self {
+        Self::from_settings(&AutomationSettings::default())
+    }
+}
+
+impl AutomationDraft {
+    pub(crate) fn from_settings(settings: &AutomationSettings) -> Self {
+        let (outside_mode, outside_speed_bps) = match settings.schedule.outside_hours {
+            OutsideHoursAction::UseGlobalDefault => {
+                (OutsideHoursMode::UseGlobalDefault, "262144".to_owned())
+            }
+            OutsideHoursAction::LimitSpeed { max_bytes_per_sec } => {
+                (OutsideHoursMode::LimitSpeed, max_bytes_per_sec.to_string())
+            }
+            OutsideHoursAction::PauseQueue => (OutsideHoursMode::PauseQueue, "262144".to_owned()),
+        };
+        let schedule_rules = settings
+            .schedule
+            .rules
+            .iter()
+            .map(|rule| {
+                let (mode, speed_bps) = match rule.action {
+                    ScheduleAction::FullSpeed => (ScheduleRuleMode::FullSpeed, "524288".to_owned()),
+                    ScheduleAction::SpeedLimit { max_bytes_per_sec } => {
+                        (ScheduleRuleMode::SpeedLimit, max_bytes_per_sec.to_string())
+                    }
+                    ScheduleAction::PauseQueue => {
+                        (ScheduleRuleMode::PauseQueue, "524288".to_owned())
+                    }
+                };
+                ScheduleRuleDraft {
+                    id: rule.id.clone(),
+                    name: rule.name.clone(),
+                    enabled: rule.enabled,
+                    days: rule.days,
+                    start_hhmm: format_minutes(rule.start_minute),
+                    end_hhmm: format_minutes(rule.end_minute),
+                    mode,
+                    speed_bps,
+                }
+            })
+            .collect();
+        let watch_rules = settings
+            .watch_folders
+            .rules
+            .iter()
+            .map(|rule| WatchFolderDraft {
+                id: rule.id.clone(),
+                enabled: rule.enabled,
+                directory: rule.directory.to_string_lossy().into_owned(),
+                import_torrents: rule.import_torrents,
+                import_dlc: rule.import_dlc,
+                import_txt: rule.import_txt,
+                category: rule.category.clone().unwrap_or_default(),
+                processed_behavior: rule.processed_behavior,
+            })
+            .collect();
+        Self {
+            prevent_sleep_when_active: settings.prevent_sleep_when_active,
+            completion_action: settings.completion_action,
+            completion_countdown_secs: settings.completion_countdown_secs.to_string(),
+            schedule_enabled: settings.schedule.enabled,
+            outside_mode,
+            outside_speed_bps,
+            schedule_rules,
+            auto_verify_checksums: settings.post_processing.auto_verify_checksums,
+            auto_extract: settings.post_processing.auto_extract,
+            extract_into_subfolder: settings.post_processing.extract_into_subfolder,
+            delete_archives_after_extraction: settings
+                .post_processing
+                .delete_archives_after_extraction,
+            archive_passwords: settings.post_processing.archive_passwords.clone(),
+            new_archive_password: String::new(),
+            external_extractor_path: settings
+                .post_processing
+                .external_extractor_path
+                .as_ref()
+                .map_or_else(String::new, |path| path.to_string_lossy().into_owned()),
+            post_download_command: settings
+                .post_processing
+                .post_download_command
+                .clone()
+                .unwrap_or_default(),
+            post_download_timeout_secs: settings
+                .post_processing
+                .post_download_timeout_secs
+                .to_string(),
+            watch_enabled: settings.watch_folders.enabled,
+            watch_poll_interval_secs: settings.watch_folders.poll_interval_secs.to_string(),
+            watch_rules,
+        }
+    }
+
+    pub(crate) fn add_schedule_rule(&mut self) {
+        let mut index = self.schedule_rules.len() + 1;
+        while self
+            .schedule_rules
+            .iter()
+            .any(|rule| rule.id == format!("rule-{index}"))
+        {
+            index += 1;
+        }
+        self.schedule_rules.push(ScheduleRuleDraft {
+            id: format!("rule-{index}"),
+            name: format!("Rule {index}"),
+            enabled: true,
+            days: WeekdayMask::EVERY_DAY,
+            start_hhmm: "23:00".to_owned(),
+            end_hhmm: "07:00".to_owned(),
+            mode: ScheduleRuleMode::FullSpeed,
+            speed_bps: "1048576".to_owned(),
+        });
+    }
+
+    pub(crate) fn add_watch_rule(&mut self, directory: PathBuf) {
+        let mut index = self.watch_rules.len() + 1;
+        while self
+            .watch_rules
+            .iter()
+            .any(|rule| rule.id == format!("watch-{index}"))
+        {
+            index += 1;
+        }
+        self.watch_rules.push(WatchFolderDraft {
+            id: format!("watch-{index}"),
+            enabled: true,
+            directory: directory.to_string_lossy().into_owned(),
+            import_torrents: true,
+            import_dlc: true,
+            import_txt: true,
+            category: String::new(),
+            processed_behavior: WatchProcessedBehavior::MoveToProcessed,
+        });
+    }
+
+    pub(crate) fn to_settings(&self) -> Option<AutomationSettings> {
+        let completion_countdown_secs =
+            self.completion_countdown_secs.trim().parse::<u64>().ok()?;
+        let outside_hours = match self.outside_mode {
+            OutsideHoursMode::UseGlobalDefault => OutsideHoursAction::UseGlobalDefault,
+            OutsideHoursMode::LimitSpeed => OutsideHoursAction::LimitSpeed {
+                max_bytes_per_sec: self.outside_speed_bps.trim().parse::<u64>().ok()?,
+            },
+            OutsideHoursMode::PauseQueue => OutsideHoursAction::PauseQueue,
+        };
+        let mut rules = Vec::with_capacity(self.schedule_rules.len());
+        for draft in &self.schedule_rules {
+            let start_minute = parse_hhmm(draft.start_hhmm.trim())?;
+            let end_minute = parse_hhmm(draft.end_hhmm.trim())?;
+            let action = match draft.mode {
+                ScheduleRuleMode::FullSpeed => ScheduleAction::FullSpeed,
+                ScheduleRuleMode::SpeedLimit => ScheduleAction::SpeedLimit {
+                    max_bytes_per_sec: draft.speed_bps.trim().parse::<u64>().ok()?,
+                },
+                ScheduleRuleMode::PauseQueue => ScheduleAction::PauseQueue,
+            };
+            rules.push(ScheduleRule {
+                id: draft.id.clone(),
+                name: draft.name.trim().to_owned(),
+                enabled: draft.enabled,
+                days: draft.days,
+                start_minute,
+                end_minute,
+                action,
+            });
+        }
+        let post_download_timeout_secs =
+            self.post_download_timeout_secs.trim().parse::<u64>().ok()?;
+        let watch_poll_interval_secs = self.watch_poll_interval_secs.trim().parse::<u64>().ok()?;
+        let mut watch_rules = Vec::with_capacity(self.watch_rules.len());
+        for draft in &self.watch_rules {
+            let dir = draft.directory.trim();
+            if dir.is_empty() {
+                return None;
+            }
+            let category = draft.category.trim();
+            watch_rules.push(WatchFolderRule {
+                id: draft.id.clone(),
+                enabled: draft.enabled,
+                directory: PathBuf::from(dir),
+                import_torrents: draft.import_torrents,
+                import_dlc: draft.import_dlc,
+                import_txt: draft.import_txt,
+                category: (!category.is_empty()).then(|| category.to_owned()),
+                destination: None,
+                processed_behavior: draft.processed_behavior,
+            });
+        }
+        let external_extractor = self.external_extractor_path.trim();
+        let command = self.post_download_command.trim();
+        Some(
+            AutomationSettings {
+                schedule: ScheduleSettings {
+                    enabled: self.schedule_enabled,
+                    rules,
+                    outside_hours,
+                },
+                prevent_sleep_when_active: self.prevent_sleep_when_active,
+                completion_action: self.completion_action,
+                completion_countdown_secs,
+                post_processing: PostProcessingSettings {
+                    auto_verify_checksums: self.auto_verify_checksums,
+                    auto_extract: self.auto_extract,
+                    extract_into_subfolder: self.extract_into_subfolder,
+                    delete_archives_after_extraction: self.delete_archives_after_extraction,
+                    archive_passwords: self.archive_passwords.clone(),
+                    external_extractor_path: (!external_extractor.is_empty())
+                        .then(|| PathBuf::from(external_extractor)),
+                    post_download_command: (!command.is_empty()).then(|| command.to_owned()),
+                    post_download_timeout_secs,
+                },
+                watch_folders: WatchFolderSettings {
+                    enabled: self.watch_enabled,
+                    poll_interval_secs: watch_poll_interval_secs.max(1),
+                    rules: watch_rules,
+                },
+            }
+            .normalized(),
+        )
+    }
 }
 
 pub(crate) async fn lan_address() -> Option<IpAddr> {
@@ -432,6 +801,30 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("valid draft rejected"))?;
         assert_eq!(edited.retries, 4);
         assert_eq!(edited.bandwidth.map(NonZeroU64::get), Some(1_048_576));
+        Ok(())
+    }
+
+    #[test]
+    fn automation_draft_validates_schedule_times_and_watch_directories() -> anyhow::Result<()> {
+        let mut draft = AutomationDraft::default();
+        draft.add_schedule_rule();
+        draft.add_watch_rule(PathBuf::from("/tmp/watch-folder"));
+        draft.completion_action = QueueCompletionAction::Sleep;
+        draft.completion_countdown_secs = "45".to_owned();
+        draft.auto_extract = true;
+        draft.archive_passwords.push("secret".to_owned());
+
+        let settings = draft
+            .to_settings()
+            .ok_or_else(|| anyhow::anyhow!("expected valid automation draft"))?;
+        assert_eq!(settings.completion_action, QueueCompletionAction::Sleep);
+        assert_eq!(settings.completion_countdown_secs, 45);
+        assert_eq!(settings.schedule.rules.len(), 1);
+        assert_eq!(settings.watch_folders.rules.len(), 1);
+        assert!(settings.post_processing.auto_extract);
+
+        draft.schedule_rules[0].start_hhmm = "25:99".to_owned();
+        assert!(draft.to_settings().is_none());
         Ok(())
     }
 }

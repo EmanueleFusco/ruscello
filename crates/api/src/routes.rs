@@ -742,13 +742,18 @@ fn add_request_from_str(raw: &str) -> Option<AddDownload> {
         ))));
     }
     let url = Url::parse(raw).ok()?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+    if !matches!(url.scheme(), "http" | "https" | "ftp" | "ftps") || url.host_str().is_none() {
         return None;
     }
     Some(add_request_from_url(&url))
 }
 
 fn add_request_from_url(url: &Url) -> AddDownload {
+    if matches!(url.scheme(), "ftp" | "ftps") {
+        return AddDownload::new(Source::Ftp {
+            url: url.to_string(),
+        });
+    }
     if url.path().to_ascii_lowercase().ends_with(".torrent") {
         return AddDownload::new(Source::Torrent(TorrentSource::Url(url.to_string())));
     }

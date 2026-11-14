@@ -20,7 +20,7 @@ pub(crate) fn normalize(input: &std::ffi::OsStr) -> String {
         {
             return path.to_string_lossy().into_owned();
         }
-        if matches!(url.scheme(), "http" | "https" | "magnet") {
+        if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps" | "magnet") {
             return value.into_owned();
         }
     }
@@ -214,6 +214,8 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("First instance was not primary"))?;
         let inputs = vec![
             "https://example.test/download".to_owned(),
+            "ftp://example.test/archive.zip".to_owned(),
+            "ftps://example.test/secure.tar.gz".to_owned(),
             "magnet:?xt=urn:btih:abc".to_owned(),
             "example.torrent".to_owned(),
             "example.dlc".to_owned(),

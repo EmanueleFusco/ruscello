@@ -5,16 +5,17 @@ use iced_test::{
 };
 use ruscello_core::{Download, DownloadId, Source, Status, TorrentSource};
 use ruscello_engine::{
-    DlcKeyService, EngineEvent, EngineHandle, EngineOptions, SidecarEndpoints, SidecarKind,
-    TorrentDetailsSnapshot, TorrentFilePriority, TorrentFileProgress, TorrentPeerInfo,
-    TorrentPeerState, TorrentPeerTransport, TorrentPieceMap, TorrentRuntimeProgress,
-    TorrentSessionTelemetry, TorrentSettings, TorrentTrackerInfo, TorrentTrackerStatus,
+    DlcKeyService, EngineEvent, EngineHandle, EngineOptions, PostProcessStage,
+    QueueCompletionAction, ScheduleDecision, SidecarEndpoints, SidecarKind, TorrentDetailsSnapshot,
+    TorrentFilePriority, TorrentFileProgress, TorrentPeerInfo, TorrentPeerState,
+    TorrentPeerTransport, TorrentPieceMap, TorrentRuntimeProgress, TorrentSessionTelemetry,
+    TorrentSettings, TorrentTrackerInfo, TorrentTrackerStatus, WatchProcessedBehavior,
 };
-use ruscello_testkit::{FileSpec, Reply, TestServer};
+use ruscello_testkit::{FileSpec, FtpServerOptions, MockFtpServer, Reply, TestServer};
 
 use crate::{
     actions::Action as RowAction,
-    app::{App, DETAILS_COLLAPSED_HEIGHT, DetailTab, Message},
+    app::{App, AutomationMsg, DETAILS_COLLAPSED_HEIGHT, DetailTab, Message},
     desktop::{Receiver, Startup},
     i18n::Strings,
     preferences::{Locale, Preferences},
@@ -110,7 +111,11 @@ async fn adds_pauses_resumes_and_removes_a_loopback_download() -> anyhow::Result
     ))
     .await?;
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
     let message = click(&app, "Add")?;
     let _ = app.update(message);
     let edit = app.update(Message::EditAdd(text_editor::Action::Edit(
@@ -136,18 +141,18 @@ async fn adds_pauses_resumes_and_removes_a_loopback_download() -> anyhow::Result
             .map(std::num::NonZeroUsize::get),
         Some(2)
     );
-    apply(&mut app, Message::Snapshot(Some(snapshot))).await;
+    apply(&mut app, Message::Snapshot(Some(Box::new(snapshot)))).await;
     let name = crate::queue::display_name(&engine.snapshot().await?.downloads[0]);
     assert!(simulator(&app).find(name.as_str()).is_ok());
     let _ = app.update(Message::Select(id));
     apply(&mut app, Message::RowAction(RowAction::TogglePause)).await;
     let snapshot = engine.snapshot().await?;
     assert_ne!(snapshot.downloads[0].status(), Status::Paused);
-    apply(&mut app, Message::Snapshot(Some(snapshot))).await;
+    apply(&mut app, Message::Snapshot(Some(Box::new(snapshot)))).await;
     apply(&mut app, Message::RowAction(RowAction::TogglePause)).await;
     let snapshot = engine.snapshot().await?;
     assert_eq!(snapshot.downloads[0].status(), Status::Paused);
-    apply(&mut app, Message::Snapshot(Some(snapshot))).await;
+    apply(&mut app, Message::Snapshot(Some(Box::new(snapshot)))).await;
     let _ = app.update(Message::RowAction(RowAction::Cancel));
     assert!(
         simulator(&app)
@@ -441,7 +446,11 @@ async fn selects_linkgrabber_targets_and_persists_imported_packages() -> anyhow:
     ));
     let engine = EngineHandle::start(options).await?;
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
     apply(&mut app, Message::Incoming(vec![page])).await;
     apply(&mut app, Message::Files(vec![container])).await;
     let dialog = app
@@ -536,7 +545,11 @@ async fn inspects_selects_files_adds_torrent_and_saves_bittorrent_settings() -> 
     client_options.torrent = TorrentSettings::offline_ephemeral();
     let engine = EngineHandle::start(client_options).await?;
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
 
     let open = click(&app, "Add")?;
     let _ = app.update(open);
@@ -574,7 +587,7 @@ async fn inspects_selects_files_adds_torrent_and_saves_bittorrent_settings() -> 
         .first()
         .map(|download| download.id)
         .ok_or_else(|| anyhow::anyhow!("Torrent download was not queued"))?;
-    apply(&mut app, Message::Snapshot(Some(snapshot))).await;
+    apply(&mut app, Message::Snapshot(Some(Box::new(snapshot)))).await;
     apply(&mut app, Message::Select(id)).await;
 
     let details = engine
@@ -827,7 +840,11 @@ async fn shows_verification_action_and_cookie_import_in_both_languages() -> anyh
         }
     }).await??;
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
     apply(&mut app, Message::Select(id)).await;
     assert!(
         matches!(click(&app, "Open verification")?, Message::OpenVerification(selected) if selected == id)
@@ -982,7 +999,11 @@ async fn inspects_hls_formats_and_downloads_selected_quality() -> anyhow::Result
     .await?;
     let mut events = engine.subscribe();
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
 
     apply(&mut app, Message::Incoming(vec![master_url.clone()])).await;
     assert!(simulator(&app).find("demo_video").is_ok());
@@ -1101,7 +1122,11 @@ async fn manages_sidecars_and_ytdlp_playlists_in_both_languages() -> anyhow::Res
     let engine = EngineHandle::start(options).await?;
     let mut events = engine.subscribe();
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
 
     apply(&mut app, Message::Settings(true)).await;
     apply(&mut app, Message::SettingsPage(Page::Integrations)).await;
@@ -1201,7 +1226,11 @@ async fn lan_webui_settings_display_qr_auth_and_live_toggle() -> anyhow::Result<
     options.data_dir = Some(temp.path().to_path_buf());
     let engine = EngineHandle::start(options).await?;
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
 
     let free_port = std::net::TcpListener::bind("127.0.0.1:0")?
         .local_addr()?
@@ -1344,7 +1373,11 @@ async fn one_click_extension_pairing_forwards_linkgrabber_and_revokes() -> anyho
     options.data_dir = Some(temp.path().to_path_buf());
     let engine = EngineHandle::start(options).await?;
     apply(&mut app, Message::Started(Some(engine.clone()))).await;
-    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
 
     let control = app
         .api_control
@@ -1502,5 +1535,313 @@ async fn one_click_extension_pairing_forwards_linkgrabber_and_revokes() -> anyho
     }
 
     apply(&mut app, Message::Close).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn configures_automation_settings_and_switches_languages_cleanly() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let watch_dir = temp.path().join("watched");
+    std::fs::create_dir_all(&watch_dir)?;
+
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    let engine = EngineHandle::start(EngineOptions::new(
+        temp.path().join("queue.db"),
+        temp.path().join("downloads"),
+    ))
+    .await?;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
+
+    let spacious = Size::new(1120.0, 2400.0);
+    apply(&mut app, Message::Settings(true)).await;
+    let open_auto = click_in(&app, spacious, "Automation")?;
+    apply(&mut app, open_auto).await;
+
+    {
+        let mut ui = simulator_at(&app, spacious);
+        assert!(ui.find("Power & Queue Completion").is_ok());
+        assert!(ui.find("Time-of-Day Scheduler").is_ok());
+        assert!(ui.find("Checksums, Extraction & Hooks").is_ok());
+        assert!(ui.find("Watch Folders (.torrent, .dlc, .txt)").is_ok());
+    }
+
+    let pick_sleep = click_in(&app, spacious, "Sleep")?;
+    apply(&mut app, pick_sleep).await;
+    apply(
+        &mut app,
+        Message::Automation(AutomationMsg::ToggleScheduleEnabled(true)),
+    )
+    .await;
+    let add_schedule = click_in(&app, spacious, "Add schedule rule")?;
+    apply(&mut app, add_schedule).await;
+
+    apply(
+        &mut app,
+        Message::Automation(AutomationMsg::ToggleAutoExtract(true)),
+    )
+    .await;
+    apply(
+        &mut app,
+        Message::Automation(AutomationMsg::ArchivePasswordInput("vault-pw".into())),
+    )
+    .await;
+    let add_pw = click_in(&app, spacious, "Add password")?;
+    apply(&mut app, add_pw).await;
+
+    let add_watch = click_in(&app, spacious, "Add watch rule")?;
+    apply(&mut app, add_watch).await;
+    apply(
+        &mut app,
+        Message::Automation(AutomationMsg::WatchRuleDirChanged(
+            0,
+            watch_dir.display().to_string(),
+        )),
+    )
+    .await;
+    apply(
+        &mut app,
+        Message::Automation(AutomationMsg::ToggleWatchRuleTxt(0, true)),
+    )
+    .await;
+    apply(
+        &mut app,
+        Message::Automation(AutomationMsg::WatchRuleBehaviorChanged(
+            0,
+            WatchProcessedBehavior::MoveToProcessed,
+        )),
+    )
+    .await;
+
+    let save = click_in(&app, spacious, "Save")?;
+    apply(&mut app, save).await;
+
+    let saved = engine.snapshot().await?.automation;
+    assert_eq!(saved.completion_action, QueueCompletionAction::Sleep);
+    assert!(saved.schedule.enabled);
+    assert_eq!(saved.schedule.rules.len(), 1);
+    assert!(saved.post_processing.auto_extract);
+    assert_eq!(saved.post_processing.archive_passwords, vec!["vault-pw"]);
+    assert_eq!(saved.watch_folders.rules.len(), 1);
+    assert_eq!(saved.watch_folders.rules[0].directory, watch_dir);
+    assert!(saved.watch_folders.rules[0].import_txt);
+
+    let scan_now = click_in(&app, spacious, "Scan now")?;
+    apply(&mut app, scan_now).await;
+    assert!(
+        simulator_at(&app, spacious)
+            .find("Watch folder scan completed.")
+            .is_ok()
+    );
+
+    // Switch to Italian and confirm Automation UI renders completely without raw English keys.
+    let open_general = click_in(&app, spacious, "General")?;
+    apply(&mut app, open_general).await;
+    let to_italian = click_in(&app, spacious, "Italiano")?;
+    apply(&mut app, to_italian).await;
+    let open_auto_it = click_in(&app, spacious, "Automazione")?;
+    apply(&mut app, open_auto_it).await;
+
+    let mut ui_it = simulator_at(&app, spacious);
+    assert!(ui_it.find("Energia e fine coda").is_ok());
+    assert!(ui_it.find("Pianificatore orario").is_ok());
+    assert!(ui_it.find("Checksum, estrazione archivi e comandi").is_ok());
+    assert!(
+        ui_it
+            .find("Cartelle monitorate (.torrent, .dlc, .txt)")
+            .is_ok()
+    );
+    assert!(ui_it.find("Power & Queue Completion").is_err());
+    drop(ui_it);
+
+    engine.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn displays_post_processing_stages_schedule_status_and_cancellable_countdown()
+-> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    let engine = EngineHandle::start(EngineOptions::new(
+        temp.path().join("queue.db"),
+        temp.path().join("downloads"),
+    ))
+    .await?;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
+
+    let id = DownloadId(901);
+    let mut download = Download::new(
+        id,
+        Source::Http {
+            url: "https://example.test/archive.7z".into(),
+        },
+        temp.path().to_owned(),
+    );
+    download.filename = Some("archive.7z".into());
+    download.transition(Status::Downloading)?;
+    download.transition(Status::PostProcessing)?;
+    app.queue.order.push(id);
+    app.queue.downloads.insert(id, download);
+    app.queue.rebuild();
+
+    for (stage, label) in [
+        (PostProcessStage::VerifyingChecksum, "Verifying checksum"),
+        (PostProcessStage::ExtractingArchive, "Extracting archive"),
+        (PostProcessStage::RunningCommand, "Running hook"),
+    ] {
+        apply(
+            &mut app,
+            Message::Event(EngineEvent::PostProcessing { id, stage }),
+        )
+        .await;
+        assert!(simulator(&app).find(label).is_ok());
+    }
+
+    apply(
+        &mut app,
+        Message::Event(EngineEvent::ScheduleChanged(ScheduleDecision {
+            pause_queue: false,
+            speed_limit_bytes_per_sec: Some(512 * 1024),
+            active_rule_name: Some("Night".into()),
+        })),
+    )
+    .await;
+    assert!(simulator(&app).find("Schedule: 512.0 KiB/s").is_ok());
+
+    apply(
+        &mut app,
+        Message::Event(EngineEvent::ScheduleChanged(ScheduleDecision {
+            pause_queue: true,
+            speed_limit_bytes_per_sec: None,
+            active_rule_name: Some("Daytime".into()),
+        })),
+    )
+    .await;
+    assert!(simulator(&app).find("Schedule: Paused").is_ok());
+
+    apply(
+        &mut app,
+        Message::Event(EngineEvent::CompletionCountdown {
+            action: QueueCompletionAction::Sleep,
+            remaining_secs: 25,
+        }),
+    )
+    .await;
+    assert_eq!(
+        app.queue.completion_countdown,
+        Some((QueueCompletionAction::Sleep, 25))
+    );
+    let expected_banner = app.strings.with(
+        "completion-countdown-banner",
+        [
+            ("action", app.strings.get("completion-sleep")),
+            ("seconds", "25".into()),
+        ],
+    );
+    assert!(simulator(&app).find(expected_banner.as_str()).is_ok());
+
+    let cancel = click(&app, "Cancel")?;
+    apply(&mut app, cancel).await;
+    assert!(app.queue.completion_countdown.is_none());
+    assert!(simulator(&app).find(expected_banner.as_str()).is_err());
+
+    engine.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn submits_ftp_url_through_add_dialog_and_masks_password() -> anyhow::Result<()> {
+    let ftp = MockFtpServer::start(FtpServerOptions {
+        credentials: Some(("alice".into(), "s3cr3t-ftp-pw".into())),
+        allow_tls: false,
+        require_tls: false,
+        drop_first_after_bytes: None,
+        allow_restart: true,
+        support_size: true,
+    })
+    .await;
+    let payload: Vec<u8> = (0..(16 * 1024_usize))
+        .map(|i| ((i * 29) % 251) as u8)
+        .collect();
+    ftp.register_file("/pub/gui-ftp.bin", payload.clone());
+
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    let mut opts = EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    opts.automation.post_processing.auto_verify_checksums = false;
+    let engine = EngineHandle::start(opts).await?;
+    let mut events = engine.subscribe();
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
+
+    let open_add = click(&app, "Add")?;
+    apply(&mut app, open_add).await;
+    let raw_url = format!(
+        "ftp://alice:s3cr3t-ftp-pw@127.0.0.1:{}/pub/gui-ftp.bin",
+        ftp.port()
+    );
+    let masked_url = format!("ftp://alice@127.0.0.1:{}/pub/gui-ftp.bin", ftp.port());
+    let edit = app.update(Message::EditAdd(text_editor::Action::Edit(
+        text_editor::Edit::Paste(std::sync::Arc::new(raw_url)),
+    )));
+    for message in task_messages(edit).await {
+        apply(&mut app, message).await;
+    }
+
+    {
+        let mut ui = simulator(&app);
+        assert!(ui.find("FTP / FTPS link").is_ok());
+        assert!(ui.find(masked_url.as_str()).is_ok());
+    }
+
+    let submit = click(&app, "Add")?;
+    apply(&mut app, submit).await;
+
+    let id = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Ok(EngineEvent::StatusChanged {
+                id,
+                status: Status::Completed,
+            }) = events.recv().await
+            {
+                return Ok::<_, anyhow::Error>(id);
+            }
+        }
+    })
+    .await??;
+
+    let snapshot = engine.snapshot().await?;
+    assert_eq!(snapshot.downloads.len(), 1);
+    assert_eq!(snapshot.downloads[0].id, id);
+    assert!(matches!(
+        &snapshot.downloads[0].source,
+        Source::Ftp { url } if url == &masked_url && !url.contains("s3cr3t-ftp-pw")
+    ));
+    apply(&mut app, Message::Snapshot(Some(Box::new(snapshot)))).await;
+    assert!(simulator(&app).find("gui-ftp.bin").is_ok());
+    assert!(simulator(&app).find("s3cr3t-ftp-pw").is_err());
+    assert_eq!(
+        std::fs::read(temp.path().join("downloads/gui-ftp.bin"))?,
+        payload
+    );
+
+    engine.shutdown().await?;
     Ok(())
 }

@@ -4,21 +4,32 @@
 //!
 //! See `docs/ARCHITECTURE.md` and `docs/PLAN.md` for responsibilities and milestones.
 
+mod archive;
+mod automation;
 mod categories;
+mod checksum_verify;
 mod disk;
 mod file_types;
 mod handle;
 mod media_bridge;
+mod post_process;
 mod resolution;
 mod scheduler;
 mod startup;
 mod torrent_bridge;
 mod transfer;
+mod watch;
 
+pub use automation::{
+    AutomationSettings, Clock, OutsideHoursAction, PostProcessingSettings, ScheduleAction,
+    ScheduleDecision, ScheduleRule, ScheduleSettings, SystemClock, WatchFolderRule,
+    WatchFolderSettings, WatchProcessedBehavior, WeekdayMask, format_minutes, parse_hhmm,
+};
 pub use handle::{
     AddDownload, EngineError, EngineEvent, EngineHandle, EngineLog, EngineOptions, EngineSnapshot,
     Limits, ProgressUpdate, TorrentRuntimeProgress,
 };
+pub use post_process::PostProcessStage;
 pub use startup::{RECOVERY_FOLDER, StartupError, recover_queue};
 
 pub use categories::{
@@ -30,13 +41,18 @@ pub use resolution::{ResolvedDownload, prepare_http_download, resolve_download};
 /// Direct HTTP entry point for developer commands and benchmarks.
 pub use ruscello_http::{
     ChecksumAlgorithm, ChecksumError, DownloadOptions, DownloadProgress, ErrorClass,
-    ExpectedChecksum, HttpDownloader, HttpError, Probe, SegmentProgress, Url, WriterError,
+    ExpectedChecksum, FtpCredentials, HttpDownloader, HttpError, Probe, SegmentProgress, Url,
+    WriterError, sanitize_ftp_url,
 };
 pub use ruscello_media::{
     BandwidthContext, FormatPreset, HeaderMap, MediaEngine, MediaError, MediaFormat,
     MediaInspection, MediaKind, MediaPhase, MediaRequest, MediaTransferJob, PlaylistItem,
     SidecarBinaryStatus, SidecarEndpoints, SidecarKind, SidecarSettings, SidecarsStatus,
     is_dash_url, is_hls_url, is_manifest_url,
+};
+pub use ruscello_platform::power::{
+    NoopSleepInhibitor, PowerController, PowerError, QueueCompletionAction, SleepInhibitor,
+    SystemPowerController, SystemSleepInhibitor,
 };
 pub use ruscello_resolver::{
     BrowserFailure, BrowserLocale, BrowserOptions, BrowserSession, Builtin, Candidate,
