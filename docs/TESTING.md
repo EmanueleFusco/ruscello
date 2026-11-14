@@ -67,6 +67,9 @@ outside the timed interval and requires Ruscello's median throughput to reach at
 4. `cargo deny check`
 5. (From M10) Nightly job: short fuzzing campaign, reduced soak test, benchmark threshold check.
 
+GitHub Actions runs the JavaScript checkout and Rust cache actions on Node.js 24. Local builds and tests
+use the Rust toolchain.
+
 ## Testing Rules
 
 - Deterministic tests: avoid arbitrary `sleep` calls; use injectable clocks or event notifications with timeouts.
