@@ -6,7 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context as _, ensure};
+#[cfg(any(unix, test))]
+use anyhow::Context as _;
+use anyhow::ensure;
 use reqwest::{Client, Url};
 use semver::Version;
 use serde::Deserialize;

@@ -95,6 +95,7 @@ def desktop(binary, root, url, backend):
     data = root / "data" / "ruscello"
     config = root / "config" / "ruscello"
     config.mkdir(parents=True)
+    (root / "state" / "ruscello" / "logs" / "ruscello").mkdir(parents=True)
     (config / "gui.json").write_text(json.dumps({
         "locale": "English",
         "motion": False,
@@ -127,7 +128,7 @@ def desktop(binary, root, url, backend):
             def bytes_downloaded():
                 return {entry["id"]: entry["downloaded_bytes"]
                         for entry in call_api(endpoint, "queue")["downloads"]
-                        if entry["status"] == "downloading"}
+                        if entry["status"] == "Downloading"}
 
             wait_until(lambda: len(bytes_downloaded()) == 10, 15)
             beginning = time.monotonic()
@@ -189,6 +190,7 @@ def idle_desktop(binary, env, data):
 def single_transfer(binary, root, url):
     destination = root / "single"
     destination.mkdir()
+    (root / "logs").mkdir()
     env = dict(os.environ, RUSCELLO_LOG_DIR=str(root / "logs"),
                RUSCELLO_DATA_DIR=str(root / "cli-data"), RUSCELLO_RECIPES_DIR=str(root / "recipes"))
     before = os.times().children_user
@@ -213,9 +215,10 @@ def main():
     args = parser.parse_args()
     if not os.environ.get("DISPLAY") or not shutil.which("xwininfo"):
         parser.error("use an empty X11 display (for example xvfb-run with --backend Software)")
-    with tempfile.TemporaryDirectory() as directory, contextlib.closing(
-        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
-    ) as server:
+    with (
+        tempfile.TemporaryDirectory() as directory,
+        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server,
+    ):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
