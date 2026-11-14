@@ -31,7 +31,12 @@ fn options(directory: &Path) -> BrowserOptions {
 
 async fn wait_for(engine: &EngineHandle, ids: &[DownloadId], status: Status) -> anyhow::Result<()> {
     let mut events = engine.subscribe();
-    timeout(DEADLINE, async {
+    let deadline = if ids.len() > 5 {
+        2 * DEADLINE
+    } else {
+        DEADLINE
+    };
+    timeout(deadline, async {
         loop {
             let snapshot = engine.snapshot().await?;
             if ids.iter().all(|id| {

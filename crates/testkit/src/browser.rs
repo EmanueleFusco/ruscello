@@ -214,7 +214,8 @@ impl XfsBrowserFixture {
     pub fn register(server: &TestServer) -> Self {
         use std::time::{Duration, Instant};
 
-        const COUNTDOWN_SECONDS: u64 = 1;
+        // Longer than the helper's normal DOM settling delays across all three steps.
+        const COUNTDOWN_SECONDS: u64 = 2;
         let popups = Arc::new(AtomicUsize::new(0));
         for name in ["one", "two", "three"] {
             let popups = popups.clone();
