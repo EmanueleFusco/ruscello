@@ -457,7 +457,9 @@ async fn magnet_category_rule_restart_fastresume_force_recheck_and_cancel_delete
                 Duration::from_millis(900),
             )
             .await;
-            let error = pending.expect_err("recheck finished before the bitfield closed");
+            let Err(error) = pending else {
+                return Err("recheck finished before the bitfield closed".into());
+            };
             assert!(error.is::<tokio::time::error::Elapsed>(), "{error}");
             let snapshot = engine.snapshot().await?;
             assert_eq!(
