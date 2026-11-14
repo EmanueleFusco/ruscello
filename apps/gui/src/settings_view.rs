@@ -23,6 +23,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
             Page::Torrent => '\u{e102}',
             Page::Categories => '\u{e0d7}',
             Page::Integrations => '\u{e247}',
+            Page::Hosters => '\u{e154}',
             Page::Advanced => '\u{e29a}',
             Page::About => '\u{e0f9}',
         };
@@ -48,6 +49,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
         Page::Torrent => torrent(app),
         Page::Categories => categories(app),
         Page::Integrations => integrations(app),
+        Page::Hosters => hosters(app),
         Page::Advanced => advanced(app),
         Page::About => about(app),
     };
@@ -469,9 +471,62 @@ fn integrations(app: &App) -> Element<'_, Message> {
     controls
         .push(text(l.get("browser-extension")))
         .push(text(l.get("sidecars")))
+        .push(
+            theme::check(app.preferences.monitor_clipboard)
+                .label(l.get("clipboard-monitor"))
+                .on_toggle(Message::MonitorClipboard),
+        )
+        .push(
+            theme::check(app.preferences.auto_accept_hosters)
+                .label(l.get("auto-accept-hosters"))
+                .on_toggle(Message::AutoAcceptHosters),
+        )
+        .push(
+            theme::check(app.preferences.dlc_fallback)
+                .label(l.get("dlc-fallback"))
+                .on_toggle(Message::DlcFallback),
+        )
+        .push(text(l.get("dlc-fallback-detail")).size(12).style(muted))
         .into()
 }
 
+fn hosters(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let draft = &app.hoster_draft;
+    let available = !draft.busy && !draft.host.trim().is_empty();
+    column![
+        text(l.get("hoster-accounts")).size(18),
+        text(l.get("hoster-keyring")),
+        row![
+            option(
+                "pixeldrain.com".into(),
+                draft.host == "pixeldrain.com",
+                Message::HosterDomain("pixeldrain.com".into())
+            ),
+            option(
+                "gofile.io".into(),
+                draft.host == "gofile.io",
+                Message::HosterDomain("gofile.io".into())
+            ),
+        ]
+        .spacing(5),
+        theme::field(&l.get("hoster-username"), &draft.username).on_input(Message::HosterUsername),
+        theme::field(&l.get("hoster-secret"), &draft.password.0)
+            .secure(true)
+            .on_input(|password| Message::HosterPassword(crate::settings::LanPassword(password))),
+        row![
+            theme::action(text(l.get("hoster-save"))).on_press_maybe(
+                (available && !draft.password.0.is_empty()).then_some(Message::SaveHoster)
+            ),
+            theme::action(text(l.get("hoster-remove")))
+                .on_press_maybe(available.then_some(Message::RemoveHoster)),
+        ]
+        .spacing(8),
+    ]
+    .extend(draft.result.map(|result| text(l.get(result)).into()))
+    .spacing(10)
+    .into()
+}
 fn advanced(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
     let controls = column![

@@ -53,6 +53,11 @@ outside the timed interval and requires Ruscello's median throughput to reach at
 
 - Binary payloads are generated deterministically from seeds at test time (never committed to git).
 - Sanitized HTML fixtures are stored under `crates/resolver/tests/fixtures/` with capture date in the filename.
+- The offline LinkGrabber ranking benchmark uses 30 saved synthetic HTML pages with expected targets.
+  Run `cargo test -p ruscello-resolver --test scoring -- --nocapture` to report elapsed time and top-three accuracy.
+- `cargo test -p ruscello-engine --test resolver` checks the 20-page engine batch, package persistence, and
+  refreshed links and cookies. `cargo test -p ruscello-cli --test crash_resume` covers a batch with a process
+  kill, URL renewal, a dropped network response, and SHA-256 comparisons. Both use loopback fixtures.
 
 ## Mandatory CI Gates (Every PR)
 

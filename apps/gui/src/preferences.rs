@@ -203,12 +203,18 @@ pub(crate) struct Preferences {
     pub(crate) notifications: bool,
     pub(crate) autostart: bool,
     pub(crate) torrent: TorrentPreferences,
+    pub(crate) dlc_fallback: bool,
+    pub(crate) auto_accept_hosters: bool,
+    pub(crate) monitor_clipboard: bool,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             locale: Locale::System,
+            dlc_fallback: false,
+            auto_accept_hosters: false,
+            monitor_clipboard: false,
             appearance: Appearance::System,
             details: true,
             motion: true,

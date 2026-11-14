@@ -84,14 +84,19 @@ input URL / free text
                                                      Resolution → Engine
 ```
 
-- `HostPlugin` (Rust trait) for complex hosters; declarative **TOML recipes** for simpler sites (including
-  user-defined recipes in `<config>/recipes/`). Illustrative syntax (final schema defined in M5):
+- `HostPlugin` (Rust trait) for complex hosters and `CrawlerPlugin` for collections. TOML recipes in
+  `<config>/recipes/` are loaded in filename order on the next resolution or inspection. The CLI accepts
+  `RUSCELLO_RECIPES_DIR` as a directory override.
 
 ```toml
 [recipe]
 name = "xfilesharing-generic"
-match = ["^https?://(www\\.)?example-host\\.tld/[a-z0-9]{12}"]
+match = ['^https?://(www\.)?example-host\.tld/[a-z0-9]{12}']
 max_connections = 1
+max_parallel = 1
+
+[[step]]
+get = ""
 
 [[step]]
 submit_form = { selector = "form[method=post]", button = "#method_free" }
@@ -100,16 +105,21 @@ wait = { from_page = "#countdown span", default_seconds = 10 }
 [[step]]
 submit_form = { selector = "form[name=F1]", button = "#downloadbtn" }
 [[step]]
-expect_download = true      # response is the file → direct link
+expect_download = true
 ```
 
-- **LinkGrabber**: candidate extraction + explainable scoring (see `PLAN.md` M5.5); parallel size probes are
-  bounded (e.g., max 4 concurrent probes with short timeouts).
+- `extract = { css = "a#file", attribute = "href" }` or `extract = { regex = '...' }` selects a URL.
+  `follow = true` loads that URL for another step. `browser = true` permits `click` and `wait_for`
+  selectors for the M6 browser implementation.
+- **LinkGrabber** probes up to 16 same-origin candidates per page, four at a time. The resolver reloads
+  `<config>/recipes/blocked-hosts.txt` for each analyzed page, accepting domains, hosts entries, and
+  plain EasyList domain rules such as `||example.test^`.
 - **`.dlc` (Download Link Container) Decryption (`ruscello-resolver`)**:
   1. Trim whitespace from the `.dlc` file; split into `encrypted_body_b64 = raw[..raw.len()-88]` and
      `dlc_key = raw[raw.len()-88..]` (88 ASCII chars).
-  2. Exchange `dlc_key` via `GET http://service.jdownloader.org/dlcrypt/service.php?srcType=dlc&destType=pylo&data=<dlc_key>`
-     (with fallback to `https://dcrypt.it/decrypt/paste`) and extract `<rc>...</rc>`.
+  2. Exchange `dlc_key` via `GET https://service.jdownloader.org/dlcrypt/service.php?srcType=dlc&destType=pylo&data=<dlc_key>`
+     and extract `<rc>...</rc>`. The optional fallback sends the encrypted container to
+     `https://dcrypt.it/decrypt/paste` when enabled in desktop settings or with `import --dlc-fallback` in the CLI.
   3. Base64-decode `<rc>` and decrypt with **AES-128-CBC (no padding)** using static key `b"cb99b5cbc24db398"` and
      IV `b"9bc24cb995cb8db3"` (crates `aes` + `cbc` + `base64`) → yields the 16-byte ASCII `real_key`.
   4. Base64-decode `encrypted_body_b64`, decrypt with **AES-128-CBC (no padding)** using `key = real_key` and
@@ -134,6 +144,10 @@ expect_download = true      # response is the file → direct link
 - Alongside each partial download: `filename.ext.rscpart` + `filename.ext.rscpart.ctl` (completed byte ranges,
   remote validators, hashed source identity, format version, CRC32). SQLite holds the logical queue view while the control
   file is the source of truth for persisted bytes; both are reconciled on startup.
+- For plugin-resolved links, a strong ETag and matching size permit resume across token changes on the same
+  download origin. The checkpoint is keyed by the original share URL. Resolved URLs, request headers, and
+  account tokens stay out of the queue record. Explicit container filenames, mirrors, and checksums survive
+  restart. Mirrors can contribute bytes only when the result has an expected checksum.
 - The storage actor keeps a standalone SQLite backup next to the database. If both copies are corrupt, the engine
   can reconstruct paused entries from managed checkpoints in the configured recovery folders. Those checkpoints
   include the job ID and destination. URLs containing query strings or user information are excluded from checkpoints.

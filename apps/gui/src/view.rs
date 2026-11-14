@@ -7,8 +7,9 @@ use iced::{
 };
 use ruscello_core::{Download, Source, Status, TorrentSource};
 use ruscello_engine::{
-    EngineLog, PieceBucketState, TorrentDetailsSnapshot, TorrentFilePriority, TorrentPeerState,
-    TorrentPeerTransport, TorrentPieceMap, TorrentTrackerStatus,
+    CandidateGroup, EngineLog, PieceBucketState, ScoreReason, TorrentDetailsSnapshot,
+    TorrentFilePriority, TorrentPeerState, TorrentPeerTransport, TorrentPieceMap,
+    TorrentTrackerStatus,
 };
 
 use crate::{
@@ -1178,12 +1179,21 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
                         |bytes| format!("{name} · {}", size(l, bytes)),
                     ),
                 ),
-                Some(Probe::Web) => ("web-input", l.get("resolver-unavailable")),
+                Some(Probe::Web(title, _)) => ("web-input", title.clone()),
+                Some(Probe::Hoster(plugin)) => ("hoster-input", plugin.clone()),
                 Some(Probe::Media) => ("media-input", l.get("media-unavailable")),
                 Some(Probe::Unavailable) => ("probe-unavailable", String::new()),
+                Some(Probe::Verification) => ("waiting-user", String::new()),
+                Some(Probe::AccountRequired) => ("hoster-input", l.get("hoster-token-required")),
                 Some(Probe::Pending) | None => ("probing", String::new()),
             },
-            Input::Dlc(_) => (input.key(), l.get("resolver-unavailable")),
+            Input::Dlc(path) | Input::Text(path) => {
+                match dialog.containers.get(path).and_then(Option::as_ref) {
+                    Some(Ok(_)) => (input.key(), String::new()),
+                    Some(Err(error)) => (input.key(), l.get(error)),
+                    None => ("probing", String::new()),
+                }
+            }
             _ => (input.key(), String::new()),
         };
         container(
@@ -1326,11 +1336,14 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
             .padding(15)
             .width(Fill)
             .style(theme::panel),
+    ]
+    .extend(grabber(app, dialog))
+    .push(
         container(options)
             .padding(15)
             .width(Fill)
             .style(theme::panel),
-    ]
+    )
     .spacing(10)
     .padding(add_scroll_gutter);
     container(
@@ -1354,9 +1367,20 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
                         .on_toggle(Message::StartImmediately),
                     space::horizontal().width(Fill),
                     theme::action(
-                        row![icon('\u{e13d}'), text(l.get("add"))]
-                            .spacing(7)
-                            .align_y(Alignment::Center)
+                        row![
+                            icon('\u{e13d}'),
+                            text(l.get(
+                                if dialog.page_candidates().next().is_some()
+                                    || dialog.imported_packages().next().is_some()
+                                {
+                                    "download-selected"
+                                } else {
+                                    "add"
+                                }
+                            ))
+                        ]
+                        .spacing(7)
+                        .align_y(Alignment::Center)
                     )
                     .padding([8, 14])
                     .style(theme::primary)
@@ -1376,6 +1400,166 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
     .align_x(Alignment::Center)
     .padding([5, 10])
     .into()
+}
+
+const CANDIDATE_GROUPS: [(CandidateGroup, &str); 4] = [
+    (CandidateGroup::Likely, "grabber-likely"),
+    (CandidateGroup::OtherFiles, "grabber-other"),
+    (CandidateGroup::Media, "grabber-media"),
+    (CandidateGroup::LinkedPages, "grabber-pages"),
+];
+
+fn grabber<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Option<Element<'a, Message>> {
+    if dialog.page_candidates().next().is_none() && dialog.imported_packages().next().is_none() {
+        return None;
+    }
+    let l = &app.strings;
+    let search = dialog.grabber_search.trim().to_lowercase();
+    let matches = |name: &str, url: &ruscello_engine::Url| {
+        search.is_empty()
+            || name.to_lowercase().contains(&search)
+            || url.as_str().to_lowercase().contains(&search)
+    };
+    let mut list = column![
+        text(l.get("linkgrabber")).size(16),
+        theme::field(&l.get("grabber-search"), &dialog.grabber_search)
+            .on_input(Message::GrabberSearch),
+    ]
+    .spacing(8);
+    if dialog.page_candidates().next().is_some() {
+        let mut filters = row![option(
+            l.get("all"),
+            dialog.grabber_filter.is_none(),
+            Message::GrabberFilter(None)
+        )]
+        .spacing(5);
+        for (group, label) in CANDIDATE_GROUPS {
+            filters = filters.push(option(
+                l.get(label),
+                dialog.grabber_filter == Some(group),
+                Message::GrabberFilter(Some(group)),
+            ));
+        }
+        list = list.push(theme::horizontal(filters));
+    }
+    for package in dialog.imported_packages() {
+        list = list.push(text(&package.name).size(14));
+        for item in &package.links {
+            let name = item
+                .filename
+                .as_deref()
+                .unwrap_or_else(|| item.url.as_str());
+            if matches(name, &item.url) {
+                list = list.push(candidate_row(l, dialog, &item.url, name, item.size, None));
+            }
+        }
+    }
+    for (title, candidates) in dialog.page_candidates() {
+        list = list.push(text(title).size(14));
+        if candidates.is_empty() {
+            list = list.push(text(l.get("grabber-empty")).style(muted));
+        }
+        for (group, label) in CANDIDATE_GROUPS {
+            if dialog.grabber_filter.is_some_and(|filter| group != filter) {
+                continue;
+            }
+            let selected = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.group == group && matches(&candidate.filename, &candidate.url)
+                })
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                continue;
+            }
+            let collapsed = dialog.collapsed_groups.contains(&group);
+            list = list.push(
+                theme::action(text(format!(
+                    "{} {} ({})",
+                    if collapsed { "▸" } else { "▾" },
+                    l.get(label),
+                    selected.len()
+                )))
+                .on_press(Message::GrabberGroup(group)),
+            );
+            if !collapsed {
+                for candidate in selected {
+                    list = list.push(candidate_row(
+                        l,
+                        dialog,
+                        &candidate.url,
+                        &candidate.filename,
+                        candidate.size,
+                        Some(candidate),
+                    ));
+                }
+            }
+        }
+    }
+    Some(
+        container(list)
+            .padding(15)
+            .width(Fill)
+            .style(theme::panel)
+            .into(),
+    )
+}
+
+fn candidate_row<'a>(
+    l: &'a Strings,
+    dialog: &'a crate::add::Dialog,
+    url: &'a ruscello_engine::Url,
+    name: &'a str,
+    bytes: Option<u64>,
+    candidate: Option<&'a ruscello_engine::Candidate>,
+) -> Element<'a, Message> {
+    let mut check = theme::check(dialog.selected_links.contains(url)).label(name);
+    if candidate.is_none_or(|candidate| candidate.group != CandidateGroup::Media) {
+        check = check.on_toggle(|checked| Message::SelectLink(url.clone(), checked));
+    }
+    let mut content = row![
+        check.width(Fill),
+        text(url.host_str().unwrap_or_default())
+            .size(12)
+            .style(muted),
+        text(bytes.map_or_else(|| "—".into(), |bytes| size(l, bytes)))
+            .size(12)
+            .style(muted),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    if let Some(candidate) = candidate {
+        let explanation = candidate
+            .reasons
+            .iter()
+            .map(|reason| l.get(score_reason(*reason)))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let score = text(candidate.score.to_string()).size(12);
+        content = content.push(
+            tooltip(score, text(explanation).size(12), tooltip::Position::Top).style(theme::panel),
+        );
+    }
+    container(content)
+        .padding([4, 6])
+        .width(Fill)
+        .clip(true)
+        .into()
+}
+
+fn score_reason(reason: ScoreReason) -> &'static str {
+    match reason {
+        ScoreReason::FileExtension => "score-extension",
+        ScoreReason::LargeFile => "score-size",
+        ScoreReason::DownloadLabel => "score-label",
+        ScoreReason::TitleMatch => "score-title",
+        ScoreReason::KnownHoster => "score-hoster",
+        ScoreReason::Attachment => "score-attachment",
+        ScoreReason::Tracker => "score-tracker",
+        ScoreReason::TinyFile => "score-tiny",
+        ScoreReason::InterfaceAsset => "score-asset",
+        ScoreReason::SocialOrLogin => "score-social",
+    }
 }
 
 fn context_menu(app: &App) -> Element<'_, Message> {
