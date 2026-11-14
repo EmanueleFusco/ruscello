@@ -1,4 +1,4 @@
-use ruscello_engine::{ErrorClass, HttpError, WriterError};
+use ruscello_engine::{ErrorClass, HttpError, ResolveError, WriterError};
 use ruscello_platform::language::Language;
 
 pub(crate) struct Messages {
@@ -15,11 +15,15 @@ pub(crate) struct Messages {
     temporary_failure: &'static str,
     destination_failure: &'static str,
     failed: &'static str,
+    resolution: &'static str,
+    verification: &'static str,
+    dlc_key: &'static str,
 }
 
 const EN: Messages = Messages {
     usage: "Usage: ruscello-cli [--language en|it|system] get <url> [-o directory] [-x connections]\n\
-    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --progress --quiet",
+    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --progress --quiet\n\
+    ruscello-cli inspect <url>\nruscello-cli import <file> [--dlc-fallback]",
     restarted: "The previous data could not be resumed. Starting from zero.",
     non_resumable: "Not resumable",
     waiting: "Waiting for network connectivity.",
@@ -32,11 +36,15 @@ const EN: Messages = Messages {
     temporary_failure: "The transfer failed after retrying.",
     destination_failure: "Ruscello could not write or publish the download in the output directory.",
     failed: "Ruscello could not complete the download.",
+    resolution: "Ruscello could not resolve any download links.",
+    verification: "The host requires verification in a browser.",
+    dlc_key: "Ruscello could not obtain the container key.",
 };
 
 const IT: Messages = Messages {
     usage: "Uso: ruscello-cli [--language en|it|system] get <url> [-o cartella] [-x connessioni]\n\
-    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --progress --quiet",
+    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --progress --quiet\n\
+    ruscello-cli inspect <url>\nruscello-cli import <file> [--dlc-fallback]",
     restarted: "Impossibile riprendere i dati precedenti. Il download riparte da zero.",
     non_resumable: "Non riprendibile",
     waiting: "In attesa della connessione di rete.",
@@ -49,12 +57,16 @@ const IT: Messages = Messages {
     temporary_failure: "Il trasferimento non è riuscito dopo vari tentativi.",
     destination_failure: "Ruscello non ha potuto scrivere o pubblicare il download nella cartella di destinazione.",
     failed: "Ruscello non ha potuto completare il download.",
+    resolution: "Ruscello non ha potuto risolvere i link di download.",
+    verification: "Il servizio richiede una verifica nel browser.",
+    dlc_key: "Ruscello non ha potuto ottenere la chiave del contenitore.",
 };
 
 impl Messages {
     pub(crate) fn failure(&self, failure: Option<&HttpError>) -> &'static str {
         match failure {
             Some(HttpError::Cancelled) => self.cancelled,
+            Some(HttpError::VerificationRequired) => self.verification,
             Some(HttpError::RepresentationChanged) => self.changed,
             Some(HttpError::MirrorChecksumRequired) => self.checksum_required,
             Some(HttpError::Storage(WriterError::ChecksumMismatch)) => self.checksum_failed,
@@ -66,6 +78,16 @@ impl Messages {
                 ErrorClass::Permanent => self.failed,
             },
             None => self.destination_failure,
+        }
+    }
+
+    pub(crate) fn resolve_failure(&self, failure: &ResolveError) -> &'static str {
+        match failure {
+            ResolveError::Cancelled => self.cancelled,
+            ResolveError::VerificationRequired => self.verification,
+            ResolveError::KeyService => self.dlc_key,
+            ResolveError::AccountRequired | ResolveError::Keyring => self.auth,
+            _ => self.resolution,
         }
     }
 }

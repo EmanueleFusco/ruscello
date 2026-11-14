@@ -107,7 +107,7 @@ fn reconcile(
             ));
         }
         if download.status() != Status::Completed
-            && let Source::Http { url } = &download.source
+            && let Source::Http { url } | Source::Hoster { url } = &download.source
         {
             let checkpoint = Url::parse(url).ok().and_then(|url| {
                 checkpoints
@@ -174,6 +174,7 @@ fn reconcile(
                     position,
                     working_directory: working_directory.clone(),
                     torrent: None,
+                    http: Default::default(),
                 };
                 position = position.saturating_add(1);
                 changes.push(Change::SaveDownload(Box::new(entry.clone())));

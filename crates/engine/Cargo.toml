@@ -17,6 +17,7 @@ percent-encoding.workspace = true
 regex.workspace = true
 ruscello-core.workspace = true
 ruscello-http.workspace = true
+ruscello-resolver.workspace = true
 ruscello-storage.workspace = true
 ruscello-torrent.workspace = true
 serde.workspace = true

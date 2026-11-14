@@ -65,6 +65,9 @@ pub struct EngineOptions {
     pub torrent: TorrentSettings,
     /// Whether to initialize the BitTorrent session eagerly on startup.
     pub eager_torrent_session: bool,
+    /// Shared resolver, including the recipe folder and optional browser integration.
+    pub resolver: Option<crate::Resolver>,
+    pub dlc_service: Option<crate::DlcKeyService>,
 }
 
 impl EngineOptions {
@@ -79,6 +82,8 @@ impl EngineOptions {
             data_dir: None,
             torrent: TorrentSettings::offline_ephemeral(),
             eager_torrent_session: false,
+            resolver: None,
+            dlc_service: None,
         }
     }
 }
@@ -91,6 +96,11 @@ pub struct AddDownload {
     pub category: Option<CategoryId>,
     /// A filename supplied by a resolver or the add dialog for rule matching.
     pub filename_hint: Option<String>,
+    pub size_hint: Option<u64>,
+    /// Preferred output filename supplied explicitly by a container.
+    pub output_filename: Option<String>,
+    /// Alternate URLs for the same file; used only with an expected checksum.
+    pub mirrors: Vec<crate::Url>,
     pub tags: Vec<Tag>,
     pub priority: Priority,
     pub start_immediately: bool,
@@ -119,6 +129,9 @@ impl AddDownload {
             package: None,
             category: None,
             filename_hint: None,
+            size_hint: None,
+            output_filename: None,
+            mirrors: Vec::new(),
             tags: Vec::new(),
             priority: Priority::default(),
             start_immediately: true,
@@ -231,6 +244,8 @@ pub enum EngineError {
     Http(#[from] HttpError),
     #[error(transparent)]
     Torrent(#[from] TorrentError),
+    #[error(transparent)]
+    Resolver(#[from] crate::ResolveError),
     #[error("a file operation stopped unexpectedly")]
     Worker(#[from] tokio::task::JoinError),
 }
@@ -238,7 +253,10 @@ pub enum EngineError {
 pub(super) type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
 
 pub(super) enum Command {
-    Add(Vec<AddDownload>, Option<String>, Reply<Vec<DownloadId>>),
+    Add(
+        Vec<(Option<String>, Vec<AddDownload>)>,
+        Reply<Vec<DownloadId>>,
+    ),
     Update(Update, Reply<()>),
     Snapshot(Reply<EngineSnapshot>),
     TorrentManager(Reply<Arc<TorrentManager>>),
@@ -265,11 +283,18 @@ pub(super) enum Update {
 pub struct EngineHandle {
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<EngineEvent>,
+    resolver: crate::Resolver,
+    dlc_service: Option<crate::DlcKeyService>,
 }
 
 impl EngineHandle {
     pub async fn start(mut options: EngineOptions) -> Result<Self, EngineError> {
         options.destination = std::path::absolute(&options.destination)?;
+        let resolver = match options.resolver.take() {
+            Some(resolver) => resolver,
+            None => crate::Resolver::new(None)?,
+        };
+        let dlc_service = options.dlc_service.take();
         options.temporary_directory = options
             .temporary_directory
             .as_deref()
@@ -311,10 +336,44 @@ impl EngineHandle {
             options,
             categories,
             events.clone(),
+            resolver.clone(),
         )
         .await?;
         tokio::spawn(Box::pin(scheduler.run(receiver)));
-        Ok(Self { commands, events })
+        Ok(Self {
+            commands,
+            events,
+            resolver,
+            dlc_service,
+        })
+    }
+
+    pub async fn inspect_link(
+        &self,
+        url: &crate::Url,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PageAnalysis, EngineError> {
+        Ok(self.resolver.inspect(url, cancellation).await?)
+    }
+
+    pub async fn import_links(
+        path: &Path,
+        allow_dlc_fallback: bool,
+    ) -> Result<crate::ContainerFile, EngineError> {
+        let service = crate::DlcKeyService::production(allow_dlc_fallback)?;
+        Ok(ruscello_resolver::import_file(path, &service).await?)
+    }
+
+    pub async fn inspect_container(
+        &self,
+        path: &Path,
+        allow_dlc_fallback: bool,
+    ) -> Result<crate::ContainerFile, EngineError> {
+        if let Some(service) = &self.dlc_service {
+            Ok(ruscello_resolver::import_file(path, service).await?)
+        } else {
+            Self::import_links(path, allow_dlc_fallback).await
+        }
     }
 
     /// After lagging, obtain a snapshot before using further incremental events.
@@ -338,8 +397,7 @@ impl EngineHandle {
         &self,
         requests: Vec<AddDownload>,
     ) -> Result<Vec<DownloadId>, EngineError> {
-        self.request(|reply| Command::Add(requests, None, reply))
-            .await
+        self.add_groups(vec![(None, requests)]).await
     }
 
     /// Adds a named group and its downloads in the same queue transaction.
@@ -348,8 +406,15 @@ impl EngineHandle {
         name: String,
         requests: Vec<AddDownload>,
     ) -> Result<Vec<DownloadId>, EngineError> {
-        self.request(|reply| Command::Add(requests, Some(name), reply))
-            .await
+        self.add_groups(vec![(Some(name), requests)]).await
+    }
+
+    /// Writes all packages and their selected downloads in one transaction.
+    pub async fn add_groups(
+        &self,
+        groups: Vec<(Option<String>, Vec<AddDownload>)>,
+    ) -> Result<Vec<DownloadId>, EngineError> {
+        self.request(|reply| Command::Add(groups, reply)).await
     }
 
     pub async fn pause(&self, id: DownloadId) -> Result<(), EngineError> {

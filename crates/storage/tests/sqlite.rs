@@ -51,6 +51,7 @@ async fn upgrades_existing_database_and_round_trips_queue_metadata() -> TestResu
         position: 1,
         working_directory: temp.path().to_owned(),
         torrent: None,
+        http: Default::default(),
     };
     storage
         .apply(vec![

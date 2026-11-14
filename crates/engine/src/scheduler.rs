@@ -10,7 +10,7 @@ use ruscello_core::{
     Download, DownloadId, FailureReason, FileType, Package, PackageId, Source, SourceKind, Status,
     TorrentSource,
 };
-use ruscello_http::{DownloadProgress, HostConnections, HttpDownloader};
+use ruscello_http::{DownloadProgress, HostConnections, HttpDownloader, HttpError};
 use ruscello_storage::{Change, DatabaseRecovery, QueueEntry, Snapshot, Storage};
 use ruscello_torrent::{
     StartedTorrent, TorrentError, TorrentManager, TorrentPhase, TorrentProgressSnapshot,
@@ -50,6 +50,7 @@ pub(super) struct Scheduler {
     events: broadcast::Sender<EngineEvent>,
     hosts: HostConnections,
     http: HttpDownloader,
+    resolver: crate::Resolver,
     torrent_manager: Option<Arc<TorrentManager>>,
     last_telemetry: Option<TorrentSessionTelemetry>,
     telemetry_ticks: u8,
@@ -106,6 +107,7 @@ impl Scheduler {
         options: EngineOptions,
         categories: CategoryBook,
         events: broadcast::Sender<EngineEvent>,
+        resolver: crate::Resolver,
     ) -> Result<Self, EngineError> {
         let limits = options.limits;
         let hosts = HostConnections::new(limits.connections_per_host);
@@ -190,6 +192,7 @@ impl Scheduler {
             events,
             hosts,
             http,
+            resolver,
             torrent_manager,
             last_telemetry: None,
             telemetry_ticks: 0,
@@ -295,8 +298,8 @@ impl Scheduler {
 
     async fn command(&mut self, command: Command) {
         match command {
-            Command::Add(requests, package, reply) => {
-                let _ = reply.send(self.add(requests, package).await);
+            Command::Add(groups, reply) => {
+                let _ = reply.send(self.add(groups).await);
             }
             Command::Update(Update::Pause(id), reply) => self.stop(id, Stop::Pause, reply).await,
             Command::Update(Update::Cancel(id, delete_files), reply) => {
@@ -334,25 +337,31 @@ impl Scheduler {
 
     async fn add(
         &mut self,
-        requests: Vec<AddDownload>,
-        package_name: Option<String>,
+        groups: Vec<(Option<String>, Vec<AddDownload>)>,
     ) -> Result<Vec<DownloadId>, EngineError> {
-        if requests.is_empty() {
+        if groups.iter().all(|(_, requests)| requests.is_empty()) {
             return Ok(Vec::new());
         }
-        let package = package_name
-            .map(|name| {
-                let last = self.packages.keys().next_back().map_or(0, |id| id.0);
-                let id = last
+        let mut last = self.packages.keys().next_back().map_or(0, |id| id.0);
+        let mut packages = Vec::new();
+        let mut requests = Vec::new();
+        for (name, group) in groups {
+            if group.is_empty() {
+                continue;
+            }
+            let package = if let Some(name) = name {
+                last = last
                     .checked_add(1)
                     .filter(|id| i64::try_from(*id).is_ok())
                     .ok_or(EngineError::Identifier)?;
-                Ok::<_, EngineError>(Package {
-                    id: PackageId(id),
-                    name,
-                })
-            })
-            .transpose()?;
+                let id = PackageId(last);
+                packages.push(Package { id, name });
+                Some(id)
+            } else {
+                None
+            };
+            requests.extend(group.into_iter().map(|request| (package, request)));
+        }
         let mut entries = Vec::with_capacity(requests.len());
         let mut ids = BTreeSet::new();
         let first = self
@@ -362,17 +371,33 @@ impl Scheduler {
             .max()
             .map_or(0, |max| max.saturating_add(1));
         let mut cached_files = Vec::new();
-        for (offset, request) in requests.into_iter().enumerate() {
+        for (offset, (package, request)) in requests.into_iter().enumerate() {
             if let Some(checksum) = &request.checksum {
                 crate::parse_checksum(checksum)?;
             }
+            if !request.mirrors.is_empty() && request.checksum.is_none() {
+                return Err(HttpError::MirrorChecksumRequired.into());
+            }
+            let http = ruscello_storage::HttpQueueState {
+                output_filename: request.output_filename,
+                mirrors: request
+                    .mirrors
+                    .iter()
+                    .map(|url| {
+                        transfer::source_url(&Source::Http {
+                            url: url.to_string(),
+                        })
+                        .map(Into::into)
+                    })
+                    .collect::<Result<_, _>>()?,
+            };
             let id = self.allocate_id(&mut ids)?;
             let mut download = match request.source {
-                Source::Http { .. } => {
+                Source::Http { .. } | Source::Hoster { .. } => {
                     let url = source_url(&request.source)?;
                     let category = self.categories.assign(
                         request.category,
-                        SourceKind::Http,
+                        request.source.kind(),
                         url.as_str(),
                         Some(&url),
                         request.filename_hint.as_deref(),
@@ -384,9 +409,14 @@ impl Scheduler {
                         .transpose()?
                         .or_else(|| category.and_then(|policy| policy.category.destination.clone()))
                         .unwrap_or_else(|| self.destination.clone());
-                    let mut dl = Download::new(id, Source::Http { url: url.into() }, destination);
+                    let source = match request.source {
+                        Source::Hoster { .. } => Source::Hoster { url: url.into() },
+                        _ => Source::Http { url: url.into() },
+                    };
+                    let mut dl = Download::new(id, source, destination);
                     dl.category = category.map(|policy| policy.category.id);
                     dl.filename = request.filename_hint;
+                    dl.total_bytes = request.size_hint;
                     dl
                 }
                 Source::Torrent(torrent_source) => {
@@ -453,10 +483,7 @@ impl Scheduler {
                             .unwrap_or(&dl.destination),
                         id,
                     );
-                    dl.package = package
-                        .as_ref()
-                        .map(|package| package.id)
-                        .or(request.package);
+                    dl.package = package.or(request.package);
                     dl.tags = request.tags;
                     dl.priority = request.priority;
                     dl.max_connections = request.max_connections;
@@ -467,6 +494,7 @@ impl Scheduler {
                         position: first + offset as u64,
                         working_directory,
                         torrent: Some(torrent_state),
+                        http: Default::default(),
                     });
                     continue;
                 }
@@ -479,10 +507,7 @@ impl Scheduler {
                     .unwrap_or(&download.destination),
                 id,
             );
-            download.package = package
-                .as_ref()
-                .map(|package| package.id)
-                .or(request.package);
+            download.package = package.or(request.package);
             download.tags = request.tags;
             download.priority = request.priority;
             download.max_connections = request.max_connections;
@@ -496,6 +521,7 @@ impl Scheduler {
                 position: first + offset as u64,
                 working_directory,
                 torrent: None,
+                http,
             });
         }
         for (id, bytes) in cached_files {
@@ -505,13 +531,11 @@ impl Scheduler {
                 tracing::debug!(id, %error, "Could not cache pre-inspected torrent metadata");
             }
         }
-        let mut changes = Vec::with_capacity(entries.len() + 1);
-        if let Some(package) = &package {
-            changes.push(Change::SavePackage(package.clone()));
-        }
+        let mut changes = Vec::with_capacity(entries.len() + packages.len());
+        changes.extend(packages.iter().cloned().map(Change::SavePackage));
         changes.extend(entries.iter().map(save_entry));
         self.storage.apply(changes).await?;
-        if let Some(package) = package {
+        for package in packages {
             self.packages.insert(package.id, package);
         }
         let mut ids = Vec::with_capacity(entries.len());
@@ -741,7 +765,7 @@ impl Scheduler {
         let mut rejected = Vec::new();
         for entry in candidates {
             match &entry.download.source {
-                Source::Http { .. } => {
+                Source::Http { .. } | Source::Hoster { .. } => {
                     let Ok(url) = source_url(&entry.download.source) else {
                         let mut entry = entry.clone();
                         entry.download.transition(Status::Failed {
@@ -754,9 +778,29 @@ impl Scheduler {
                         .host_str()
                         .ok_or(EngineError::InvalidUrl)?
                         .trim_end_matches('.')
+                        .trim_start_matches("www.")
                         .to_owned();
                     let running = host_load.entry(host.clone()).or_default();
-                    if *running >= self.limits.connections_per_host.get() {
+                    let hoster_cap = match self.resolver.limits(&url).await {
+                        Ok(limits) => limits.parallel_downloads,
+                        Err(error) => {
+                            tracing::debug!(%error, "Could not read resolver limits");
+                            None
+                        }
+                    };
+                    let hoster_cap = if matches!(entry.download.source, Source::Hoster { .. })
+                        && self.resolver.builtin(&url).is_none()
+                    {
+                        hoster_cap.or(Some(std::num::NonZeroUsize::MIN))
+                    } else {
+                        hoster_cap
+                    };
+                    if *running
+                        >= hoster_cap
+                            .unwrap_or(self.limits.connections_per_host)
+                            .min(self.limits.connections_per_host)
+                            .get()
+                    {
                         continue;
                     }
                     if let Some(category) = entry.download.category {
@@ -773,7 +817,14 @@ impl Scheduler {
                     }
                     *running += 1;
                     let mut entry = entry.clone();
-                    entry.download.transition(Status::Downloading)?;
+                    let status = if matches!(entry.download.source, Source::Hoster { .. })
+                        || self.resolver.builtin(&url).is_some()
+                    {
+                        Status::Resolving
+                    } else {
+                        Status::Downloading
+                    };
+                    entry.download.transition(status)?;
                     launches.push(Launch::Http(entry, url, host));
                 }
                 Source::Torrent(torrent_source) => {
@@ -872,6 +923,7 @@ impl Scheduler {
                     let task = self.workers.spawn(Box::pin(transfer::run(
                         transfer::Context {
                             http: self.http.clone(),
+                            resolver: self.resolver.clone(),
                             limits: self.limits,
                             bandwidth: self.categories.bucket(entry.download.category),
                             disk: self.disk.clone(),
@@ -913,6 +965,15 @@ impl Scheduler {
             }
             let progress = *active.progress.borrow_and_update();
             if let Some(entry) = self.queue.get_mut(id) {
+                if entry.download.status() == Status::Resolving
+                    && (progress.total.is_some() || progress.completed != 0)
+                {
+                    let _ = entry.download.transition(Status::Downloading);
+                    let _ = self.events.send(EngineEvent::StatusChanged {
+                        id: *id,
+                        status: Status::Downloading,
+                    });
+                }
                 entry.download.downloaded_bytes = progress.completed;
                 entry.download.total_bytes = progress.total;
             }
@@ -1059,6 +1120,10 @@ impl Scheduler {
         mut entry: QueueEntry,
         error: TransferError,
     ) -> Result<(), EngineError> {
+        if error.verification_required() {
+            entry.download.transition(Status::WaitingUser)?;
+            return self.save(entry).await;
+        }
         if error.low_disk() {
             let id = entry.download.id;
             entry.download.transition(Status::Paused)?;
