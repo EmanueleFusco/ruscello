@@ -134,14 +134,16 @@ The software run used Xvfb.
 
 | Budget | Software 2D | Hardware GPU |
 | --- | ---: | ---: |
-| Idle RAM | 46.0 MB | 126.9 MB |
-| RAM with 10 downloads | 77.5 MB | 152.9 MB |
+| Idle RAM | 46.4 MB | 127.0 MB |
+| RAM with 10 downloads | 66.3 MB | 139.1 MB |
 | Idle CPU | 0.0% | 0.0% |
-| User CPU normalized to 1 Gbit/s | 5.6% | 4.5% |
-| Cold start to usable window | 0.115 s | 0.194 s |
+| User CPU normalized to 1 Gbit/s | 1.4% | 1.4% |
+| Cold start to usable window | 0.112 s | 0.174 s |
 | Per-row progress updates | 2.96 Hz | 2.96 Hz |
 
-The hardware renderer exceeded both RAM budgets on this machine. The process-kill benchmark
+The hardware renderer exceeded the idle RAM target on this machine. A minimal Iced window using
+the same default GPU backend used 93.9 MB RSS before loading any Ruscello components.
+The process-kill benchmark
 observed a 2.001-second checkpoint gap and an upper bound of 3,538,944 bytes to refetch
 at a configured 2 MiB/s. The resumed file matched its fixture's SHA-256.
 With 64 KiB write batches, the segmented throughput repeat measured 596.7 MiB/s
