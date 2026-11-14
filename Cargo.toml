@@ -94,3 +94,7 @@ strip = "symbols"
 [profile.dev.package."*"]
 # Optimise dependencies in debug builds: crypto/hashing/torrent code is very slow unoptimised.
 opt-level = 2
+
+[profile.dev.build-override]
+# Keep build scripts and proc-macros unoptimised so dev/test builds do not spend time optimising macros.
+opt-level = 0
