@@ -431,7 +431,38 @@ fn categories(app: &App) -> Element<'_, Message> {
 
 fn integrations(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
+    use ruscello_engine::InstalledBrowser;
+    let can_import = app.preferences.browser_helper
+        && !app.booting
+        && !app.cookie_importing
+        && !app.cookie_site.trim().is_empty();
     let mut controls = column![
+        text(l.get("browser-helper-title")).size(18),
+        theme::check(app.preferences.browser_helper)
+            .label(l.get("browser-helper-enabled"))
+            .on_toggle(Message::BrowserHelper),
+        text(l.get("browser-helper-detail")).size(12).style(muted),
+        theme::field(&l.get("cookie-site"), &app.cookie_site).on_input(Message::CookieSite),
+        row![
+            theme::action(text(l.get("cookie-import-firefox"))).on_press_maybe(
+                can_import.then_some(Message::ImportCookies(InstalledBrowser::Firefox))
+            ),
+            theme::action(text(l.get("cookie-import-chromium"))).on_press_maybe(
+                can_import.then_some(Message::ImportCookies(InstalledBrowser::Chromium))
+            ),
+        ]
+        .spacing(8),
+        text(if app.cookie_importing {
+            l.get("cookie-import-running")
+        } else {
+            match app.cookie_count {
+                Some(0) => l.get("cookie-import-empty"),
+                Some(count) => l.with("cookie-imported", [("count", count.to_string())]),
+                None => l.get("cookie-import-detail"),
+            }
+        })
+        .size(12)
+        .style(muted),
         text(l.get("lan-title")).size(18),
         text(l.get("lan-pending")),
         theme::check(app.preferences.lan_enabled)

@@ -158,18 +158,25 @@ pub(crate) async fn probe(
     )
     .await
     {
-        Ok(Ok(PageAnalysis::Direct(candidate))) if candidate.group == CandidateGroup::Media => {
+        Ok(result) => probe_result(result),
+        Err(_) => Probe::Unavailable,
+    }
+}
+
+pub(crate) fn probe_result(result: Result<PageAnalysis, ruscello_engine::EngineError>) -> Probe {
+    match result {
+        Ok(PageAnalysis::Direct(candidate)) if candidate.group == CandidateGroup::Media => {
             Probe::Media
         }
-        Ok(Ok(PageAnalysis::Direct(candidate))) => Probe::File(candidate.filename, candidate.size),
-        Ok(Ok(PageAnalysis::Hoster { plugin, .. })) => Probe::Hoster(plugin),
-        Ok(Ok(PageAnalysis::Page { title, candidates })) => Probe::Web(title, candidates),
-        Ok(Err(ruscello_engine::EngineError::Resolver(ResolveError::VerificationRequired))) => {
+        Ok(PageAnalysis::Direct(candidate)) => Probe::File(candidate.filename, candidate.size),
+        Ok(PageAnalysis::Hoster { plugin, .. }) => Probe::Hoster(plugin),
+        Ok(PageAnalysis::Page { title, candidates }) => Probe::Web(title, candidates),
+        Err(ruscello_engine::EngineError::Resolver(ResolveError::VerificationRequired)) => {
             Probe::Verification
         }
-        Ok(Err(ruscello_engine::EngineError::Resolver(
+        Err(ruscello_engine::EngineError::Resolver(
             ResolveError::AccountRequired | ResolveError::Keyring,
-        ))) => Probe::AccountRequired,
+        )) => Probe::AccountRequired,
         _ => Probe::Unavailable,
     }
 }
@@ -536,10 +543,7 @@ impl Dialog {
                         _ => (None, None),
                     };
                     let mut request = self.link_request(url, filename, size)?;
-                    if matches!(
-                        self.previews.get(url),
-                        Some(Probe::Hoster(_) | Probe::Verification)
-                    ) {
+                    if matches!(self.previews.get(url), Some(Probe::Hoster(_))) {
                         request.source = Source::Hoster {
                             url: url.to_string(),
                         };

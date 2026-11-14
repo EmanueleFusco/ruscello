@@ -59,6 +59,15 @@ outside the timed interval and requires Ruscello's median throughput to reach at
   refreshed links and cookies. `cargo test -p ruscello-cli --test crash_resume` covers a batch with a process
   kill, URL renewal, a dropped network response, and SHA-256 comparisons. Both use loopback fixtures.
 
+## Native browser verification tests
+
+From a desktop session, run `cargo test -p ruscello-webview --test browser -- --ignored --test-threads=1`.
+Linux CI runs the same command under Xvfb. These tests use loopback pages to simulate the user's verification
+click, check that five queued downloads complete using the HttpOnly cookie and browser User-Agent, and reopen
+the helper to check profile persistence. They also verify native popup blocking, download handoff to the
+segmented HTTP engine, and LinkGrabber capture of fetch, XHR, and media URLs. The headless iced workflow checks
+the verification and import controls in English and Italian.
+
 ## Mandatory CI Gates (Every PR)
 
 1. `cargo fmt --all --check`

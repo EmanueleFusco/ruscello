@@ -14,7 +14,7 @@ use iced::{
 };
 use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Source, Status, TorrentSource};
 use ruscello_engine::{
-    EngineEvent, EngineHandle, EngineOptions, EngineSnapshot, TorrentDetailsSnapshot,
+    EngineEvent, EngineHandle, EngineLog, EngineOptions, EngineSnapshot, TorrentDetailsSnapshot,
     TorrentFilePriority, TorrentInspection, TorrentSessionTelemetry, Url,
 };
 use tokio::sync::broadcast;
@@ -157,6 +157,13 @@ pub(crate) enum Message {
     GrabberFilter(Option<ruscello_engine::CandidateGroup>),
     GrabberGroup(ruscello_engine::CandidateGroup),
     DlcFallback(bool),
+    BrowserHelper(bool),
+    CookieSite(String),
+    ImportCookies(ruscello_engine::InstalledBrowser),
+    CookiesImported(Option<usize>),
+    OpenVerification(DownloadId),
+    BrowserResult(Option<&'static str>),
+    AnalyzeInBrowser(Url, bool),
     AutoAcceptHosters(bool),
     MonitorClipboard(bool),
     ClipboardTick,
@@ -286,6 +293,9 @@ pub(crate) struct App {
     pub(crate) lan_address: Option<std::net::IpAddr>,
     pub(crate) lan_password: settings::LanPassword,
     pub(crate) hoster_draft: settings::HosterDraft,
+    pub(crate) cookie_site: String,
+    pub(crate) cookie_importing: bool,
+    pub(crate) cookie_count: Option<usize>,
     pub(crate) update_status: UpdateStatus,
     pub(crate) category_draft: settings::CategoryDraft,
     default_destination: PathBuf,
@@ -318,6 +328,11 @@ impl App {
         let mut options = EngineOptions::new(database, destination.clone());
         options.temporary_directory = preferences.temporary_folder.clone();
         options.data_dir = options.database.parent().map(Path::to_path_buf);
+        options.browser = options
+            .data_dir
+            .clone()
+            .and_then(|directory| ruscello_engine::BrowserOptions::installed(directory).ok());
+        options.browser_enabled = preferences.browser_helper;
         options.eager_torrent_session = true;
         options.resolver =
             ruscello_engine::Resolver::new(config.parent().map(|parent| parent.join("recipes")))
@@ -377,6 +392,9 @@ impl App {
             lan_address: None,
             lan_password: settings::LanPassword(String::new()),
             hoster_draft: settings::HosterDraft::default(),
+            cookie_site: String::new(),
+            cookie_importing: false,
+            cookie_count: None,
             update_status: UpdateStatus::Idle,
             category_draft: settings::CategoryDraft::default(),
             default_destination,
@@ -581,6 +599,21 @@ impl App {
             }
             Message::Event(EngineEvent::Log {
                 id: Some(id),
+                message: EngineLog::VerificationRequired,
+            }) => {
+                self.queue.log(id, EngineLog::VerificationRequired);
+                if self.preferences.notifications {
+                    let title = self.strings.get("waiting-user");
+                    let body = self
+                        .queue
+                        .downloads
+                        .get(&id)
+                        .map_or_else(|| self.strings.get("app-name"), queue::display_name);
+                    return Task::future(desktop::notify(title, body));
+                }
+            }
+            Message::Event(EngineEvent::Log {
+                id: Some(id),
                 message,
             }) => self.queue.log(id, message),
             Message::Event(EngineEvent::Log { id: None, message }) => {
@@ -588,10 +621,8 @@ impl App {
             }
             Message::Event(EngineEvent::StatusChanged { id, status }) => {
                 let notice = if self.preferences.notifications
-                    && matches!(
-                        status,
-                        Status::Completed | Status::Failed { .. } | Status::WaitingUser
-                    ) {
+                    && matches!(status, Status::Completed | Status::Failed { .. })
+                {
                     let title = self.strings.get(i18n_status_key(status));
                     let body = self
                         .queue
@@ -965,6 +996,114 @@ impl App {
             Message::DlcFallback(enabled) => {
                 self.preferences.dlc_fallback = enabled;
                 return self.save_preferences();
+            }
+            Message::BrowserHelper(enabled) => {
+                self.preferences.browser_helper = enabled;
+                if let Some(engine) = &self.engine {
+                    engine.enable_browser_helper(enabled);
+                }
+                return self.save_preferences();
+            }
+            Message::CookieSite(site) => {
+                self.cookie_site = site;
+                self.cookie_count = None;
+            }
+            Message::ImportCookies(browser) => {
+                if self.cookie_importing || !self.preferences.browser_helper {
+                    return Task::none();
+                }
+                let site = self.cookie_site.trim();
+                let url = if site.contains("://") {
+                    Url::parse(site)
+                } else {
+                    Url::parse(&format!("https://{site}"))
+                };
+                let Ok(url) = url else {
+                    self.banner = Some("cookie-site-invalid");
+                    return Task::none();
+                };
+                let Some(engine) = self.engine.clone() else {
+                    return Task::none();
+                };
+                self.cookie_count = None;
+                self.cookie_importing = true;
+                return Task::perform(
+                    async move { engine.import_browser_cookies(browser, &url).await.ok() },
+                    Message::CookiesImported,
+                );
+            }
+            Message::CookiesImported(count) => {
+                self.cookie_importing = false;
+                self.cookie_count = count;
+                if count.is_none() {
+                    self.banner = Some("browser-unavailable");
+                }
+            }
+            Message::OpenVerification(id) => {
+                self.menu = None;
+                if !self.preferences.browser_helper {
+                    self.banner = Some("browser-disabled");
+                    return Task::none();
+                }
+                if let Some(engine) = self.engine.clone() {
+                    let locale = self.browser_locale();
+                    return Task::perform(
+                        async move {
+                            engine
+                                .open_verification(id, locale)
+                                .await
+                                .err()
+                                .and_then(|error| browser_error(&error))
+                        },
+                        Message::BrowserResult,
+                    );
+                }
+            }
+            Message::BrowserResult(Some(key)) => self.banner = Some(key),
+            Message::AnalyzeInBrowser(url, verify) => {
+                if !self.preferences.browser_helper {
+                    self.banner = Some("browser-disabled");
+                    return Task::none();
+                }
+                let Some(engine) = self.engine.clone() else {
+                    return Task::none();
+                };
+                if self.probe_tokens.contains_key(&url) {
+                    return Task::none();
+                }
+                let Some(dialog) = &mut self.add else {
+                    return Task::none();
+                };
+                dialog.previews.insert(url.clone(), add::Probe::Pending);
+                let cancellation = CancellationToken::new();
+                self.probe_tokens.insert(url.clone(), cancellation.clone());
+                self.in_flight += 1;
+                let locale = self.browser_locale();
+                return Task::perform(
+                    async move {
+                        let result = if verify {
+                            engine.verify_link(&url, locale, &cancellation).await
+                        } else {
+                            Ok(())
+                        };
+                        let result = match result {
+                            Ok(()) => engine.inspect_link_in_browser(&url, &cancellation).await,
+                            Err(error) => Err(error),
+                        };
+                        if result.as_ref().err().is_some_and(|error| {
+                            matches!(
+                                error,
+                                ruscello_engine::EngineError::Resolver(
+                                    ruscello_engine::ResolveError::Cancelled
+                                )
+                            )
+                        }) {
+                            return (url, add::Probe::Verification);
+                        }
+                        (url, add::probe_result(result))
+                    },
+                    |(url, result)| Message::Probe(url, result),
+                );
             }
             Message::AutoAcceptHosters(enabled) => {
                 self.preferences.auto_accept_hosters = enabled;
@@ -1781,6 +1920,15 @@ impl App {
             .iter()
             .filter_map(|id| self.queue.downloads.get(id));
         match action {
+            Action::Verify => {
+                if let Some(id) = selected
+                    .filter(|download| download.status() == Status::WaitingUser)
+                    .map(|download| download.id)
+                    .next()
+                {
+                    return self.update(Message::OpenVerification(id));
+                }
+            }
             Action::Cancel => self.remove = Some((self.selection.iter().copied().collect(), false)),
             Action::OpenFile | Action::OpenFolder => {
                 let paths: BTreeSet<_> = selected
@@ -1860,6 +2008,13 @@ impl App {
             }
         }
         Task::none()
+    }
+
+    fn browser_locale(&self) -> ruscello_engine::BrowserLocale {
+        match self.preferences.locale.language() {
+            ruscello_platform::language::Language::English => ruscello_engine::BrowserLocale::En,
+            ruscello_platform::language::Language::Italian => ruscello_engine::BrowserLocale::It,
+        }
     }
 
     fn command(&self, commands: Vec<Command>) -> Task<Message> {
@@ -1983,6 +2138,22 @@ fn view_animation(initial: bool) -> Animation<bool> {
 
 fn i18n_status_key(status: Status) -> &'static str {
     crate::i18n::status(status)
+}
+
+fn browser_error(error: &ruscello_engine::EngineError) -> Option<&'static str> {
+    use ruscello_engine::{BrowserFailure, EngineError, ResolveError};
+    match error {
+        EngineError::Resolver(ResolveError::Cancelled) | EngineError::VerificationNotPending => {
+            None
+        }
+        EngineError::Resolver(ResolveError::Browser(BrowserFailure::ProfileInUse)) => {
+            Some("browser-profile-busy")
+        }
+        EngineError::Resolver(ResolveError::Browser(BrowserFailure::Timeout)) => {
+            Some("browser-timeout")
+        }
+        _ => Some("browser-unavailable"),
+    }
 }
 
 struct DesktopSubscription<T>(window::Id, desktop::Receiver<T>);

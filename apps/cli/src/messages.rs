@@ -17,13 +17,14 @@ pub(crate) struct Messages {
     failed: &'static str,
     resolution: &'static str,
     verification: &'static str,
+    browser: &'static str,
     dlc_key: &'static str,
 }
 
 const EN: Messages = Messages {
     usage: "Usage: ruscello-cli [--language en|it|system] get <url> [-o directory] [-x connections]\n\
-    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --progress --quiet\n\
-    ruscello-cli inspect <url>\nruscello-cli import <file> [--dlc-fallback]",
+    Options: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <bytes/s> --progress --quiet --browser\n\
+    ruscello-cli inspect <url> [--browser]\nruscello-cli import <file> [--dlc-fallback]",
     restarted: "The previous data could not be resumed. Starting from zero.",
     non_resumable: "Not resumable",
     waiting: "Waiting for network connectivity.",
@@ -37,14 +38,15 @@ const EN: Messages = Messages {
     destination_failure: "Ruscello could not write or publish the download in the output directory.",
     failed: "Ruscello could not complete the download.",
     resolution: "Ruscello could not resolve any download links.",
-    verification: "The host requires verification in a browser.",
+    verification: "The host requires verification. Use --browser to open the verification window.",
+    browser: "Ruscello could not use the browser helper. Check that ruscello-webview is installed and its profile is available.",
     dlc_key: "Ruscello could not obtain the container key.",
 };
 
 const IT: Messages = Messages {
     usage: "Uso: ruscello-cli [--language en|it|system] get <url> [-o cartella] [-x connessioni]\n\
-    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --progress --quiet\n\
-    ruscello-cli inspect <url>\nruscello-cli import <file> [--dlc-fallback]",
+    Opzioni: --mirror <url> --checksum <md5|sha1|sha256|crc32:hex> --limit <byte/s> --progress --quiet --browser\n\
+    ruscello-cli inspect <url> [--browser]\nruscello-cli import <file> [--dlc-fallback]",
     restarted: "Impossibile riprendere i dati precedenti. Il download riparte da zero.",
     non_resumable: "Non riprendibile",
     waiting: "In attesa della connessione di rete.",
@@ -58,7 +60,8 @@ const IT: Messages = Messages {
     destination_failure: "Ruscello non ha potuto scrivere o pubblicare il download nella cartella di destinazione.",
     failed: "Ruscello non ha potuto completare il download.",
     resolution: "Ruscello non ha potuto risolvere i link di download.",
-    verification: "Il servizio richiede una verifica nel browser.",
+    verification: "Il servizio richiede una verifica. Usa --browser per aprire la finestra di verifica.",
+    browser: "Impossibile usare il browser integrato. Verifica che ruscello-webview sia installato e che il profilo sia disponibile.",
     dlc_key: "Ruscello non ha potuto ottenere la chiave del contenitore.",
 };
 
@@ -85,6 +88,7 @@ impl Messages {
         match failure {
             ResolveError::Cancelled => self.cancelled,
             ResolveError::VerificationRequired => self.verification,
+            ResolveError::Browser(_) => self.browser,
             ResolveError::KeyService => self.dlc_key,
             ResolveError::AccountRequired | ResolveError::Keyring => self.auth,
             _ => self.resolution,

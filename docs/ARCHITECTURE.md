@@ -110,7 +110,8 @@ expect_download = true
 
 - `extract = { css = "a#file", attribute = "href" }` or `extract = { regex = '...' }` selects a URL.
   `follow = true` loads that URL for another step. `browser = true` permits `click` and `wait_for`
-  selectors for the M6 browser implementation.
+  selectors in the browser helper. The helper uses fixed DOM actions and checks for a verification page
+  before each action. Each `wait` preserves the configured or page-provided countdown.
 - **LinkGrabber** probes up to 16 same-origin candidates per page, four at a time. The resolver reloads
   `<config>/recipes/blocked-hosts.txt` for each analyzed page, accepting domains, hosts entries, and
   plain EasyList domain rules such as `||example.test^`.
@@ -167,6 +168,13 @@ expect_download = true
   periodically during the transfer and pauses with a warning if space runs low. Cross-volume publication
   checks space for a copy before publishing it atomically.
 - BitTorrent state and fastresume data are managed by `librqbit` under `<data_dir>/torrent/`.
+- `ruscello-browser` starts the sibling `ruscello-webview` binary on demand and exchanges bounded JSON-lines
+  frames over its private pipes. It shuts the process down after 60 seconds of idle time. The next request
+  starts a fresh helper if the process previously stopped. Native persistent profiles use
+  `<data_dir>/webview_profile/` on Windows and Linux. On macOS, the directory stores the profile UUID
+  for WKWebView's OS-managed store (macOS 14 and later); older macOS uses the persistent default WKWebView store.
+  The resolver holds the exported cookies and User-Agent in memory, keyed by scheme, host, and port. The
+  queue does not persist them. Firefox and readable Chromium cookies can be imported for an explicit site.
 - Standard OS directories resolved via the `directories` crate (`%APPDATA%\Ruscello`, `~/.local/share/ruscello`, etc.).
 
 ## Recommended External Crates (Verify Latest Releases on crates.io)

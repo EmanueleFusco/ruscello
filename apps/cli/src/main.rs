@@ -11,9 +11,9 @@ use std::{
 };
 
 use ruscello_engine::{
-    ChecksumAlgorithm, ContainerFile, DownloadOptions, DownloadProgress, EngineHandle,
-    ExpectedChecksum, HttpDownloader, HttpError, PageAnalysis, ResolveError, Resolver, Url,
-    resolve_download,
+    BrowserLocale, BrowserOptions, ChecksumAlgorithm, ContainerFile, DownloadOptions,
+    DownloadProgress, EngineHandle, ExpectedChecksum, HttpDownloader, HttpError, PageAnalysis,
+    ResolveError, Resolver, Url, prepare_http_download,
 };
 use ruscello_platform::{language::Language, logging, paths::AppPaths};
 use tokio::sync::watch;
@@ -51,7 +51,7 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let Command::Get(arguments) = command else {
-        return match list_links(command).await {
+        return match list_links(command, language).await {
             Ok(links) => output(links.join("\n")),
             Err(failure) => {
                 error(messages.resolve_failure(&failure));
@@ -100,11 +100,15 @@ async fn run(mut arguments: Arguments, language: Language) -> anyhow::Result<Pat
     };
     let cancellation = arguments.options.cancellation.clone();
     let transfer = async {
-        if let Some(resolved) =
-            resolve_download(&resolver()?, &arguments.url, &cancellation).await?
-        {
-            resolved.apply(&mut arguments.options);
-        }
+        let resolver = resolver()?;
+        prepare_http_download(
+            &resolver,
+            &arguments.url,
+            &mut arguments.options,
+            false,
+            arguments.browser.then_some(browser_locale(language)),
+        )
+        .await?;
         Ok::<_, anyhow::Error>(
             downloader
                 .download(&arguments.url, arguments.options)
@@ -135,13 +139,47 @@ fn resolver() -> Result<Resolver, ResolveError> {
                 .ok()
                 .map(|paths| paths.config().join("recipes"))
         });
-    Resolver::new(configs)
+    let resolver = Resolver::new(configs)?;
+    let data = env::var_os("RUSCELLO_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            AppPaths::discover()
+                .ok()
+                .map(|paths| paths.data().to_owned())
+        });
+    if let Some(data) = data
+        && let Ok(options) = BrowserOptions::installed(data)
+    {
+        Ok(resolver.with_browser_helper(options, true))
+    } else {
+        Ok(resolver)
+    }
 }
 
-async fn list_links(command: Command) -> Result<Vec<String>, ResolveError> {
+fn browser_locale(language: Language) -> BrowserLocale {
+    match language {
+        Language::English => BrowserLocale::En,
+        Language::Italian => BrowserLocale::It,
+    }
+}
+
+async fn list_links(command: Command, language: Language) -> Result<Vec<String>, ResolveError> {
     match command {
-        Command::Inspect(url) => {
-            let analysis = resolver()?.inspect(&url, &Default::default()).await?;
+        Command::Inspect { url, browser } => {
+            let resolver = resolver()?;
+            let cancellation = Default::default();
+            let analysis = if browser {
+                let mut analysis = resolver.inspect_browser(&url, &cancellation).await;
+                if matches!(analysis, Err(ResolveError::VerificationRequired)) {
+                    resolver
+                        .verify(&url, browser_locale(language), &cancellation)
+                        .await?;
+                    analysis = resolver.inspect_browser(&url, &cancellation).await;
+                }
+                analysis?
+            } else {
+                resolver.inspect(&url, &cancellation).await?
+            };
             Ok(match analysis {
                 PageAnalysis::Direct(candidate) | PageAnalysis::Hoster { candidate, .. } => {
                     vec![candidate.url.into()]
@@ -189,13 +227,14 @@ struct Arguments {
     url: Url,
     options: DownloadOptions,
     progress: Option<bool>,
+    browser: bool,
 }
 
 enum Command {
     Help,
     Version,
     Get(Box<Arguments>),
-    Inspect(Url),
+    Inspect { url: Url, browser: bool },
     Import { path: PathBuf, allow_fallback: bool },
 }
 
@@ -226,10 +265,15 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
         Some("-V" | "--version") => return Ok(Command::Version),
         Some("inspect") => {
             let url = url_arg(&args.next().ok_or(())?)?;
+            let browser = match args.next().as_deref().and_then(OsStr::to_str) {
+                Some("--browser") => true,
+                None => false,
+                _ => return Err(()),
+            };
             return args
                 .next()
                 .is_none()
-                .then_some(Command::Inspect(url))
+                .then_some(Command::Inspect { url, browser })
                 .ok_or(());
         }
         Some("import") => {
@@ -259,12 +303,14 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
         url: url_arg(&url)?,
         options: DownloadOptions::default(),
         progress: None,
+        browser: false,
     };
     while let Some(flag) = args.next() {
         match flag.to_str() {
             Some("-h" | "--help") => return Ok(Command::Help),
             Some("--progress") => arguments.progress = Some(true),
             Some("--quiet") => arguments.progress = Some(false),
+            Some("--browser") => arguments.browser = true,
             Some("-o" | "--output") => arguments.options.directory = args.next().ok_or(())?.into(),
             Some("-x" | "--connections") => {
                 let value = args.next().ok_or(())?;
