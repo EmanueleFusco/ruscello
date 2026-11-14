@@ -8,7 +8,8 @@ use std::{
 use ruscello_core::{CategoryId, Source, TorrentSource};
 use ruscello_engine::{
     AddDownload, Candidate, CandidateGroup, ContainerFile, EngineHandle, ImportedLink,
-    ImportedPackage, PageAnalysis, ResolveError, TorrentInspection, Url, links,
+    ImportedPackage, MediaError, MediaInspection, MediaRequest, PageAnalysis, ResolveError,
+    TorrentInspection, Url, is_manifest_url, links,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -141,10 +142,30 @@ pub(crate) enum Probe {
     File(String, Option<u64>),
     Hoster(String),
     Web(String, Vec<Candidate>),
-    Media,
+    Media(Box<MediaInspection>),
+    MediaMissingSidecar,
     Unavailable,
     Verification,
     AccountRequired,
+}
+
+pub(crate) async fn inspect_media(
+    engine: EngineHandle,
+    url: Url,
+    cancellation: CancellationToken,
+) -> Probe {
+    match tokio::time::timeout(
+        Duration::from_secs(20),
+        engine.inspect_media(&url, &cancellation),
+    )
+    .await
+    {
+        Ok(Ok(info)) => Probe::Media(Box::new(info)),
+        Ok(Err(ruscello_engine::EngineError::Media(MediaError::SidecarMissing(_)))) => {
+            Probe::MediaMissingSidecar
+        }
+        _ => Probe::Unavailable,
+    }
 }
 
 pub(crate) async fn probe(
@@ -152,21 +173,57 @@ pub(crate) async fn probe(
     url: Url,
     cancellation: CancellationToken,
 ) -> Probe {
+    if is_manifest_url(&url) {
+        return inspect_media(engine, url, cancellation).await;
+    }
     match tokio::time::timeout(
         Duration::from_secs(15),
         engine.inspect_link(&url, &cancellation),
     )
     .await
     {
-        Ok(result) => probe_result(result),
-        Err(_) => Probe::Unavailable,
+        Ok(Ok(PageAnalysis::Direct(candidate))) if candidate.group == CandidateGroup::Media => {
+            inspect_media(engine, url, cancellation).await
+        }
+        Ok(Ok(PageAnalysis::Page { title, candidates })) => {
+            let has_likely = candidates
+                .iter()
+                .any(|candidate| candidate.group == CandidateGroup::Likely);
+            if !has_likely
+                && engine
+                    .sidecar_status()
+                    .await
+                    .is_ok_and(|status| status.ytdlp.installed)
+                && let Probe::Media(info) = inspect_media(engine, url, cancellation).await
+            {
+                return Probe::Media(info);
+            }
+            Probe::Web(title, candidates)
+        }
+        Ok(Err(
+            err @ (ruscello_engine::EngineError::Resolver(ResolveError::VerificationRequired)
+            | ruscello_engine::EngineError::Resolver(
+                ResolveError::AccountRequired | ResolveError::Keyring,
+            )),
+        )) => probe_result(Err(err)),
+        Ok(Ok(analysis)) => probe_result(Ok(analysis)),
+        Ok(Err(_)) | Err(_) => {
+            if engine
+                .sidecar_status()
+                .await
+                .is_ok_and(|status| status.ytdlp.installed)
+            {
+                return inspect_media(engine, url, cancellation).await;
+            }
+            Probe::Unavailable
+        }
     }
 }
 
 pub(crate) fn probe_result(result: Result<PageAnalysis, ruscello_engine::EngineError>) -> Probe {
     match result {
         Ok(PageAnalysis::Direct(candidate)) if candidate.group == CandidateGroup::Media => {
-            Probe::Media
+            Probe::MediaMissingSidecar
         }
         Ok(PageAnalysis::Direct(candidate)) => Probe::File(candidate.filename, candidate.size),
         Ok(PageAnalysis::Hoster { plugin, .. }) => Probe::Hoster(plugin),
@@ -255,6 +312,8 @@ pub(crate) struct Dialog {
     pub(crate) previews: HashMap<Url, Probe>,
     pub(crate) torrent_previews: HashMap<String, TorrentPreview>,
     pub(crate) torrent_files: HashMap<String, BTreeSet<usize>>,
+    pub(crate) media_formats: HashMap<Url, String>,
+    pub(crate) media_playlist_items: HashMap<Url, BTreeSet<usize>>,
     pub(crate) category: Option<CategoryId>,
     pub(crate) destination: Option<PathBuf>,
     pub(crate) paused: bool,
@@ -271,10 +330,19 @@ pub(crate) struct Dialog {
 
 impl Dialog {
     fn is_ready(&self, url: &Url) -> bool {
-        matches!(
-            self.previews.get(url),
-            Some(Probe::File(..) | Probe::Hoster(_) | Probe::Unavailable | Probe::Verification)
-        )
+        match self.previews.get(url) {
+            Some(Probe::File(..) | Probe::Hoster(_) | Probe::Unavailable | Probe::Verification) => {
+                true
+            }
+            Some(Probe::Media(info)) => {
+                info.playlist_items.is_empty()
+                    || self
+                        .media_playlist_items
+                        .get(url)
+                        .is_some_and(|selected| !selected.is_empty())
+            }
+            _ => false,
+        }
     }
 
     fn is_torrent_submittable(&self, key: &str) -> bool {
@@ -336,6 +404,10 @@ impl Dialog {
         self.entries.retain(|item| unique.insert(item.clone()));
         self.previews
             .retain(|url, _| unique.contains(&Input::Http(url.clone())));
+        self.media_formats
+            .retain(|url, _| self.previews.contains_key(url));
+        self.media_playlist_items
+            .retain(|url, _| self.previews.contains_key(url));
         self.torrent_previews
             .retain(|key, _| unique.contains(&Input::Torrent(key.clone())));
         self.torrent_files
@@ -437,8 +509,44 @@ impl Dialog {
                     .filter(|candidate| candidate.group == CandidateGroup::Likely)
                     .map(|candidate| candidate.url.clone()),
             );
+        } else if let Probe::Media(info) = &result {
+            self.media_formats
+                .entry(url.clone())
+                .or_insert_with(|| "best".to_owned());
+            if !info.playlist_items.is_empty() {
+                self.media_playlist_items
+                    .entry(url.clone())
+                    .or_insert_with(|| info.playlist_items.iter().map(|item| item.index).collect());
+            }
         }
         self.previews.insert(url, result);
+    }
+
+    pub(crate) fn set_media_format(&mut self, url: &Url, format: String) {
+        if self.previews.contains_key(url) {
+            self.media_formats.insert(url.clone(), format);
+        }
+    }
+
+    pub(crate) fn toggle_playlist_item(&mut self, url: &Url, index: usize) {
+        let Some(selected) = self.media_playlist_items.get_mut(url) else {
+            return;
+        };
+        if !selected.remove(&index) {
+            selected.insert(index);
+        }
+    }
+
+    pub(crate) fn toggle_all_playlist_items(&mut self, url: &Url, select_all: bool) {
+        let Some(Probe::Media(info)) = self.previews.get(url) else {
+            return;
+        };
+        let entry = self.media_playlist_items.entry(url.clone()).or_default();
+        if select_all {
+            *entry = info.playlist_items.iter().map(|item| item.index).collect();
+        } else {
+            entry.clear();
+        }
     }
 
     pub(crate) fn set_import(
@@ -514,20 +622,73 @@ impl Dialog {
             let requests = candidates
                 .iter()
                 .filter(|candidate| {
-                    candidate.group != CandidateGroup::Media
-                        && self.selected_links.contains(&candidate.url)
+                    self.selected_links.contains(&candidate.url)
                         && seen.insert(candidate.url.clone())
                 })
                 .filter_map(|candidate| {
-                    self.link_request(
+                    let mut request = self.link_request(
                         &candidate.url,
                         Some(candidate.filename.clone()),
                         candidate.size,
-                    )
+                    )?;
+                    if candidate.group == CandidateGroup::Media {
+                        request.source = Source::Media {
+                            url: candidate.url.to_string(),
+                        };
+                        request.media = Some(MediaRequest::default());
+                    }
+                    Some(request)
                 })
                 .collect::<Vec<_>>();
             if !requests.is_empty() {
                 groups.push((Some(title.to_owned()), requests));
+            }
+        }
+        for entry in &self.entries {
+            if let Input::Http(url) = entry
+                && let Some(Probe::Media(info)) = self.previews.get(url)
+                && !info.playlist_items.is_empty()
+                && seen.insert(url.clone())
+            {
+                let selected = self.media_playlist_items.get(url);
+                let selector = self
+                    .media_formats
+                    .get(url)
+                    .cloned()
+                    .unwrap_or_else(|| "best".to_owned());
+                let selected_fmt = info.formats.iter().find(|fmt| fmt.id == selector);
+                let playlist_requests = info
+                    .playlist_items
+                    .iter()
+                    .filter(|item| selected.is_some_and(|set| set.contains(&item.index)))
+                    .filter_map(|item| {
+                        let Ok(item_url) = Url::parse(&item.url) else {
+                            return None;
+                        };
+                        if !seen.insert(item_url.clone()) {
+                            return None;
+                        }
+                        let mut req =
+                            self.link_request(&item_url, Some(item.filename.clone()), None)?;
+                        req.source = Source::Media {
+                            url: item.url.clone(),
+                        };
+                        req.media = Some(Self::build_media_request(
+                            info,
+                            &selector,
+                            selected_fmt,
+                            item.title.clone(),
+                        ));
+                        Some(req)
+                    })
+                    .collect::<Vec<_>>();
+                if !playlist_requests.is_empty() {
+                    let package_name = info
+                        .playlist_title
+                        .clone()
+                        .unwrap_or_else(|| info.title.clone());
+                    groups.push((Some(package_name), playlist_requests));
+                }
             }
         }
         let requests = self
@@ -537,6 +698,26 @@ impl Dialog {
                 Input::Http(url) => {
                     if !self.is_ready(url) || !seen.insert(url.clone()) {
                         return None;
+                    }
+                    if let Some(Probe::Media(info)) = self.previews.get(url) {
+                        let selector = self
+                            .media_formats
+                            .get(url)
+                            .cloned()
+                            .unwrap_or_else(|| "best".to_owned());
+                        let selected_fmt = info.formats.iter().find(|fmt| fmt.id == selector);
+                        let mut request =
+                            self.link_request(url, Some(info.suggested_filename.clone()), None)?;
+                        request.source = Source::Media {
+                            url: url.to_string(),
+                        };
+                        request.media = Some(Self::build_media_request(
+                            info,
+                            &selector,
+                            selected_fmt,
+                            info.title.clone(),
+                        ));
+                        return Some(request);
                     }
                     let (filename, size) = match self.previews.get(url) {
                         Some(Probe::File(filename, size)) => (Some(filename.clone()), *size),
@@ -594,6 +775,40 @@ impl Dialog {
             }
         }
         Some(request)
+    }
+
+    fn build_media_request(
+        info: &MediaInspection,
+        selector: &str,
+        selected_fmt: Option<&ruscello_engine::MediaFormat>,
+        title: String,
+    ) -> MediaRequest {
+        let format_selector = selected_fmt
+            .map(|fmt| fmt.preset.as_selector())
+            .unwrap_or_else(|| selector.to_owned());
+        let variant_uri = selected_fmt
+            .filter(|fmt| {
+                info.kind == ruscello_engine::MediaKind::Hls
+                    && fmt.id != "best"
+                    && fmt.id != "audio"
+            })
+            .and_then(|fmt| fmt.url.clone());
+        let dash_video_id = selected_fmt
+            .filter(|fmt| info.kind == ruscello_engine::MediaKind::Dash && fmt.id != "best")
+            .map(|fmt| fmt.id.clone());
+        let dash_audio_id = selected_fmt.and_then(|fmt| fmt.audio_format_id.clone());
+        let headers = selected_fmt
+            .map(|fmt| fmt.headers.clone())
+            .unwrap_or_default();
+        MediaRequest {
+            kind: info.kind,
+            format_selector: Some(format_selector),
+            title: Some(title),
+            headers,
+            variant_uri,
+            dash_video_id,
+            dash_audio_id,
+        }
     }
 
     fn link_request(

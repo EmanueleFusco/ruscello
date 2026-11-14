@@ -3,17 +3,20 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
+    fs,
     io::{self, IsTerminal, Write},
     iter::Peekable,
     num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use ruscello_engine::{
-    BrowserLocale, BrowserOptions, ChecksumAlgorithm, ContainerFile, DownloadOptions,
-    DownloadProgress, EngineHandle, ExpectedChecksum, HttpDownloader, HttpError, PageAnalysis,
-    ResolveError, Resolver, Url, prepare_http_download,
+    BandwidthContext, BrowserLocale, BrowserOptions, ChecksumAlgorithm, ContainerFile,
+    DownloadOptions, DownloadProgress, EngineHandle, ExpectedChecksum, HeaderMap, HttpDownloader,
+    HttpError, MediaEngine, MediaError, MediaKind, MediaRequest, MediaTransferJob, PageAnalysis,
+    ResolveError, Resolver, SidecarEndpoints, SidecarSettings, Url, is_dash_url, is_hls_url,
+    is_manifest_url, prepare_http_download,
 };
 use ruscello_platform::{language::Language, logging, paths::AppPaths};
 use tokio::sync::watch;
@@ -54,7 +57,13 @@ async fn main() -> ExitCode {
         return match list_links(command, language).await {
             Ok(links) => output(links.join("\n")),
             Err(failure) => {
-                error(messages.resolve_failure(&failure));
+                if let Some(media_error) = failure.downcast_ref::<MediaError>() {
+                    error(messages.media_failure(media_error));
+                } else if let Some(resolve_error) = failure.downcast_ref::<ResolveError>() {
+                    error(messages.resolve_failure(resolve_error));
+                } else {
+                    error(&failure.to_string());
+                }
                 ExitCode::FAILURE
             }
         };
@@ -65,12 +74,17 @@ async fn main() -> ExitCode {
             tracing::debug!(error = %failure, "Download command failed");
             let http_error = failure.downcast_ref::<HttpError>();
             let resolver_error = failure.downcast_ref::<ResolveError>();
-            error(resolver_error.map_or_else(
-                || messages.failure(http_error),
-                |error| messages.resolve_failure(error),
-            ));
+            let media_error = failure.downcast_ref::<MediaError>();
+            if let Some(media) = media_error {
+                error(messages.media_failure(media));
+            } else if let Some(resolve) = resolver_error {
+                error(messages.resolve_failure(resolve));
+            } else {
+                error(messages.failure(http_error));
+            }
             if matches!(http_error, Some(HttpError::Cancelled))
                 || matches!(resolver_error, Some(ResolveError::Cancelled))
+                || media_error.is_some_and(MediaError::is_cancelled)
             {
                 ExitCode::from(130)
             } else {
@@ -86,34 +100,39 @@ async fn run(mut arguments: Arguments, language: Language) -> anyhow::Result<Pat
     let terminal = io::stderr().is_terminal();
     let show_progress = arguments.progress.unwrap_or(terminal);
     let show_warnings = arguments.progress != Some(false);
-    let view = if show_progress || show_warnings {
+    let progress_sender = if show_progress || show_warnings {
         let (sender, receiver) = watch::channel(DownloadProgress::default());
-        arguments.options.progress = Some(sender);
-        Some(tokio::spawn(progress::render(
+        arguments.options.progress = Some(sender.clone());
+        let handle = tokio::spawn(progress::render(
             receiver,
             language,
             terminal,
             show_progress,
-        )))
+        ));
+        Some((sender, handle))
     } else {
         None
     };
     let cancellation = arguments.options.cancellation.clone();
     let resolver = resolver()?;
+    let is_media =
+        arguments.format.is_some() || arguments.ytdlp.is_some() || is_manifest_url(&arguments.url);
     let transfer = async {
-        prepare_http_download(
-            &resolver,
-            &arguments.url,
-            &mut arguments.options,
-            false,
-            arguments.browser.then_some(browser_locale(language)),
-        )
-        .await?;
-        Ok::<_, anyhow::Error>(
-            downloader
+        if is_media {
+            run_media_download(&downloader, &resolver, &arguments).await
+        } else {
+            prepare_http_download(
+                &resolver,
+                &arguments.url,
+                &mut arguments.options,
+                false,
+                arguments.browser.then_some(browser_locale(language)),
+            )
+            .await?;
+            Ok(downloader
                 .download(&arguments.url, arguments.options)
-                .await?,
-        )
+                .await?)
+        }
     };
     tokio::pin!(transfer);
     let result = tokio::select! {
@@ -125,11 +144,137 @@ async fn run(mut arguments: Arguments, language: Language) -> anyhow::Result<Pat
             transfer.await
         }
     };
-    if let Some(view) = view {
+    // Dropping options inside transfer (or explicitly closing sender) lets progress render finish.
+    if let Some((sender, view)) = progress_sender {
+        drop(sender);
         let _ = view.await;
     }
     resolver.stop_browser_helper().await;
     result
+}
+
+async fn run_media_download(
+    downloader: &HttpDownloader,
+    resolver: &Resolver,
+    arguments: &Arguments,
+) -> anyhow::Result<PathBuf> {
+    let settings = sidecar_settings(arguments.ytdlp.clone(), arguments.ffmpeg.clone());
+    let data_root =
+        discovered_data_dir().unwrap_or_else(|| arguments.options.directory.join(".ruscello-data"));
+    let media = MediaEngine::new(downloader.clone(), data_root, SidecarEndpoints::default())?;
+    let cancellation = &arguments.options.cancellation;
+    let headers = if resolver.builtin(&arguments.url).is_none() {
+        resolver
+            .resolve(&arguments.url, cancellation)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.headers)
+            .unwrap_or_else(HeaderMap::new)
+    } else {
+        HeaderMap::new()
+    };
+    let kind = if is_hls_url(&arguments.url) {
+        MediaKind::Hls
+    } else if is_dash_url(&arguments.url) {
+        MediaKind::Dash
+    } else {
+        MediaKind::YtDlp
+    };
+    let work_root = arguments
+        .options
+        .directory
+        .join(format!(".ruscello-media-{:016x}", url_hash(&arguments.url)));
+    let ready_dir = work_root.join("ready");
+    let request = MediaRequest {
+        kind,
+        format_selector: arguments.format.clone(),
+        ..MediaRequest::default()
+    };
+    let bandwidth = BandwidthContext {
+        global: arguments.options.bandwidth.clone(),
+        ..BandwidthContext::default()
+    };
+    let staged = media
+        .download(MediaTransferJob {
+            url: &arguments.url,
+            request: &request,
+            session_headers: &headers,
+            working_dir: &work_root,
+            ready_dir: &ready_dir,
+            filename_hint: arguments.options.filename_hint.as_deref(),
+            concurrency: arguments.options.connections.get(),
+            bandwidth: &bandwidth,
+            settings: &settings,
+            cancellation,
+            progress: arguments.options.progress.as_ref(),
+            on_phase: &|_| {},
+        })
+        .await?;
+    let published = publish_staged_file(&staged, &arguments.options.directory)?;
+    let _ = fs::remove_dir_all(&work_root);
+    Ok(published)
+}
+
+fn sidecar_settings(ytdlp: Option<PathBuf>, ffmpeg: Option<PathBuf>) -> SidecarSettings {
+    SidecarSettings {
+        ytdlp_consent: ytdlp.is_some(),
+        ytdlp_custom_path: ytdlp,
+        ffmpeg_consent: ffmpeg.is_some(),
+        ffmpeg_custom_path: ffmpeg,
+        ..SidecarSettings::default()
+    }
+}
+
+fn url_hash(url: &Url) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in url.as_str().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn publish_staged_file(staged: &Path, destination_dir: &Path) -> io::Result<PathBuf> {
+    let name = staged
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("media.bin");
+    let mut target = destination_dir.join(name);
+    if target.exists() {
+        let stem = Path::new(name)
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or("media");
+        let ext = Path::new(name).extension().and_then(OsStr::to_str);
+        for index in 1_u32..10_000 {
+            let candidate_name = match ext {
+                Some(ext) => format!("{stem} ({index}).{ext}"),
+                None => format!("{stem} ({index})"),
+            };
+            let candidate = destination_dir.join(candidate_name);
+            if !candidate.exists() {
+                target = candidate;
+                break;
+            }
+        }
+    }
+    if fs::rename(staged, &target).is_err() {
+        fs::copy(staged, &target)?;
+        fs::File::open(&target)?.sync_all()?;
+        let _ = fs::remove_file(staged);
+    }
+    Ok(target)
+}
+
+fn discovered_data_dir() -> Option<PathBuf> {
+    env::var_os("RUSCELLO_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            AppPaths::discover()
+                .ok()
+                .map(|paths| paths.data().to_owned())
+        })
 }
 
 fn resolver() -> Result<Resolver, ResolveError> {
@@ -141,14 +286,7 @@ fn resolver() -> Result<Resolver, ResolveError> {
                 .map(|paths| paths.config().join("recipes"))
         });
     let resolver = Resolver::new(configs)?;
-    let data = env::var_os("RUSCELLO_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            AppPaths::discover()
-                .ok()
-                .map(|paths| paths.data().to_owned())
-        });
-    if let Some(data) = data
+    if let Some(data) = discovered_data_dir()
         && let Ok(options) = BrowserOptions::installed(data)
     {
         Ok(resolver.with_browser_helper(options, true))
@@ -164,9 +302,62 @@ fn browser_locale(language: Language) -> BrowserLocale {
     }
 }
 
-async fn list_links(command: Command, language: Language) -> Result<Vec<String>, ResolveError> {
+async fn list_links(command: Command, language: Language) -> anyhow::Result<Vec<String>> {
+    let messages = messages::get(language);
     match command {
-        Command::Inspect { url, browser } => {
+        Command::Inspect {
+            url,
+            browser,
+            ytdlp,
+            ffmpeg,
+        } => {
+            if is_manifest_url(&url) || ytdlp.is_some() {
+                let downloader = HttpDownloader::new()?;
+                let data_root = discovered_data_dir().unwrap_or_else(env::temp_dir);
+                let media = MediaEngine::new(downloader, data_root, SidecarEndpoints::default())?;
+                let resolver = resolver()?;
+                let cancel = Default::default();
+                let headers = if resolver.builtin(&url).is_none() {
+                    resolver
+                        .resolve(&url, &cancel)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|r| r.headers)
+                        .unwrap_or_else(HeaderMap::new)
+                } else {
+                    HeaderMap::new()
+                };
+                let inspected = media
+                    .inspect(&url, &headers, &sidecar_settings(ytdlp, ffmpeg), &cancel)
+                    .await?;
+                let mut lines = vec![format!(
+                    "{} ({:?}): {}",
+                    messages.media_label, inspected.kind, inspected.title
+                )];
+                if !inspected.formats.is_empty() {
+                    lines.push(format!("{}:", messages.formats_heading));
+                    for fmt in inspected.formats {
+                        lines.push(format!("  - {}: {}", fmt.id, fmt.label));
+                    }
+                }
+                if !inspected.playlist_items.is_empty() {
+                    let pl_title = inspected
+                        .playlist_title
+                        .as_deref()
+                        .unwrap_or(&inspected.title);
+                    lines.push(format!(
+                        "{} ({}): {}",
+                        messages.playlist_heading,
+                        inspected.playlist_items.len(),
+                        pl_title
+                    ));
+                    for item in inspected.playlist_items {
+                        lines.push(format!("  {}. {} - {}", item.index, item.title, item.url));
+                    }
+                }
+                return Ok(lines);
+            }
             let resolver = resolver()?;
             let cancellation = Default::default();
             let analysis = if browser {
@@ -193,22 +384,15 @@ async fn list_links(command: Command, language: Language) -> Result<Vec<String>,
         Command::Import {
             path,
             allow_fallback,
-        } => {
-            match EngineHandle::import_links(&path, allow_fallback)
-                .await
-                .map_err(|error| match error {
-                    ruscello_engine::EngineError::Resolver(error) => error,
-                    _ => ResolveError::InvalidContainer,
-                })? {
-                ContainerFile::Packages(packages) => Ok(packages
-                    .into_iter()
-                    .flat_map(|package| package.links)
-                    .map(|link| link.url.into())
-                    .collect()),
-                ContainerFile::Torrent => Err(ResolveError::InvalidContainer),
-            }
-        }
-        _ => Err(ResolveError::InvalidLink),
+        } => match EngineHandle::import_links(&path, allow_fallback).await? {
+            ContainerFile::Packages(packages) => Ok(packages
+                .into_iter()
+                .flat_map(|package| package.links)
+                .map(|link| link.url.into())
+                .collect()),
+            ContainerFile::Torrent => Err(ResolveError::InvalidContainer.into()),
+        },
+        _ => Err(ResolveError::InvalidLink.into()),
     }
 }
 
@@ -229,14 +413,25 @@ struct Arguments {
     options: DownloadOptions,
     progress: Option<bool>,
     browser: bool,
+    format: Option<String>,
+    ytdlp: Option<PathBuf>,
+    ffmpeg: Option<PathBuf>,
 }
 
 enum Command {
     Help,
     Version,
     Get(Box<Arguments>),
-    Inspect { url: Url, browser: bool },
-    Import { path: PathBuf, allow_fallback: bool },
+    Inspect {
+        url: Url,
+        browser: bool,
+        ytdlp: Option<PathBuf>,
+        ffmpeg: Option<PathBuf>,
+    },
+    Import {
+        path: PathBuf,
+        allow_fallback: bool,
+    },
 }
 
 fn language(args: &mut Peekable<impl Iterator<Item = OsString>>) -> Result<Language, ()> {
@@ -266,16 +461,23 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
         Some("-V" | "--version") => return Ok(Command::Version),
         Some("inspect") => {
             let url = url_arg(&args.next().ok_or(())?)?;
-            let browser = match args.next().as_deref().and_then(OsStr::to_str) {
-                Some("--browser") => true,
-                None => false,
-                _ => return Err(()),
-            };
-            return args
-                .next()
-                .is_none()
-                .then_some(Command::Inspect { url, browser })
-                .ok_or(());
+            let mut browser = false;
+            let mut ytdlp = None;
+            let mut ffmpeg = None;
+            while let Some(flag) = args.next() {
+                match flag.to_str() {
+                    Some("--browser") => browser = true,
+                    Some("--ytdlp") => ytdlp = Some(args.next().ok_or(())?.into()),
+                    Some("--ffmpeg") => ffmpeg = Some(args.next().ok_or(())?.into()),
+                    _ => return Err(()),
+                }
+            }
+            return Ok(Command::Inspect {
+                url,
+                browser,
+                ytdlp,
+                ffmpeg,
+            });
         }
         Some("import") => {
             let path = args.next().ok_or(())?.into();
@@ -305,6 +507,9 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
         options: DownloadOptions::default(),
         progress: None,
         browser: false,
+        format: None,
+        ytdlp: None,
+        ffmpeg: None,
     };
     while let Some(flag) = args.next() {
         match flag.to_str() {
@@ -312,6 +517,13 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Command, ()> {
             Some("--progress") => arguments.progress = Some(true),
             Some("--quiet") => arguments.progress = Some(false),
             Some("--browser") => arguments.browser = true,
+            Some("--format") => {
+                let value = args.next().ok_or(())?;
+                let text = value.to_str().ok_or(())?;
+                arguments.format = Some(text.to_owned());
+            }
+            Some("--ytdlp") => arguments.ytdlp = Some(args.next().ok_or(())?.into()),
+            Some("--ffmpeg") => arguments.ffmpeg = Some(args.next().ok_or(())?.into()),
             Some("-o" | "--output") => arguments.options.directory = args.next().ok_or(())?.into(),
             Some("-x" | "--connections") => {
                 let value = args.next().ok_or(())?;

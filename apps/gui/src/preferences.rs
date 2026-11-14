@@ -203,6 +203,7 @@ pub(crate) struct Preferences {
     pub(crate) notifications: bool,
     pub(crate) autostart: bool,
     pub(crate) torrent: TorrentPreferences,
+    pub(crate) sidecars: ruscello_engine::SidecarSettings,
     pub(crate) dlc_fallback: bool,
     pub(crate) browser_helper: bool,
     pub(crate) auto_accept_hosters: bool,
@@ -233,6 +234,7 @@ impl Default for Preferences {
             notifications: true,
             autostart: false,
             torrent: TorrentPreferences::default(),
+            sidecars: ruscello_engine::SidecarSettings::default(),
         }
     }
 }

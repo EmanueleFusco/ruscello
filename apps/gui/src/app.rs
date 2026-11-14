@@ -14,7 +14,8 @@ use iced::{
 };
 use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Source, Status, TorrentSource};
 use ruscello_engine::{
-    EngineEvent, EngineHandle, EngineLog, EngineOptions, EngineSnapshot, TorrentDetailsSnapshot,
+    CandidateGroup, EngineEvent, EngineHandle, EngineLog, EngineOptions, EngineSnapshot,
+    MediaError, PageAnalysis, SidecarKind, SidecarSettings, SidecarsStatus, TorrentDetailsSnapshot,
     TorrentFilePriority, TorrentInspection, TorrentSessionTelemetry, Url,
 };
 use tokio::sync::broadcast;
@@ -177,6 +178,10 @@ pub(crate) enum Message {
     TorrentInspected(String, Result<TorrentInspection, String>),
     ToggleTorrentFile(String, usize),
     ToggleAllTorrentFiles(String, bool),
+    InspectMedia(Url),
+    SelectMediaFormat(Url, String),
+    TogglePlaylistItem(Url, usize),
+    ToggleAllPlaylistItems(Url, bool),
     SubmitAdd,
     Added(bool),
     Modifiers(keyboard::Modifiers),
@@ -239,6 +244,16 @@ pub(crate) enum Message {
     AutostartApplied(bool, bool),
     #[cfg(any(windows, target_os = "linux"))]
     RegisterAssociations,
+    SidecarConsent(SidecarKind, bool),
+    SidecarAutoUpdate(bool),
+    SidecarCustomPath(SidecarKind, String),
+    PickSidecarPath(SidecarKind),
+    SidecarPathPicked(SidecarKind, Option<PathBuf>),
+    SaveSidecarSettings,
+    SidecarStatusLoaded(Option<SidecarsStatus>),
+    InstallSidecar(SidecarKind),
+    SidecarInstallResult(SidecarKind, Result<SidecarsStatus, &'static str>),
+    SidecarAutoUpdated(Option<SidecarsStatus>),
 }
 
 pub(crate) struct App {
@@ -293,6 +308,7 @@ pub(crate) struct App {
     pub(crate) lan_address: Option<std::net::IpAddr>,
     pub(crate) lan_password: settings::LanPassword,
     pub(crate) hoster_draft: settings::HosterDraft,
+    pub(crate) sidecar_draft: settings::SidecarDraft,
     pub(crate) cookie_site: String,
     pub(crate) cookie_importing: bool,
     pub(crate) cookie_count: Option<usize>,
@@ -340,6 +356,8 @@ impl App {
         if let Some(torrent) = preferences.torrent.to_settings() {
             options.torrent = torrent;
         }
+        options.sidecars = preferences.sidecars.clone();
+        let sidecar_draft = settings::SidecarDraft::from_settings(&preferences.sidecars);
         let app = Self {
             selection_motion: view_animation(true),
             details_motion: view_animation(preferences.details),
@@ -392,6 +410,7 @@ impl App {
             lan_address: None,
             lan_password: settings::LanPassword(String::new()),
             hoster_draft: settings::HosterDraft::default(),
+            sidecar_draft,
             cookie_site: String::new(),
             cookie_importing: false,
             cookie_count: None,
@@ -546,12 +565,26 @@ impl App {
                     } else {
                         Task::none()
                     };
-                    Task::batch([self.check_disk(), check, self.run_probes()])
+                    let auto_update = self.maybe_auto_update_ytdlp();
+                    Task::batch([
+                        self.check_disk(),
+                        check,
+                        self.run_probes(),
+                        self.refresh_sidecar_status(),
+                        auto_update,
+                    ])
                 };
             }
             Message::Snapshot(snapshot) => {
                 self.booting = false;
                 if let Some(snapshot) = snapshot {
+                    if self.preferences.sidecars == SidecarSettings::default()
+                        && snapshot.sidecars != SidecarSettings::default()
+                    {
+                        self.preferences.sidecars = snapshot.sidecars.clone();
+                        self.sidecar_draft =
+                            settings::SidecarDraft::from_settings(&snapshot.sidecars);
+                    }
                     self.queue.replace(snapshot);
                     self.selection
                         .retain(|id| self.queue.downloads.contains_key(id));
@@ -1090,6 +1123,12 @@ impl App {
                             Ok(()) => engine.inspect_link_in_browser(&url, &cancellation).await,
                             Err(error) => Err(error),
                         };
+                        if let Ok(PageAnalysis::Direct(ref candidate)) = result
+                            && candidate.group == CandidateGroup::Media
+                        {
+                            let probe = add::inspect_media(engine, url.clone(), cancellation).await;
+                            return (url, probe);
+                        }
                         if result.as_ref().err().is_some_and(|error| {
                             matches!(
                                 error,
@@ -1185,6 +1224,43 @@ impl App {
             Message::ToggleAllTorrentFiles(key, select_all) => {
                 if let Some(dialog) = &mut self.add {
                     dialog.toggle_all_torrent_files(&key, select_all);
+                }
+            }
+            Message::InspectMedia(url) => {
+                let Some(engine) = self.engine.clone() else {
+                    return Task::none();
+                };
+                if self.probe_tokens.contains_key(&url) {
+                    return Task::none();
+                }
+                let Some(dialog) = &mut self.add else {
+                    return Task::none();
+                };
+                dialog.previews.insert(url.clone(), add::Probe::Pending);
+                let cancellation = CancellationToken::new();
+                self.probe_tokens.insert(url.clone(), cancellation.clone());
+                self.in_flight += 1;
+                return Task::perform(
+                    async move {
+                        let preview = add::inspect_media(engine, url.clone(), cancellation).await;
+                        (url, preview)
+                    },
+                    |(url, preview)| Message::Probe(url, preview),
+                );
+            }
+            Message::SelectMediaFormat(url, format) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.set_media_format(&url, format);
+                }
+            }
+            Message::TogglePlaylistItem(url, index) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.toggle_playlist_item(&url, index);
+                }
+            }
+            Message::ToggleAllPlaylistItems(url, select_all) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.toggle_all_playlist_items(&url, select_all);
                 }
             }
             Message::SubmitAdd => {
@@ -1653,9 +1729,177 @@ impl App {
                     return self.save_categories(categories);
                 }
             }
+            Message::SidecarConsent(kind, enabled) => {
+                match kind {
+                    SidecarKind::YtDlp => self.preferences.sidecars.ytdlp_consent = enabled,
+                    SidecarKind::Ffmpeg => self.preferences.sidecars.ffmpeg_consent = enabled,
+                }
+                self.sidecar_draft.message = None;
+                return self.apply_sidecar_settings();
+            }
+            Message::SidecarAutoUpdate(enabled) => {
+                self.preferences.sidecars.ytdlp_auto_update = enabled;
+                self.sidecar_draft.message = None;
+                return self.apply_sidecar_settings();
+            }
+            Message::SidecarCustomPath(kind, value) => {
+                self.sidecar_draft.set_path(kind, value);
+                self.sidecar_draft.message = None;
+            }
+            Message::PickSidecarPath(kind) => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().to_path_buf())
+                    },
+                    move |path| Message::SidecarPathPicked(kind, path),
+                );
+            }
+            Message::SidecarPathPicked(kind, Some(path)) => {
+                self.sidecar_draft
+                    .set_path(kind, path.display().to_string());
+                self.sidecar_draft.message = Some("sidecar-paths-saved");
+                return self.commit_sidecar_paths();
+            }
+            Message::SaveSidecarSettings => {
+                self.sidecar_draft.message = Some("sidecar-paths-saved");
+                return self.commit_sidecar_paths();
+            }
+            Message::SidecarStatusLoaded(status) => {
+                if status.is_some() {
+                    self.sidecar_draft.status = status;
+                }
+            }
+            Message::InstallSidecar(kind) => {
+                let consented = match kind {
+                    SidecarKind::YtDlp => self.preferences.sidecars.ytdlp_consent,
+                    SidecarKind::Ffmpeg => self.preferences.sidecars.ffmpeg_consent,
+                };
+                if !consented {
+                    self.sidecar_draft.message = Some("sidecar-consent-error");
+                    return Task::none();
+                }
+                if self.sidecar_draft.busy.is_some() {
+                    return Task::none();
+                }
+                let Some(engine) = self.engine.clone() else {
+                    return Task::none();
+                };
+                self.preferences.sidecars.ytdlp_custom_path =
+                    settings::SidecarDraft::parse_custom_path(
+                        &self.sidecar_draft.ytdlp_custom_path,
+                    );
+                self.preferences.sidecars.ffmpeg_custom_path =
+                    settings::SidecarDraft::parse_custom_path(
+                        &self.sidecar_draft.ffmpeg_custom_path,
+                    );
+                let sidecars = self.preferences.sidecars.clone();
+                self.sidecar_draft.busy = Some(kind);
+                self.sidecar_draft.message = None;
+                return Task::perform(
+                    async move {
+                        if let Err(error) = engine.set_sidecar_settings(sidecars).await {
+                            tracing::debug!(%error, "Could not update sidecar settings");
+                            return Err("sidecar-install-failed");
+                        }
+                        if let Err(error) = engine
+                            .install_sidecar(kind, &CancellationToken::new())
+                            .await
+                        {
+                            tracing::debug!(%error, ?kind, "Sidecar installation failed");
+                            return Err(match error {
+                                ruscello_engine::EngineError::Media(
+                                    MediaError::ConsentRequired(_),
+                                ) => "sidecar-consent-error",
+                                _ => "sidecar-install-failed",
+                            });
+                        }
+                        engine
+                            .sidecar_status()
+                            .await
+                            .map_err(|_| "sidecar-install-failed")
+                    },
+                    move |result| Message::SidecarInstallResult(kind, result),
+                );
+            }
+            Message::SidecarInstallResult(_kind, result) => {
+                self.sidecar_draft.busy = None;
+                match result {
+                    Ok(status) => {
+                        self.sidecar_draft.status = Some(status);
+                        self.sidecar_draft.message = None;
+                    }
+                    Err(key) => {
+                        self.sidecar_draft.message = Some(key);
+                    }
+                }
+            }
+            Message::SidecarAutoUpdated(Some(status)) => {
+                self.sidecar_draft.status = Some(status);
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    fn commit_sidecar_paths(&mut self) -> Task<Message> {
+        self.preferences.sidecars.ytdlp_custom_path =
+            settings::SidecarDraft::parse_custom_path(&self.sidecar_draft.ytdlp_custom_path);
+        self.preferences.sidecars.ffmpeg_custom_path =
+            settings::SidecarDraft::parse_custom_path(&self.sidecar_draft.ffmpeg_custom_path);
+        self.apply_sidecar_settings()
+    }
+
+    fn apply_sidecar_settings(&mut self) -> Task<Message> {
+        let settings = self.preferences.sidecars.clone();
+        let sync = self.engine.clone().map_or_else(Task::none, |engine| {
+            Task::perform(
+                async move {
+                    if let Err(error) = engine.set_sidecar_settings(settings).await {
+                        tracing::debug!(%error, "Could not persist sidecar settings");
+                        return None;
+                    }
+                    engine.sidecar_status().await.ok()
+                },
+                Message::SidecarStatusLoaded,
+            )
+        });
+        Task::batch([sync, self.save_preferences()])
+    }
+
+    fn refresh_sidecar_status(&self) -> Task<Message> {
+        self.engine.clone().map_or_else(Task::none, |engine| {
+            Task::perform(
+                async move { engine.sidecar_status().await.ok() },
+                Message::SidecarStatusLoaded,
+            )
+        })
+    }
+
+    fn maybe_auto_update_ytdlp(&self) -> Task<Message> {
+        if !self.preferences.sidecars.ytdlp_consent || !self.preferences.sidecars.ytdlp_auto_update
+        {
+            return Task::none();
+        }
+        self.engine.clone().map_or_else(Task::none, |engine| {
+            Task::perform(
+                async move {
+                    let updated = engine
+                        .maybe_auto_update_ytdlp(&CancellationToken::new())
+                        .await
+                        .ok()
+                        .flatten();
+                    if updated.is_some() {
+                        engine.sidecar_status().await.ok()
+                    } else {
+                        None
+                    }
+                },
+                Message::SidecarAutoUpdated,
+            )
+        })
     }
 
     fn save_categories(&self, categories: ruscello_engine::CategorySettings) -> Task<Message> {

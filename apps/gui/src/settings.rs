@@ -200,6 +200,52 @@ impl Default for HosterDraft {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SidecarDraft {
+    pub(crate) ytdlp_custom_path: String,
+    pub(crate) ffmpeg_custom_path: String,
+    pub(crate) status: Option<ruscello_engine::SidecarsStatus>,
+    pub(crate) busy: Option<ruscello_engine::SidecarKind>,
+    pub(crate) message: Option<&'static str>,
+}
+
+impl SidecarDraft {
+    pub(crate) fn from_settings(settings: &ruscello_engine::SidecarSettings) -> Self {
+        Self {
+            ytdlp_custom_path: settings
+                .ytdlp_custom_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            ffmpeg_custom_path: settings
+                .ffmpeg_custom_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn path_for(&self, kind: ruscello_engine::SidecarKind) -> &str {
+        match kind {
+            ruscello_engine::SidecarKind::YtDlp => &self.ytdlp_custom_path,
+            ruscello_engine::SidecarKind::Ffmpeg => &self.ffmpeg_custom_path,
+        }
+    }
+
+    pub(crate) fn set_path(&mut self, kind: ruscello_engine::SidecarKind, value: String) {
+        match kind {
+            ruscello_engine::SidecarKind::YtDlp => self.ytdlp_custom_path = value,
+            ruscello_engine::SidecarKind::Ffmpeg => self.ffmpeg_custom_path = value,
+        }
+    }
+
+    pub(crate) fn parse_custom_path(raw: &str) -> Option<PathBuf> {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+    }
+}
+
 impl std::fmt::Debug for LanPassword {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("LanPassword([redacted])")

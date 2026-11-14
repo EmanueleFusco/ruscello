@@ -330,18 +330,18 @@ in the legacy scripts).
 
 ## M7 — Media: Native HLS/DASH + Optional yt-dlp Sidecar (crate `ruscello-media`)
 
-- [ ] **M7.1** HLS (`m3u8-rs`): master playlist parsing → quality selection, parallel segment downloads via our
+- [x] **M7.1** HLS (`m3u8-rs`): master playlist parsing → quality selection, parallel segment downloads via our
       engine, AES-128 decryption support, segment-level resume, `.ts` concatenation.
-- [ ] **M7.2** Basic DASH (MPD): segment template/list, separate video + audio track downloading.
-- [ ] **M7.3** Sidecar manager: download official `yt-dlp` releases from GitHub (with SHA-256 verification),
+- [x] **M7.2** Basic DASH (MPD): segment template/list, separate video + audio track downloading.
+- [x] **M7.3** Sidecar manager: download official `yt-dlp` releases from GitHub (with SHA-256 verification),
       periodic auto-update, and static `ffmpeg` builds — **only with explicit user consent** in Settings;
       custom binary paths also supported.
-- [ ] **M7.4** `yt-dlp` integration: invoke `yt-dlp -J` to extract title/formats/playlists → clean format picker
+- [x] **M7.4** `yt-dlp` integration: invoke `yt-dlp -J` to extract title/formats/playlists → clean format picker
       ("Best", "1080p", "Audio Only MP3"…); download via our native engine whenever direct format URLs + headers
       allow, falling back to `yt-dlp` execution with progress parsing (`--progress-template`, `--newline`).
       Pass domain cookies via temporary Netscape cookie file (`--cookies`).
-- [ ] **M7.5** Audio + video merge/remux via `ffmpeg` sidecar when available; otherwise default to progressive formats.
-- [ ] **M7.6** Playlists/channels → grouped into a selectable **Package**.
+- [x] **M7.5** Audio + video merge/remux via `ffmpeg` sidecar when available; otherwise default to progressive formats.
+- [x] **M7.6** Playlists/channels → grouped into a selectable **Package**.
 
 ### Definition of Done — M7
 HLS/DASH tests against locally generated stream fixtures; `yt-dlp` JSON parser tests using recorded fixtures;
