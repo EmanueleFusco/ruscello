@@ -68,7 +68,8 @@ pub(crate) fn direct(
         referer.set_query(None);
         referer.set_path("/");
     }
-    if (referer.scheme() != "https" || url.scheme() == "https")
+    if !headers.contains_key(header::REFERER)
+        && (referer.scheme() != "https" || url.scheme() == "https")
         && let Ok(mut value) = HeaderValue::from_str(referer.as_str())
     {
         value.set_sensitive(true);

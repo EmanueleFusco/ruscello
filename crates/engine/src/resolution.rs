@@ -54,6 +54,16 @@ pub async fn prepare_http_download(
     };
     if let Some(resolved) = resolved {
         resolved.apply(options);
+    } else {
+        let headers = resolver.session_headers(source);
+        if !headers.is_empty() {
+            options.resolved = Some(TransferLink {
+                url: source.clone(),
+                headers,
+                expires: None,
+                max_connections: None,
+            });
+        }
     }
     options.expired_link_resolver = Some(Arc::new(Refresh {
         resolver: resolver.clone(),

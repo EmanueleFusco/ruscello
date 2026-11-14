@@ -286,6 +286,7 @@ struct SiteSession {
     user_agent: HeaderValue,
     cookies: Jar,
     version: u64,
+    referer: Option<HeaderValue>,
 }
 
 impl fmt::Debug for Sessions {
@@ -296,12 +297,30 @@ impl fmt::Debug for Sessions {
 
 impl Sessions {
     pub(crate) fn store(&self, url: &Url, session: Session, verified: bool) {
+        self.store_with_referer(url, session, None, verified);
+    }
+
+    pub(crate) fn store_with_referer(
+        &self,
+        url: &Url,
+        session: Session,
+        referer: Option<&str>,
+        verified: bool,
+    ) {
         let Ok(user_agent) = HeaderValue::from_str(&session.user_agent) else {
             return;
         };
         if user_agent.is_empty() {
             return;
         }
+        let parsed_referer = referer
+            .map(str::trim)
+            .filter(|raw| Url::parse(raw).is_ok())
+            .and_then(|raw| HeaderValue::from_str(raw).ok())
+            .map(|mut value| {
+                value.set_sensitive(true);
+                value
+            });
         let Ok(mut sites) = self.0.write() else {
             return;
         };
@@ -311,8 +330,12 @@ impl Sessions {
                 user_agent: user_agent.clone(),
                 cookies: Jar::default(),
                 version: 0,
+                referer: None,
             });
         site.user_agent = user_agent;
+        if parsed_referer.is_some() {
+            site.referer = parsed_referer;
+        }
         for cookie in session.cookies {
             site.cookies.add_cookie_str(&cookie, url);
         }
@@ -337,6 +360,9 @@ impl Sessions {
             && let Some(site) = sites.get(&url.origin().ascii_serialization())
         {
             headers.insert(header::USER_AGENT, site.user_agent.clone());
+            if let Some(referer) = &site.referer {
+                headers.insert(header::REFERER, referer.clone());
+            }
             if let Some(mut value) = site.cookies.cookies(url) {
                 value.set_sensitive(true);
                 headers.insert(header::COOKIE, value);
