@@ -56,3 +56,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.
 - Isolated rotating CLI logs from the GUI and browser helper log retention.
 - Moved FTP/FTPS support from M1.11 to M9.8.
+
+### Fixed
+- Fixed a Windows race condition during BitTorrent force recheck where `librqbit`'s fastresume `.bitv` file could
+  remain in `DELETE_PENDING` state while its background flusher finished syncing, causing re-add initialization
+  to fail with access denied; also logged the underlying `librqbit` failure reason when a torrent errors.

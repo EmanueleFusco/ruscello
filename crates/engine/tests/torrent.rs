@@ -1,4 +1,10 @@
-use std::{error::Error, path::Path, time::Duration};
+use std::{
+    error::Error,
+    fmt,
+    path::Path,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 
 use ruscello_core::{
     DefaultCategory, Download, DownloadId, FileType, Source, SourceKind, Status, TorrentSource,
@@ -12,6 +18,74 @@ use tokio::{sync::broadcast, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+struct CapturedFieldVisitor(String);
+
+impl tracing::field::Visit for CapturedFieldVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        if !self.0.is_empty() {
+            self.0.push_str(", ");
+        }
+        self.0.push_str(&format!("{}={value:?}", field.name()));
+    }
+}
+
+struct WarnCapture(Arc<Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for WarnCapture {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() <= tracing::Level::WARN
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut visitor = CapturedFieldVisitor(String::new());
+        event.record(&mut visitor);
+        let entry = format!(
+            "[{}] {}: {}",
+            event.metadata().level(),
+            event.metadata().target(),
+            visitor.0
+        );
+        if let Ok(mut guard) = self.0.lock() {
+            guard.push(entry);
+        }
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+fn captured_warn_logs() -> &'static Mutex<Vec<String>> {
+    static LOGS: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        let store = Arc::new(Mutex::new(Vec::new()));
+        let _ = tracing::subscriber::set_global_default(WarnCapture(Arc::clone(&store)));
+        store
+    })
+}
+
+fn recent_warn_logs() -> String {
+    captured_warn_logs()
+        .lock()
+        .map(|g| {
+            g.iter()
+                .rev()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .unwrap_or_default()
+}
 
 fn deterministic_bytes(seed: u64, len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len);
@@ -34,6 +108,7 @@ async fn wait_for_status(
     expected: Status,
     budget: Duration,
 ) -> Result<(), Box<dyn Error>> {
+    let _ = captured_warn_logs();
     let check_snapshot =
         |snapshot: ruscello_engine::EngineSnapshot| -> Result<bool, Box<dyn Error>> {
             if let Some(download) = snapshot.downloads.iter().find(|d| d.id == id) {
@@ -45,10 +120,11 @@ async fn wait_for_status(
                     && let Status::Failed { reason } = status
                 {
                     return Err(format!(
-                    "download {} unexpectedly failed ({reason:?}) while waiting for {expected:?}",
-                    id.0
-                )
-                .into());
+                        "download {} unexpectedly failed ({reason:?}) while waiting for {expected:?}; warn logs: {}",
+                        id.0,
+                        recent_warn_logs()
+                    )
+                    .into());
                 }
             }
             Ok(false)
@@ -71,8 +147,9 @@ async fn wait_for_status(
                             && let Status::Failed { reason } = status
                         {
                             return Err(format!(
-                                "download {} unexpectedly failed ({reason:?}) while waiting for {expected:?}",
-                                id.0
+                                "download {} unexpectedly failed ({reason:?}) while waiting for {expected:?}; warn logs: {}",
+                                id.0,
+                                recent_warn_logs()
                             )
                             .into());
                         }

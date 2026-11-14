@@ -1390,7 +1390,7 @@ impl Scheduler {
                 if matches!(error, TorrentError::Cancelled) && closing {
                     return;
                 }
-                tracing::debug!(id = id.0, %error, "Torrent start failed");
+                tracing::warn!(id = id.0, %error, "Torrent start failed");
                 let reason = error.failure_reason();
                 if let Err(err) = self.fail(entry, reason).await {
                     self.storage_error(Some(id), &err);
@@ -1533,8 +1533,10 @@ impl Scheduler {
 
             if snap.seed_goal_reached {
                 seed_completed.push(id);
-            } else if matches!(snap.phase, TorrentPhase::Failed(_)) {
+            } else if let TorrentPhase::Failed(ref message) = snap.phase {
+                tracing::warn!(id = id.0, error = %message, "Torrent entered failed state");
                 failed.push(id);
+                continue;
             } else if matches!(snap.phase, TorrentPhase::Downloading)
                 && let Some(active) = self.active_torrents.get_mut(&id)
                 && active.last_disk_check.elapsed() >= self.disk.interval()
@@ -1551,10 +1553,6 @@ impl Scheduler {
                         low_disk.push(id);
                     }
                 }
-            }
-
-            if matches!(snap.phase, TorrentPhase::Failed(_)) {
-                continue;
             }
 
             let metrics = (

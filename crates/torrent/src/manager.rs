@@ -623,6 +623,12 @@ impl TorrentManager {
             });
             if let Some(tid) = already {
                 let _ = session.delete(TorrentIdOrHash::Id(tid), false).await;
+                if let Err(error) =
+                    wait_for_bitv_cleanup(&self.data_dir, &inspection.info_hash, cancellation).await
+                {
+                    self.clear_resolving_entry(id);
+                    return Err(error);
+                }
             }
         }
 
@@ -778,14 +784,15 @@ impl TorrentManager {
         request.only_files = only_files;
         request.force_recheck = false;
 
+        let info_hash = handle.info_hash().as_string();
+        drop(handle);
+
         session
             .delete(TorrentIdOrHash::Id(tid), false)
             .await
             .map_err(|error| TorrentError::Session(error.to_string()))?;
 
-        // Give the dropped `DiskBackedBitV` background flusher a turn to close its file handle
-        // before `start_or_resume` creates a fresh bitfield on Windows.
-        tokio::task::yield_now().await;
+        wait_for_bitv_cleanup(&self.data_dir, &info_hash, cancellation).await?;
 
         {
             let mut entries = self.lock_entries();
@@ -1905,4 +1912,134 @@ async fn apply_only_files_with_wait(
     Err(TorrentError::Session(
         "timed out waiting for torrent initialization".into(),
     ))
+}
+
+/// Waits until `librqbit`'s fastresume `.bitv` file is fully unlinked after `session.delete`.
+///
+/// On Windows, `DiskBackedBitV`'s background flusher can keep the file handle open briefly
+/// while flushing (`pwrite_all` + `sync_all`). Removing an open file leaves it in
+/// `DELETE_PENDING` state (`PermissionDenied`), causing a subsequent `load` or `rename`
+/// during recheck to fail with access denied.
+async fn wait_for_bitv_cleanup(
+    data_dir: &Path,
+    info_hash: &str,
+    cancellation: &CancellationToken,
+) -> Result<(), TorrentError> {
+    let bitv_path = data_dir.join(format!("{}.bitv", info_hash.to_ascii_lowercase()));
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(TorrentError::Cancelled);
+        }
+        match tokio::fs::metadata(&bitv_path).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Ok(_) => {
+                if tokio::fs::remove_file(&bitv_path).await.is_ok()
+                    && matches!(
+                        tokio::fs::metadata(&bitv_path).await,
+                        Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+                    )
+                {
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(error) => return Err(TorrentError::Io(error)),
+        }
+        if cancellation.is_cancelled() {
+            return Err(TorrentError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(TorrentError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "timed out waiting for fastresume bitfield '{}' to close",
+                    bitv_path.display()
+                ),
+            )));
+        }
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err(TorrentError::Cancelled),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{error::Error, fs::File, path::Path, time::Duration};
+
+    use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
+
+    use super::wait_for_bitv_cleanup;
+    use crate::TorrentError;
+
+    fn open_without_delete_share(path: &Path) -> std::io::Result<File> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Omit FILE_SHARE_DELETE (0x4) so removal fails with PermissionDenied while open.
+            const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+            opts.share_mode(FILE_SHARE_READ_WRITE);
+        }
+        opts.open(path)
+    }
+
+    #[tokio::test]
+    async fn wait_for_bitv_cleanup_waits_for_open_handle() -> Result<(), Box<dyn Error>> {
+        let dir = TempDir::new()?;
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let bitv_path = dir.path().join(format!("{hash}.bitv"));
+        let tmp_path = dir.path().join(format!("{hash}.bitv.tmp"));
+        std::fs::write(&bitv_path, b"bitv-data")?;
+        std::fs::write(&tmp_path, b"fresh-bitv")?;
+
+        let held_file = open_without_delete_share(&bitv_path)?;
+
+        let releaser = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            drop(held_file);
+        });
+
+        let cancel = CancellationToken::new();
+        wait_for_bitv_cleanup(dir.path(), hash, &cancel).await?;
+        releaser.await?;
+
+        std::fs::rename(&tmp_path, &bitv_path)?;
+        assert_eq!(std::fs::read(&bitv_path)?, b"fresh-bitv");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_for_bitv_cleanup_respects_cancellation() -> Result<(), Box<dyn Error>> {
+        let dir = TempDir::new()?;
+        let hash = "fedcba9876543210fedcba9876543210fedcba98";
+        let bitv_path = dir.path().join(format!("{hash}.bitv"));
+        std::fs::write(&bitv_path, b"bitv-data")?;
+
+        let pre_cancelled = CancellationToken::new();
+        pre_cancelled.cancel();
+        let immediate = wait_for_bitv_cleanup(dir.path(), hash, &pre_cancelled).await;
+        assert!(matches!(immediate, Err(TorrentError::Cancelled)));
+
+        let _held_file = open_without_delete_share(&bitv_path)?;
+
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            cancel_clone.cancel();
+        });
+
+        let result = wait_for_bitv_cleanup(dir.path(), hash, &cancel).await;
+        if cfg!(windows) {
+            assert!(matches!(result, Err(TorrentError::Cancelled)));
+        } else {
+            assert!(result.is_ok());
+        }
+        Ok(())
+    }
 }
