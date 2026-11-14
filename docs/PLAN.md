@@ -13,12 +13,28 @@
 
 ---
 
+## Current Status
+
+The feature implementation through M9 is on `main`. [M10](https://github.com/EmanueleFusco/ruscello/issues/23)
+is the next milestone on the roadmap.
+
+| Milestone | Implementation |
+|-----------|----------------|
+| M6 Browser Helper | [PR #54](https://github.com/EmanueleFusco/ruscello/pull/54), `8d0247f` |
+| M7 Native Media & Sidecars | [PR #55](https://github.com/EmanueleFusco/ruscello/pull/55), `2f3c4b3` |
+| M8 Local API, LAN Web UI & Browser Extension | [PR #56](https://github.com/EmanueleFusco/ruscello/pull/56), `90565e9` |
+| M9 Automation & Post-Processing | [PR #57](https://github.com/EmanueleFusco/ruscello/pull/57), `5f47596` |
+
+M9.1–M9.8 are complete. The PR passed formatting, dependency audit, Clippy, workspace tests, and native
+browser tests. Platform checks ran on Windows, Linux, and macOS. The [M9 epic](https://github.com/EmanueleFusco/ruscello/issues/22)
+and [GitHub milestone](https://github.com/EmanueleFusco/ruscello/milestone/10) are closed. The `v0.9.0` tag remains pending.
+
 ## 0. Requirements (from Project Owner)
 
 | # | Requirement | Where Satisfied |
 |---|-------------|-----------------|
 | R1 | BitTorrent support (magnet links, `.torrent` files, file selection, seeding) | M4 |
-| R2 | HTTP/HTTPS/FTP downloads from "as many sites as possible" | M1, M5, M6, M7 |
+| R2 | HTTP/HTTPS/FTP downloads from "as many sites as possible" | M1, M5, M6, M7, M9.8 |
 | R3 | Pause, resume, and cancel downloads | M1, M2 |
 | R4 | Zero lost downloads on PC power-off or connection drop (crash-safe resume) | M1 (core invariant) |
 | R5 | Maximum speed: dynamic segmentation, multi-connection, mirrors, connection reuse | M1, M10 |
@@ -138,7 +154,7 @@ M4, M5, and M7 can proceed in parallel after M3 (including across multiple agent
 - [x] **M1.9 Mirrors**: multiple URLs for the same file → segments distributed across matching-size sources
       with usable range validators. An expected file checksum is required before combining mirror data.
 - [x] **M1.10 Integrity verification**: optional hash check (MD5/SHA-1/SHA-256/CRC32) supplied by user or plugin.
-- **M1.11 FTP/FTPS** is deferred to M9.8.
+- **M1.11 FTP/FTPS** was implemented in M9.8.
 - [x] **M1.12 Developer CLI** (`apps/cli`): `ruscello-cli get <url> [-o dir] [-x conns]` to test and benchmark
       the engine without the GUI.
 
@@ -191,8 +207,8 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [x] **M3.4** Settings (clean, concise pages): General (including **Language selector: English / Italiano** and
       **UI Renderer selector: `wgpu` Hardware GPU [default] vs `tiny-skia` Software 2D [G-SYNC/OLED compatibility mode]**, see ADR-0001),
       Downloads, Connection/Limits, BitTorrent, Categories & Rules, Integrations & Remote Control (LAN Web UI toggle, port, optional password, QR code; browser extension; `yt-dlp`/`ffmpeg`), Advanced.
-      Desktop controls for the LAN, extension, sidecar, and updater services follow their backend milestones
-      (M7, M8, and M10.5); BitTorrent controls are connected in M4.
+      M4 adds BitTorrent controls, M7 adds sidecar management, and M8 adds LAN and extension controls.
+      Downloading and installing app updates remains part of M10.5.
       On Windows, the NVIDIA fixed-refresh option can preserve hardware rendering on affected VRR displays
       (see [ADR-0008](adr/0008-nvidia-fixed-refresh.md)).
 - [x] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),

@@ -33,9 +33,8 @@ let url = file.url();
 ```
 
 The fixture handle also exposes the seeded payload and records range requests and response statuses.
-Later milestones add mock HTML pages replicating real hoster patterns (fuckingfast-like: `/dl/...` direct link embedded in
-script; XFileSharing-like: `method_free` form → countdown → `downloadbtn`; mock verification challenge page) so
-plugins, TOML recipes, and the browser helper are tested **completely offline**.
+Loopback pages cover hoster links embedded in scripts, XFileSharing-like forms and countdowns, and
+verification challenges. The testkit also includes an FTP server with explicit FTPS and fault injection.
 
 ## HTTP throughput benchmark
 
@@ -65,8 +64,20 @@ From a desktop session, run `cargo test -p ruscello-webview --test browser -- --
 Linux CI runs the same command under Xvfb. These tests use loopback pages to simulate the user's verification
 click, check that five queued downloads complete using the HttpOnly cookie and browser User-Agent, and reopen
 the helper to check profile persistence. They also verify native popup blocking, download handoff to the
-segmented HTTP engine, and LinkGrabber capture of fetch, XHR, and media URLs. The headless iced workflow checks
-the verification and import controls in English and Italian.
+segmented HTTP engine, and LinkGrabber capture of fetch, XHR, and media URLs. The XFileSharing batch asserts
+that all ten files complete, no transfer starts before the countdown, and no popup reaches the server.
+`cargo test -p ruscello-browser` checks cookie imports spanning multiple requests, idle shutdown, and
+replacement of a crashed helper using a local protocol fixture. The headless iced workflow checks the
+verification and import controls in English and Italian.
+
+## Media, remote control, and automation tests
+
+| Milestone | Command | Coverage |
+|-----------|---------|----------|
+| M7 Media | `cargo test -p ruscello-media --test media_streams` | HLS AES-128, segment resume, DASH, and sidecar integration using local fixtures |
+| M8 LAN and browser extension | `cargo test -p ruscello-api` | Loopback authentication, LAN sessions, extension pairing, and live queue events |
+| M9 Automation | `cargo test -p ruscello-engine --test automation` | Schedule, queue completion and sleep inhibition with mock power controls, checksums, extraction, hooks, watch folders, and FTPS resume |
+| M9 FTP/FTPS | `cargo test -p ruscello-http --test ftp` | Loopback transfers, TLS, interrupted transfers, `REST` fallback, and credential redaction |
 
 ## Mandatory CI Gates (Every PR)
 
@@ -74,7 +85,9 @@ the verification and import controls in English and Italian.
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --workspace` (via `cargo-nextest`) on `windows-latest`, `ubuntu-latest`, `macos-latest`
 4. `cargo deny check`
-5. (From M10) Nightly job: short fuzzing campaign, reduced soak test, benchmark threshold check.
+5. Native browser tests on Windows, Linux (under Xvfb), and macOS.
+
+M10 plans a nightly job for a short fuzzing campaign, a reduced soak test, and a benchmark threshold check.
 
 GitHub Actions runs the JavaScript checkout and Rust cache actions on Node.js 24. Local builds and tests
 use the Rust toolchain.
