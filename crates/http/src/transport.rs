@@ -125,13 +125,20 @@ impl DerefMut for ActiveResponse {
 impl Transport {
     pub(crate) fn new(hosts: Option<HostConnections>) -> Result<Self, HttpError> {
         Ok(Self {
-            client: build_client(hosts.is_some())?,
+            client: build_client(true)?,
             hosts,
         })
     }
 
     pub(crate) async fn probe(&self, url: &Url) -> Result<Probe, HttpError> {
-        let mut headers = HeaderMap::new();
+        self.probe_with(url, HeaderMap::new()).await
+    }
+
+    pub(crate) async fn probe_with(
+        &self,
+        url: &Url,
+        mut headers: HeaderMap,
+    ) -> Result<Probe, HttpError> {
         headers.insert(header::RANGE, header::HeaderValue::from_static("bytes=0-"));
         let response = self.get(url, headers, true).await?;
         parse_probe(&response)
@@ -149,14 +156,14 @@ impl Transport {
         );
         let mut url = url.clone();
         for _ in 0..=10 {
-            if !matches!(url.scheme(), "http" | "https") {
+            if !matches!(url.scheme(), "http" | "https")
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
                 return Err(HttpError::UnsupportedScheme);
             }
             let permit = if let Some(hosts) = &self.hosts {
                 let host = url.host_str().ok_or(HttpError::UnsupportedScheme)?;
-                if !url.username().is_empty() || url.password().is_some() {
-                    return Err(HttpError::InvalidResponse("URL contains user information"));
-                }
                 Some(hosts.acquire(host.trim_end_matches('.').to_owned()).await)
             } else {
                 None
@@ -167,7 +174,7 @@ impl Transport {
                 .headers(headers.clone())
                 .send()
                 .await?;
-            if self.hosts.is_none() || !is_redirect(response.status()) {
+            if !is_redirect(response.status()) {
                 return Ok(ActiveResponse {
                     response,
                     _permit: permit,
@@ -176,12 +183,22 @@ impl Transport {
             if !follow_redirects {
                 return Err(HttpError::RepresentationChanged);
             }
-            url = response
+            let next = response
                 .headers()
                 .get(header::LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .and_then(|location| url.join(location).ok())
                 .ok_or(HttpError::InvalidResponse("invalid redirect location"))?;
+            if next.origin() != url.origin() {
+                let mut safe = HeaderMap::new();
+                for name in [header::ACCEPT_ENCODING, header::RANGE, header::IF_RANGE] {
+                    if let Some(value) = headers.remove(&name) {
+                        safe.insert(name, value);
+                    }
+                }
+                headers = safe;
+            }
+            url = next;
         }
         Err(HttpError::InvalidResponse("too many redirects"))
     }

@@ -148,6 +148,25 @@ pub(crate) enum Message {
     AddChecksum(String),
     StartImmediately(bool),
     Probe(Url, add::Probe),
+    Imported(
+        PathBuf,
+        Result<Vec<ruscello_engine::ImportedPackage>, &'static str>,
+    ),
+    SelectLink(Url, bool),
+    GrabberSearch(String),
+    GrabberFilter(Option<ruscello_engine::CandidateGroup>),
+    GrabberGroup(ruscello_engine::CandidateGroup),
+    DlcFallback(bool),
+    AutoAcceptHosters(bool),
+    MonitorClipboard(bool),
+    ClipboardTick,
+    ClipboardMonitor(Option<String>),
+    HosterDomain(String),
+    HosterUsername(String),
+    HosterPassword(settings::LanPassword),
+    SaveHoster,
+    RemoveHoster,
+    HosterSaved(&'static str),
     TorrentInspected(String, Result<TorrentInspection, String>),
     ToggleTorrentFile(String, usize),
     ToggleAllTorrentFiles(String, bool),
@@ -241,6 +260,8 @@ pub(crate) struct App {
     pub(crate) add: Option<Dialog>,
     pub(crate) editor: text_editor::Content,
     pending_probes: VecDeque<Url>,
+    probe_tokens: HashMap<Url, CancellationToken>,
+    clipboard_seen: Option<String>,
     in_flight: usize,
     inspect_tokens: HashMap<String, CancellationToken>,
     pub(crate) torrent_details: Option<(DownloadId, TorrentDetailsSnapshot)>,
@@ -264,6 +285,7 @@ pub(crate) struct App {
     nvidia_busy: bool,
     pub(crate) lan_address: Option<std::net::IpAddr>,
     pub(crate) lan_password: settings::LanPassword,
+    pub(crate) hoster_draft: settings::HosterDraft,
     pub(crate) update_status: UpdateStatus,
     pub(crate) category_draft: settings::CategoryDraft,
     default_destination: PathBuf,
@@ -297,6 +319,9 @@ impl App {
         options.temporary_directory = preferences.temporary_folder.clone();
         options.data_dir = options.database.parent().map(Path::to_path_buf);
         options.eager_torrent_session = true;
+        options.resolver =
+            ruscello_engine::Resolver::new(config.parent().map(|parent| parent.join("recipes")))
+                .ok();
         if let Some(torrent) = preferences.torrent.to_settings() {
             options.torrent = torrent;
         }
@@ -333,6 +358,8 @@ impl App {
             add: None,
             editor: text_editor::Content::new(),
             pending_probes: VecDeque::new(),
+            probe_tokens: HashMap::new(),
+            clipboard_seen: None,
             in_flight: 0,
             inspect_tokens: HashMap::new(),
             torrent_details: None,
@@ -349,6 +376,7 @@ impl App {
             settings_draft: Draft::default(),
             lan_address: None,
             lan_password: settings::LanPassword(String::new()),
+            hoster_draft: settings::HosterDraft::default(),
             update_status: UpdateStatus::Idle,
             category_draft: settings::CategoryDraft::default(),
             default_destination,
@@ -404,6 +432,11 @@ impl App {
             });
         Subscription::batch([
             engine,
+            if self.preferences.monitor_clipboard {
+                iced::time::every(Duration::from_secs(2)).map(|_| Message::ClipboardTick)
+            } else {
+                Subscription::none()
+            },
             if self.preferences.motion
                 && (self.selection_motion.is_animating(self.frame)
                     || self.details_motion.is_animating(self.frame))
@@ -495,7 +528,7 @@ impl App {
                     } else {
                         Task::none()
                     };
-                    Task::batch([self.check_disk(), check])
+                    Task::batch([self.check_disk(), check, self.run_probes()])
                 };
             }
             Message::Snapshot(snapshot) => {
@@ -692,6 +725,9 @@ impl App {
             }
             Message::Settings(open) => {
                 self.settings = open;
+                if !open {
+                    self.hoster_draft.password.0.clear();
+                }
                 if open {
                     self.settings_draft = Draft::new(
                         self.queue.limits,
@@ -760,6 +796,9 @@ impl App {
                 self.add = None;
                 self.editor = text_editor::Content::new();
                 self.pending_probes.clear();
+                for token in self.probe_tokens.values() {
+                    token.cancel();
+                }
                 for token in self.inspect_tokens.drain().map(|(_, token)| token) {
                     token.cancel();
                 }
@@ -817,8 +856,11 @@ impl App {
                     async {
                         rfd::AsyncFileDialog::new()
                             .add_filter(
-                                "Torrent / DLC / TXT / URL",
-                                &["torrent", "dlc", "txt", "url"],
+                                "Torrent / DLC / TXT / URL / Metalink / M3U",
+                                &[
+                                    "torrent", "dlc", "txt", "url", "metalink", "meta4", "m3u",
+                                    "m3u8",
+                                ],
                             )
                             .pick_files()
                             .await
@@ -878,12 +920,117 @@ impl App {
             }
             Message::Probe(url, preview) => {
                 self.in_flight = self.in_flight.saturating_sub(1);
-                if let Some(dialog) = &mut self.add
-                    && dialog.previews.contains_key(&url)
-                {
-                    dialog.previews.insert(url, preview);
+                let active = self
+                    .probe_tokens
+                    .remove(&url)
+                    .is_some_and(|token| !token.is_cancelled());
+                if active && let Some(dialog) = &mut self.add {
+                    dialog.set_probe(url, preview);
                 }
-                return self.run_probes();
+                let probes = self.run_probes();
+                let automatic = self.auto_accept_hosters();
+                return Task::batch([probes, automatic]);
+            }
+            Message::Imported(path, result) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.set_import(path, result);
+                }
+            }
+            Message::SelectLink(url, selected) => {
+                if let Some(dialog) = &mut self.add {
+                    if selected {
+                        dialog.selected_links.insert(url);
+                    } else {
+                        dialog.selected_links.remove(&url);
+                    }
+                }
+            }
+            Message::GrabberSearch(value) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.grabber_search = value;
+                }
+            }
+            Message::GrabberFilter(filter) => {
+                if let Some(dialog) = &mut self.add {
+                    dialog.grabber_filter = filter;
+                }
+            }
+            Message::GrabberGroup(group) => {
+                if let Some(dialog) = &mut self.add
+                    && !dialog.collapsed_groups.remove(&group)
+                {
+                    dialog.collapsed_groups.insert(group);
+                }
+            }
+            Message::DlcFallback(enabled) => {
+                self.preferences.dlc_fallback = enabled;
+                return self.save_preferences();
+            }
+            Message::AutoAcceptHosters(enabled) => {
+                self.preferences.auto_accept_hosters = enabled;
+                return self.save_preferences();
+            }
+            Message::MonitorClipboard(enabled) => {
+                self.preferences.monitor_clipboard = enabled;
+                self.clipboard_seen = None;
+                return self.save_preferences();
+            }
+            Message::ClipboardTick if self.preferences.monitor_clipboard => {
+                return clipboard::read().map(Message::ClipboardMonitor);
+            }
+            Message::ClipboardMonitor(Some(value))
+                if self.preferences.monitor_clipboard && value.len() <= 65536 =>
+            {
+                let previous = self.clipboard_seen.replace(value.clone());
+                if previous.as_ref().is_some_and(|seen| seen != &value)
+                    && !self.settings
+                    && self.remove.is_none()
+                    && self.add.is_none()
+                {
+                    let entries = ruscello_engine::links(&value)
+                        .into_iter()
+                        .map(|url| url.to_string())
+                        .collect::<Vec<_>>();
+                    if !entries.is_empty() {
+                        return self.update(Message::Incoming(entries));
+                    }
+                }
+            }
+            Message::HosterDomain(host) if !self.hoster_draft.busy => {
+                self.hoster_draft.host = host;
+                self.hoster_draft.password.0.clear();
+                self.hoster_draft.username.clear();
+                self.hoster_draft.result = None;
+            }
+            Message::HosterUsername(username) => self.hoster_draft.username = username,
+            Message::HosterPassword(password) => self.hoster_draft.password = password,
+            Message::SaveHoster | Message::RemoveHoster if !self.hoster_draft.busy => {
+                let save = matches!(message, Message::SaveHoster);
+                let host = self.hoster_draft.host.clone();
+                let credentials = ruscello_engine::HosterCredentials {
+                    username: self.hoster_draft.username.clone(),
+                    password: std::mem::take(&mut self.hoster_draft.password.0),
+                };
+                self.hoster_draft.busy = true;
+                return Task::perform(
+                    async move {
+                        if save {
+                            ruscello_engine::KeyringAccounts::set(host, credentials)
+                                .await
+                                .map(|_| "hoster-saved")
+                        } else {
+                            ruscello_engine::KeyringAccounts::remove(host)
+                                .await
+                                .map(|()| "hoster-removed")
+                        }
+                        .unwrap_or("hoster-keyring-error")
+                    },
+                    Message::HosterSaved,
+                );
+            }
+            Message::HosterSaved(result) => {
+                self.hoster_draft.busy = false;
+                self.hoster_draft.result = Some(result);
             }
             Message::TorrentInspected(key, result) => {
                 self.inspect_tokens.remove(&key);
@@ -906,17 +1053,12 @@ impl App {
                     if !dialog.can_submit() {
                         return Task::none();
                     }
-                    let requests = dialog.requests();
+                    let requests = dialog.requests(self.strings.get("imported-links"));
                     if !requests.is_empty() && !dialog.submitting {
                         dialog.submitting = true;
-                        let package = self.strings.get("imported-links");
                         return Task::perform(
                             async move {
-                                let result = if requests.len() > 1 {
-                                    engine.add_package(package, requests).await
-                                } else {
-                                    engine.add_many(requests).await
-                                };
+                                let result = engine.add_groups(requests).await;
                                 result
                                     .inspect_err(|_| {
                                         tracing::debug!("Could not queue imported downloads")
@@ -1408,15 +1550,22 @@ impl App {
             }
             keep
         });
-        let paths = dialog.new_text_lists();
+        let paths = dialog.new_containers();
+        for (url, token) in &self.probe_tokens {
+            if !dialog.previews.contains_key(url) {
+                token.cancel();
+            }
+        }
         self.pending_probes
             .retain(|url| dialog.previews.contains_key(url));
         self.pending_probes.extend(urls);
-        let import = if paths.is_empty() {
-            Task::none()
-        } else {
-            Task::perform(add::load_files(paths), Message::FilesLoaded)
-        };
+        let fallback = self.preferences.dlc_fallback;
+        let import = Task::batch(paths.into_iter().map(|path| {
+            Task::perform(
+                add::import(self.engine.clone(), path, fallback),
+                |(path, result)| Message::Imported(path, result),
+            )
+        }));
         Task::batch([
             self.run_probes(),
             self.run_torrent_inspections(torrents),
@@ -1490,21 +1639,48 @@ impl App {
     }
 
     fn run_probes(&mut self) -> Task<Message> {
+        let Some(engine) = self.engine.clone() else {
+            return Task::none();
+        };
         let mut tasks = Vec::new();
         while self.in_flight < 4 {
             let Some(url) = self.pending_probes.pop_front() else {
                 break;
             };
+            if self.probe_tokens.contains_key(&url) {
+                self.pending_probes.push_back(url);
+                break;
+            }
             self.in_flight += 1;
+            let cancellation = CancellationToken::new();
+            self.probe_tokens.insert(url.clone(), cancellation.clone());
+            let engine = engine.clone();
             tasks.push(Task::perform(
                 async move {
-                    let preview = add::probe(url.clone()).await;
+                    let preview = add::probe(engine, url.clone(), cancellation).await;
                     (url, preview)
                 },
                 |(url, preview)| Message::Probe(url, preview),
             ));
         }
         Task::batch(tasks)
+    }
+
+    fn auto_accept_hosters(&mut self) -> Task<Message> {
+        if self.preferences.auto_accept_hosters
+            && self.add.as_ref().is_some_and(|dialog| {
+                dialog.can_submit()
+                    && !dialog.paused
+                    && !dialog.entries.is_empty()
+                    && dialog.entries.iter().all(|entry| {
+                        matches!(entry, Input::Http(url)
+                        if matches!(dialog.previews.get(url), Some(add::Probe::Hoster(_))))
+                    })
+            })
+        {
+            return self.interaction(Message::SubmitAdd);
+        }
+        Task::none()
     }
 
     fn select(&mut self, id: DownloadId) {

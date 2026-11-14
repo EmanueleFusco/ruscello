@@ -6,7 +6,11 @@ use std::{
 };
 
 use ruscello_core::{CategoryId, Source, TorrentSource};
-use ruscello_engine::{AddDownload, TorrentInspection, Url};
+use ruscello_engine::{
+    AddDownload, Candidate, CandidateGroup, ContainerFile, EngineHandle, ImportedLink,
+    ImportedPackage, PageAnalysis, ResolveError, TorrentInspection, Url, links,
+};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Input {
@@ -28,7 +32,7 @@ impl Input {
         {
             Some("torrent") => Self::Torrent(name),
             Some("dlc") => Self::Dlc(path),
-            Some("txt") => Self::Text(path),
+            Some("txt" | "m3u" | "m3u8" | "metalink" | "meta4") => Self::Text(path),
             _ => Self::Invalid(name),
         }
     }
@@ -116,13 +120,9 @@ pub(crate) fn parse(text: &str) -> Vec<Input> {
                     return vec![input];
                 }
             }
-            let links: Vec<_> = line
-                .split_whitespace()
-                .filter_map(|value| {
-                    Input::url(
-                        value.trim_matches(['<', '>', '(', ')', '[', ']', '"', '\'', ',', ';']),
-                    )
-                })
+            let links: Vec<_> = links(line)
+                .iter()
+                .filter_map(|value| Input::url(value.as_str()))
                 .collect();
             if links.is_empty() {
                 vec![Input::Invalid(line.to_owned())]
@@ -139,32 +139,37 @@ pub(crate) fn parse(text: &str) -> Vec<Input> {
 pub(crate) enum Probe {
     Pending,
     File(String, Option<u64>),
-    Web,
+    Hoster(String),
+    Web(String, Vec<Candidate>),
     Media,
     Unavailable,
+    Verification,
+    AccountRequired,
 }
 
-pub(crate) async fn probe(url: Url) -> Probe {
-    match tokio::time::timeout(Duration::from_secs(8), ruscello_engine::inspect_http(url)).await {
-        Ok(Ok(info)) => {
-            let content = info
-                .content_type
-                .as_deref()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let path = info.final_url.path().to_ascii_lowercase();
-            if path.ends_with(".m3u8")
-                || path.ends_with(".mpd")
-                || content.contains("mpegurl")
-                || content.contains("dash+xml")
-            {
-                Probe::Media
-            } else if content.starts_with("text/html") {
-                Probe::Web
-            } else {
-                Probe::File(info.filename, info.size)
-            }
+pub(crate) async fn probe(
+    engine: EngineHandle,
+    url: Url,
+    cancellation: CancellationToken,
+) -> Probe {
+    match tokio::time::timeout(
+        Duration::from_secs(15),
+        engine.inspect_link(&url, &cancellation),
+    )
+    .await
+    {
+        Ok(Ok(PageAnalysis::Direct(candidate))) if candidate.group == CandidateGroup::Media => {
+            Probe::Media
         }
+        Ok(Ok(PageAnalysis::Direct(candidate))) => Probe::File(candidate.filename, candidate.size),
+        Ok(Ok(PageAnalysis::Hoster { plugin, .. })) => Probe::Hoster(plugin),
+        Ok(Ok(PageAnalysis::Page { title, candidates })) => Probe::Web(title, candidates),
+        Ok(Err(ruscello_engine::EngineError::Resolver(ResolveError::VerificationRequired))) => {
+            Probe::Verification
+        }
+        Ok(Err(ruscello_engine::EngineError::Resolver(
+            ResolveError::AccountRequired | ResolveError::Keyring,
+        ))) => Probe::AccountRequired,
         _ => Probe::Unavailable,
     }
 }
@@ -187,38 +192,32 @@ pub(crate) async fn load_files(paths: Vec<PathBuf>) -> Vec<Input> {
                             .unwrap_or_else(|| Input::Invalid(path.to_string_lossy().into_owned())),
                     ];
                 }
-                match Input::path(path) {
-                    Input::Text(path) => {
-                        let parsed = std::fs::File::open(&path).ok().and_then(|file| {
-                            let max = 1024 * 1024;
-                            if !file.metadata().ok()?.is_file() {
-                                return None;
-                            }
-                            let mut text = String::new();
-                            file.take(max + 1).read_to_string(&mut text).ok()?;
-                            (text.len() as u64 <= max)
-                                .then(|| parse(text.trim_start_matches('\u{feff}')))
-                        });
-                        parsed.map_or_else(
-                            || vec![Input::Invalid(path.to_string_lossy().into_owned())],
-                            |items| {
-                                items
-                                    .into_iter()
-                                    .filter(|entry| {
-                                        matches!(entry, Input::Http(_) | Input::Torrent(_))
-                                    })
-                                    .collect()
-                            },
-                        )
-                    }
-                    input => vec![input],
-                }
+                vec![Input::path(path)]
             })
             .take(1000)
             .collect()
     })
     .await
     .unwrap_or_default()
+}
+
+pub(crate) async fn import(
+    engine: Option<EngineHandle>,
+    path: PathBuf,
+    allow_fallback: bool,
+) -> (PathBuf, Result<Vec<ImportedPackage>, &'static str>) {
+    let import = match engine {
+        Some(engine) => engine.inspect_container(&path, allow_fallback).await,
+        None => EngineHandle::import_links(&path, allow_fallback).await,
+    };
+    let result = match import {
+        Ok(ContainerFile::Packages(packages)) => Ok(packages),
+        Err(ruscello_engine::EngineError::Resolver(ResolveError::KeyService)) => {
+            Err("dlc-key-failed")
+        }
+        _ => Err("import-failed"),
+    };
+    (path, result)
 }
 
 #[derive(Debug, Clone)]
@@ -245,7 +244,7 @@ pub(crate) struct Dialog {
     pub(crate) text: String,
     pub(crate) entries: Vec<Input>,
     pub(crate) files: Vec<Input>,
-    pub(crate) text_lists: HashSet<PathBuf>,
+    pub(crate) containers: HashMap<PathBuf, Option<Result<Vec<ImportedPackage>, &'static str>>>,
     pub(crate) previews: HashMap<Url, Probe>,
     pub(crate) torrent_previews: HashMap<String, TorrentPreview>,
     pub(crate) torrent_files: HashMap<String, BTreeSet<usize>>,
@@ -257,13 +256,17 @@ pub(crate) struct Dialog {
     pub(crate) connections: String,
     pub(crate) bandwidth: String,
     pub(crate) checksum: String,
+    pub(crate) selected_links: HashSet<Url>,
+    pub(crate) grabber_search: String,
+    pub(crate) grabber_filter: Option<CandidateGroup>,
+    pub(crate) collapsed_groups: HashSet<CandidateGroup>,
 }
 
 impl Dialog {
     fn is_ready(&self, url: &Url) -> bool {
         matches!(
             self.previews.get(url),
-            Some(Probe::File(..) | Probe::Unavailable)
+            Some(Probe::File(..) | Probe::Hoster(_) | Probe::Unavailable | Probe::Verification)
         )
     }
 
@@ -297,13 +300,17 @@ impl Dialog {
                             None | Some(TorrentPreview::Pending)
                         )
                 }
+                Input::Dlc(path) | Input::Text(path) => {
+                    self.containers.get(path).is_none_or(Option::is_none)
+                }
                 _ => false,
             })
-            && self.entries.iter().any(|input| match input {
-                Input::Http(url) => self.is_ready(url),
-                Input::Torrent(key) => self.is_torrent_submittable(key),
-                _ => false,
-            })
+            && (!self.selected_links.is_empty()
+                || self.entries.iter().any(|input| match input {
+                    Input::Http(url) => self.is_ready(url),
+                    Input::Torrent(key) => self.is_torrent_submittable(key),
+                    _ => false,
+                }))
     }
 
     fn valid_options(&self) -> bool {
@@ -326,6 +333,12 @@ impl Dialog {
             .retain(|key, _| unique.contains(&Input::Torrent(key.clone())));
         self.torrent_files
             .retain(|key, _| self.torrent_previews.contains_key(key));
+        self.containers.retain(|path, _| {
+            unique.contains(&Input::Dlc(path.clone()))
+                || unique.contains(&Input::Text(path.clone()))
+        });
+        let candidates = self.candidate_urls();
+        self.selected_links.retain(|url| candidates.contains(url));
         let mut urls = Vec::new();
         let mut torrents = Vec::new();
         for entry in &self.entries {
@@ -393,41 +406,150 @@ impl Dialog {
         }
     }
 
-    pub(crate) fn new_text_lists(&mut self) -> Vec<PathBuf> {
+    pub(crate) fn new_containers(&mut self) -> Vec<PathBuf> {
         self.entries
             .iter()
             .filter_map(|input| match input {
-                Input::Text(path) if self.text_lists.insert(path.clone()) => Some(path.clone()),
+                Input::Text(path) | Input::Dlc(path) if !self.containers.contains_key(path) => {
+                    self.containers.insert(path.clone(), None);
+                    Some(path.clone())
+                }
                 _ => None,
             })
             .collect()
     }
 
-    pub(crate) fn requests(&self) -> Vec<AddDownload> {
+    pub(crate) fn set_probe(&mut self, url: Url, result: Probe) {
+        if !self.previews.contains_key(&url) {
+            return;
+        }
+        if let Probe::Web(_, candidates) = &result {
+            self.selected_links.extend(
+                candidates
+                    .iter()
+                    .filter(|candidate| candidate.group == CandidateGroup::Likely)
+                    .map(|candidate| candidate.url.clone()),
+            );
+        }
+        self.previews.insert(url, result);
+    }
+
+    pub(crate) fn set_import(
+        &mut self,
+        path: PathBuf,
+        result: Result<Vec<ImportedPackage>, &'static str>,
+    ) {
+        if !self.containers.contains_key(&path) {
+            return;
+        }
+        if let Ok(packages) = &result {
+            self.selected_links.extend(
+                packages
+                    .iter()
+                    .flat_map(|package| &package.links)
+                    .map(|link| link.url.clone()),
+            );
+        }
+        self.containers.insert(path, Some(result));
+    }
+
+    pub(crate) fn page_candidates(&self) -> impl Iterator<Item = (&str, &[Candidate])> {
+        self.entries.iter().filter_map(|entry| {
+            let Input::Http(url) = entry else {
+                return None;
+            };
+            let Probe::Web(title, candidates) = self.previews.get(url)? else {
+                return None;
+            };
+            Some((title.as_str(), candidates.as_slice()))
+        })
+    }
+
+    pub(crate) fn imported_packages(&self) -> impl Iterator<Item = &ImportedPackage> {
         self.entries
+            .iter()
+            .filter_map(|entry| {
+                let (Input::Text(path) | Input::Dlc(path)) = entry else {
+                    return None;
+                };
+                self.containers.get(path)?.as_ref()?.as_ref().ok()
+            })
+            .flatten()
+    }
+
+    fn candidate_urls(&self) -> HashSet<Url> {
+        self.page_candidates()
+            .flat_map(|(_, candidates)| candidates.iter().map(|candidate| candidate.url.clone()))
+            .chain(
+                self.imported_packages()
+                    .flat_map(|package| package.links.iter().map(|link| link.url.clone())),
+            )
+            .collect()
+    }
+
+    pub(crate) fn requests(&self, batch_name: String) -> Vec<(Option<String>, Vec<AddDownload>)> {
+        let mut seen = HashSet::new();
+        let mut groups = Vec::new();
+        for package in self.imported_packages() {
+            let requests = package
+                .links
+                .iter()
+                .filter(|link| {
+                    self.selected_links.contains(&link.url) && seen.insert(link.url.clone())
+                })
+                .filter_map(|link| self.imported_request(link))
+                .collect::<Vec<_>>();
+            if !requests.is_empty() {
+                groups.push((Some(package.name.clone()), requests));
+            }
+        }
+        for (title, candidates) in self.page_candidates() {
+            let requests = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.group != CandidateGroup::Media
+                        && self.selected_links.contains(&candidate.url)
+                        && seen.insert(candidate.url.clone())
+                })
+                .filter_map(|candidate| {
+                    self.link_request(
+                        &candidate.url,
+                        Some(candidate.filename.clone()),
+                        candidate.size,
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !requests.is_empty() {
+                groups.push((Some(title.to_owned()), requests));
+            }
+        }
+        let requests = self
+            .entries
             .iter()
             .filter_map(|entry| match entry {
                 Input::Http(url) => {
-                    if !self.is_ready(url) {
+                    if !self.is_ready(url) || !seen.insert(url.clone()) {
                         return None;
                     }
-                    let mut request = AddDownload::new(Source::Http {
-                        url: url.to_string(),
-                    });
-                    request.destination = self.destination.clone();
-                    request.category = self.category;
-                    request.start_immediately = !self.paused;
-                    request.max_connections = self.connections.trim().parse().ok();
-                    request.bandwidth = self.bandwidth.trim().parse().ok();
-                    request.checksum =
-                        (!self.checksum.trim().is_empty()).then(|| self.checksum.trim().to_owned());
-                    if let Some(Probe::File(filename, _)) = self.previews.get(url) {
-                        request.filename_hint = Some(filename.clone());
+                    let (filename, size) = match self.previews.get(url) {
+                        Some(Probe::File(filename, size)) => (Some(filename.clone()), *size),
+                        _ => (None, None),
+                    };
+                    let mut request = self.link_request(url, filename, size)?;
+                    if matches!(
+                        self.previews.get(url),
+                        Some(Probe::Hoster(_) | Probe::Verification)
+                    ) {
+                        request.source = Source::Hoster {
+                            url: url.to_string(),
+                        };
                     }
                     Some(request)
                 }
                 Input::Torrent(key) => {
-                    if !self.is_torrent_submittable(key) {
+                    if !self.is_torrent_submittable(key)
+                        || Url::parse(key).is_ok_and(|url| !seen.insert(url))
+                    {
                         return None;
                     }
                     let mut request = AddDownload::new(Source::Torrent(torrent_source(key)));
@@ -449,7 +571,49 @@ impl Dialog {
                 }
                 _ => None,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if !requests.is_empty() {
+            groups.push(((requests.len() > 1).then_some(batch_name), requests));
+        }
+        groups
+    }
+
+    fn imported_request(&self, link: &ImportedLink) -> Option<AddDownload> {
+        let mut request = self.link_request(&link.url, link.filename.clone(), link.size)?;
+        if matches!(request.source, Source::Http { .. }) {
+            request.output_filename.clone_from(&link.filename);
+            if request.checksum.is_none() {
+                request.checksum.clone_from(&link.checksum);
+            }
+            if request.checksum.is_some() {
+                request.mirrors.clone_from(&link.mirrors);
+            }
+        }
+        Some(request)
+    }
+
+    fn link_request(
+        &self,
+        url: &Url,
+        filename: Option<String>,
+        size: Option<u64>,
+    ) -> Option<AddDownload> {
+        let source = match Input::url(url.as_str())? {
+            Input::Http(url) => Source::Http { url: url.into() },
+            Input::Torrent(key) => Source::Torrent(torrent_source(&key)),
+            _ => return None,
+        };
+        let mut request = AddDownload::new(source);
+        request.destination = self.destination.clone();
+        request.category = self.category;
+        request.start_immediately = !self.paused;
+        request.max_connections = self.connections.trim().parse().ok();
+        request.bandwidth = self.bandwidth.trim().parse().ok();
+        request.checksum =
+            (!self.checksum.trim().is_empty()).then(|| self.checksum.trim().to_owned());
+        request.filename_hint = filename;
+        request.size_hint = size;
+        Some(request)
     }
 }
 

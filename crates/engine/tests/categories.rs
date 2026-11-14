@@ -35,6 +35,7 @@ async fn classifies_completed_entries_from_an_older_queue() -> TestResult {
             position: 0,
             working_directory: temp.path().to_owned(),
             torrent: None,
+            http: Default::default(),
         }))])
         .await?;
     storage.close().await?;

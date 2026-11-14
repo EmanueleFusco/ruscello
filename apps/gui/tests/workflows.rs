@@ -5,10 +5,10 @@ use iced_test::{
 };
 use ruscello_core::{Download, DownloadId, Source, Status, TorrentSource};
 use ruscello_engine::{
-    EngineEvent, EngineHandle, EngineOptions, TorrentDetailsSnapshot, TorrentFilePriority,
-    TorrentFileProgress, TorrentPeerInfo, TorrentPeerState, TorrentPeerTransport, TorrentPieceMap,
-    TorrentRuntimeProgress, TorrentSessionTelemetry, TorrentSettings, TorrentTrackerInfo,
-    TorrentTrackerStatus,
+    DlcKeyService, EngineEvent, EngineHandle, EngineOptions, TorrentDetailsSnapshot,
+    TorrentFilePriority, TorrentFileProgress, TorrentPeerInfo, TorrentPeerState,
+    TorrentPeerTransport, TorrentPieceMap, TorrentRuntimeProgress, TorrentSessionTelemetry,
+    TorrentSettings, TorrentTrackerInfo, TorrentTrackerStatus,
 };
 use ruscello_testkit::{FileSpec, TestServer};
 
@@ -406,6 +406,84 @@ fn advanced_add_labels_stay_visible_while_editing_in_italian() -> anyhow::Result
         assert!(label.visible_bounds().is_some());
         assert!(label.bounds().y < ui.find(value)?.bounds().y);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn selects_linkgrabber_targets_and_persists_imported_packages() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    let server = TestServer::start().await?;
+    let target = server.file(FileSpec::random(7, 64 * 1024).filename("archive.zip"));
+    let url = target.url().to_owned();
+    let page = server.route("/index", move |_| {
+        ruscello_testkit::Reply::html(format!(
+            "<title>Archive</title><a download href=\"{url}\">Download archive</a><a href=\"/login\">Sign in</a>"
+        ))
+    });
+    let container = temp.path().join("Sample.dlc");
+    tokio::fs::write(
+        &container,
+        include_bytes!("../../../crates/resolver/tests/fixtures/sample-2026-11-14.dlc"),
+    )
+    .await?;
+    let endpoint = server.route("/dlcrypt/service.php", |_| {
+        ruscello_testkit::Reply::html(include_str!(
+            "../../../crates/resolver/tests/fixtures/sample-2026-11-14.rc.xml"
+        ))
+    });
+    let mut options =
+        EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    options.dlc_service = Some(DlcKeyService::new(
+        ruscello_engine::Url::parse(&endpoint)?,
+        None,
+    ));
+    let engine = EngineHandle::start(options).await?;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(engine.snapshot().await?))).await;
+    apply(&mut app, Message::Incoming(vec![page])).await;
+    apply(&mut app, Message::Files(vec![container])).await;
+    let dialog = app
+        .add
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Add dialog was not open"))?;
+    assert_eq!(dialog.selected_links.len(), 2);
+    assert_eq!(
+        dialog.page_candidates().next().map(|page| page.0),
+        Some("Archive")
+    );
+    let download = click(&app, "Download selected")?;
+    apply(&mut app, Message::StartImmediately(false)).await;
+    apply(&mut app, download).await;
+    let snapshot = engine.snapshot().await?;
+    assert_eq!(snapshot.downloads.len(), 2);
+    assert!(
+        snapshot
+            .downloads
+            .iter()
+            .all(|item| item.status() == Status::Paused && item.package.is_some())
+    );
+    assert!(
+        snapshot
+            .packages
+            .iter()
+            .any(|package| package.name == "Test package")
+    );
+    assert!(
+        snapshot
+            .downloads
+            .iter()
+            .any(|item| item.filename.as_deref() == Some("Sample.zip")
+                && item.total_bytes == Some(42))
+    );
+    assert!(
+        snapshot
+            .packages
+            .iter()
+            .any(|package| package.name == "Archive")
+    );
+    engine.shutdown().await?;
     Ok(())
 }
 

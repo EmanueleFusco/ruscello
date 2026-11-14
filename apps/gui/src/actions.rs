@@ -78,11 +78,14 @@ pub(crate) fn event(event: Event, status: event::Status, _: window::Id) -> Optio
 }
 
 pub(crate) fn can_pause(status: Status) -> bool {
-    status.is_active() || matches!(status, Status::Queued | Status::WaitingUser)
+    status.is_active() || matches!(status, Status::Queued)
 }
 
 pub(crate) fn can_resume(status: Status) -> bool {
-    matches!(status, Status::Paused | Status::Failed { .. })
+    matches!(
+        status,
+        Status::Paused | Status::WaitingUser | Status::Failed { .. }
+    )
 }
 
 pub(crate) fn can_recheck(download: &ruscello_core::Download) -> bool {

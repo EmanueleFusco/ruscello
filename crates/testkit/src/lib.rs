@@ -9,5 +9,6 @@
 mod fixture;
 mod server;
 
+pub use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 pub use fixture::{FileSpec, Payload, Representation};
-pub use server::{RequestRecord, TestFile, TestServer};
+pub use server::{Reply, Request, RequestRecord, TestFile, TestServer};

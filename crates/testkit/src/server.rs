@@ -25,6 +25,7 @@ use tokio::{net::TcpListener, task::JoinHandle, time::sleep};
 use crate::{FileSpec, Payload, Representation};
 
 type Files = Arc<Mutex<Vec<Arc<Resource>>>>;
+type Routes = Arc<Mutex<HashMap<String, Arc<dyn Fn(Request) -> Reply + Send + Sync>>>>;
 const FILENAME_ENCODING: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'-')
@@ -32,11 +33,46 @@ const FILENAME_ENCODING: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'~');
 
 /// An HTTP server on an ephemeral IPv4 loopback port. Dropping it closes the listener.
-#[derive(Debug)]
 pub struct TestServer {
     address: SocketAddr,
     files: Files,
+    routes: Routes,
     task: JoinHandle<io::Result<()>>,
+}
+
+impl std::fmt::Debug for TestServer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TestServer")
+            .field("address", &self.address)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+pub struct Request {
+    pub method: axum::http::Method,
+    pub headers: HeaderMap,
+    pub uri: axum::http::Uri,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub enum Reply {
+    Response(StatusCode, HeaderMap, String),
+    File(TestFile),
+}
+
+impl Reply {
+    pub fn html(contents: impl Into<String>) -> Self {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+        Self::Response(StatusCode::OK, headers, contents.into())
+    }
+
+    pub fn status(status: StatusCode) -> Self {
+        Self::Response(status, HeaderMap::new(), String::new())
+    }
 }
 
 impl TestServer {
@@ -44,12 +80,20 @@ impl TestServer {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let address = listener.local_addr()?;
         let files = Files::default();
+        let routes = Routes::default();
         let router = Router::new()
             .route("/file/{id}", get(serve_file))
             .route("/file/{id}/", get(serve_file))
             .route("/file/{id}/{name}", get(serve_named_file))
             .route("/redirect/{id}/{hops}", get(redirect))
-            .with_state(files.clone());
+            .with_state(files.clone())
+            .fallback({
+                let routes = routes.clone();
+                move |ConnectInfo(peer): ConnectInfo<SocketAddr>,
+                      request: axum::extract::Request| {
+                    respond_custom(routes.clone(), peer, request)
+                }
+            });
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -60,8 +104,18 @@ impl TestServer {
         Ok(Self {
             address,
             files,
+            routes,
             task,
         })
+    }
+
+    pub fn route(
+        &self,
+        path: &str,
+        handler: impl Fn(Request) -> Reply + Send + Sync + 'static,
+    ) -> String {
+        lock(&self.routes).insert(path.to_owned(), Arc::new(handler));
+        format!("http://{}{path}", self.address)
     }
 
     /// Registers a new route and returns its URL and observation handle.
@@ -255,10 +309,39 @@ async fn respond(files: Files, id: usize, ip: IpAddr, headers: HeaderMap) -> Res
     let Some(resource) = resource else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    respond_resource(&resource, ip, &headers).await
+}
+
+async fn respond_custom(
+    routes: Routes,
+    peer: SocketAddr,
+    request: axum::extract::Request,
+) -> Response {
+    let handler = lock(&routes).get(request.uri().path()).cloned();
+    let Some(handler) = handler else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let (parts, body) = request.into_parts();
+    let body = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
+        Ok(body) => body.to_vec(),
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    match handler(Request {
+        method: parts.method,
+        headers: parts.headers.clone(),
+        uri: parts.uri,
+        body,
+    }) {
+        Reply::Response(status, headers, body) => (status, headers, body).into_response(),
+        Reply::File(file) => respond_resource(&file.resource, peer.ip(), &parts.headers).await,
+    }
+}
+
+async fn respond_resource(resource: &Arc<Resource>, ip: IpAddr, headers: &HeaderMap) -> Response {
     let value = |name| headers.get(name).and_then(|header| header.to_str().ok());
     let range = value(header::RANGE);
     let if_range = value(header::IF_RANGE);
-    let response = file_response(&resource, ip, range, if_range).await;
+    let response = file_response(resource, ip, range, if_range).await;
     lock(&resource.requests).push(RequestRecord {
         range: range.map(str::to_owned),
         if_range: if_range.map(str::to_owned),

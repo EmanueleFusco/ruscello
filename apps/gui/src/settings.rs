@@ -17,18 +17,20 @@ pub(crate) enum Page {
     Torrent,
     Categories,
     Integrations,
+    Hosters,
     Advanced,
     About,
 }
 
 impl Page {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::General,
         Self::Downloads,
         Self::Speed,
         Self::Torrent,
         Self::Categories,
         Self::Integrations,
+        Self::Hosters,
         Self::Advanced,
         Self::About,
     ];
@@ -41,6 +43,7 @@ impl Page {
             Self::Torrent => "torrent-input",
             Self::Categories => "categories",
             Self::Integrations => "integrations",
+            Self::Hosters => "hoster-accounts",
             Self::Advanced => "advanced",
             Self::About => "about",
         }
@@ -175,6 +178,27 @@ pub(crate) async fn lan_address() -> Option<IpAddr> {
 
 #[derive(Clone)]
 pub(crate) struct LanPassword(pub(crate) String);
+
+#[derive(Debug)]
+pub(crate) struct HosterDraft {
+    pub(crate) host: String,
+    pub(crate) username: String,
+    pub(crate) password: LanPassword,
+    pub(crate) busy: bool,
+    pub(crate) result: Option<&'static str>,
+}
+
+impl Default for HosterDraft {
+    fn default() -> Self {
+        Self {
+            host: "pixeldrain.com".into(),
+            username: String::new(),
+            password: LanPassword(String::new()),
+            busy: false,
+            result: None,
+        }
+    }
+}
 
 impl std::fmt::Debug for LanPassword {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -3,7 +3,7 @@ use std::{
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bytes::Bytes;
@@ -21,8 +21,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     BandwidthLimit, ConnectionController, Connectivity, DEFAULT_MIN_SEGMENT_SIZE, ErrorClass,
     ExpectedChecksum, ExpiredLinkResolver, FileWriter, HostConnections, HttpError, Probe,
-    RetryPolicy, SegmentAllocator, Work, WorkId, WriterError,
-    probe::{content_range, require_identity},
+    RetryPolicy, SegmentAllocator, TransferLink, Work, WorkId, WriterError,
+    probe::{content_range, is_page, looks_like_page, require_identity},
     retry::{self, RetryState, status_error},
     transport::{ActiveResponse, Transport},
     writer::{CheckpointJob, Recovery, TransferKey},
@@ -55,6 +55,9 @@ pub struct DownloadOptions {
     pub download_bandwidth: Option<NonZeroU64>,
     pub progress: Option<watch::Sender<DownloadProgress>>,
     pub expired_link_resolver: Option<Arc<dyn ExpiredLinkResolver>>,
+    /// The first resolved URL, distinct from the logical source used for checkpoints.
+    pub resolved: Option<TransferLink>,
+    pub filename_hint: Option<String>,
     pub mirrors: Vec<Url>,
     pub expected_checksum: Option<ExpectedChecksum>,
     pub checkpoint_job: Option<CheckpointJob>,
@@ -75,6 +78,8 @@ impl Default for DownloadOptions {
             download_bandwidth: None,
             progress: None,
             expired_link_resolver: None,
+            resolved: None,
+            filename_hint: None,
             mirrors: Vec::new(),
             expected_checksum: None,
             checkpoint_job: None,
@@ -178,7 +183,10 @@ impl HttpDownloader {
         if !options.mirrors.is_empty() && options.expected_checksum.is_none() {
             return Err(HttpError::MirrorChecksumRequired);
         }
-        let mut current = url.clone();
+        let mut current = options
+            .resolved
+            .clone()
+            .unwrap_or_else(|| TransferLink::new(url.clone()));
         let mut state = DownloadState {
             cap: options
                 .connections
@@ -194,9 +202,16 @@ impl HttpDownloader {
                 self.connectivity.wait_online(&options.cancellation).await?;
                 options.waiting(false);
             }
-            let error = match self.attempt(url, &current, &options, &mut state).await {
-                Ok(path) => return Ok(path),
-                Err(error) => error,
+            let error = if current
+                .expires
+                .is_some_and(|expires| expires <= SystemTime::now())
+            {
+                HttpError::ExpiredRepresentation
+            } else {
+                match Box::pin(self.attempt(url, &current, &options, &mut state)).await {
+                    Ok(path) => return Ok(path),
+                    Err(error) => error,
+                }
             };
             if matches!(error, HttpError::RepresentationChanged) {
                 if representation_changes == MAX_RESTARTS {
@@ -213,8 +228,11 @@ impl HttpDownloader {
                 refreshes += 1;
                 current = tokio::select! {
                     () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
-                    result = resolver.resolve(&current) => result?,
+                    result = resolver.resolve_transfer(&current.url) => result?,
                 };
+                if let Some(cap) = current.max_connections {
+                    state.cap = state.cap.min(cap);
+                }
                 continue;
             }
             let Some(delay) =
@@ -236,13 +254,25 @@ impl HttpDownloader {
     async fn attempt(
         &self,
         original: &Url,
-        current: &Url,
+        current: &TransferLink,
         options: &DownloadOptions,
         state: &mut DownloadState,
     ) -> Result<PathBuf, HttpError> {
-        let data = tokio::select! {
+        let mut data = tokio::select! {
             () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
-            result = self.transport.probe(current) => result?,
+            result = self.transport.probe_with(&current.url, current.headers.clone()) => result?,
+        };
+        let resolved = options.resolved.is_some();
+        if resolved && !data.attachment && is_page(data.content_type.as_deref()) {
+            return Err(HttpError::ExpiredRepresentation);
+        }
+        if let Some(filename) = &options.filename_hint {
+            data.filename.clone_from(filename);
+        }
+        let headers = if data.final_url.origin() == current.url.origin() {
+            current.headers.clone()
+        } else {
+            HeaderMap::new()
         };
         if let Some(preparation) = options.preparation.clone() {
             let metadata = data.clone();
@@ -262,16 +292,31 @@ impl HttpDownloader {
         };
         let source = data.size.and_then(|size| {
             (size > 0)
-                .then(|| RangeSource::new(&self.transport, &data, size, limits.clone()))
+                .then(|| {
+                    RangeSource::new(
+                        &self.transport,
+                        &data,
+                        size,
+                        limits.clone(),
+                        headers.clone(),
+                        resolved,
+                    )
+                })
                 .flatten()
         });
-        let key = TransferKey::new(original, &data, options.expected_checksum.as_ref());
+        let key = TransferKey::new(
+            original,
+            &data,
+            options.expected_checksum.as_ref(),
+            resolved,
+        );
         let recovery = options
             .checkpoint_job
             .clone()
             .map(|job| Recovery::new(job, original));
         let (mut writer, completed, restarted) =
-            FileWriter::open_download(&options.directory, &data.filename, key, recovery).await?;
+            FileWriter::open_download(&options.directory, &data.filename, key, recovery, resolved)
+                .await?;
         if restarted {
             state.restart();
         }
@@ -318,6 +363,7 @@ impl HttpDownloader {
                     &mut writer,
                     options,
                     progress,
+                    headers,
                 )
                 .await
                 {
@@ -390,8 +436,14 @@ impl HttpDownloader {
                 continue;
             }
             if metadata.size == Some(primary.size)
-                && let Some(source) =
-                    RangeSource::new(&self.transport, &metadata, primary.size, limits.clone())
+                && let Some(source) = RangeSource::new(
+                    &self.transport,
+                    &metadata,
+                    primary.size,
+                    limits.clone(),
+                    HeaderMap::new(),
+                    false,
+                )
             {
                 sources.push(source);
             } else {
@@ -443,6 +495,8 @@ struct RangeSource {
     validator: HeaderValue,
     has_etag: bool,
     limits: TransferLimits,
+    headers: HeaderMap,
+    resolved: bool,
 }
 
 impl RangeSource {
@@ -451,6 +505,8 @@ impl RangeSource {
         probe: &Probe,
         size: u64,
         limits: TransferLimits,
+        headers: HeaderMap,
+        resolved: bool,
     ) -> Option<Self> {
         if !probe.supports_ranges {
             return None;
@@ -462,6 +518,8 @@ impl RangeSource {
             validator: probe.validators.if_range()?.clone(),
             has_etag: probe.validators.etag.is_some(),
             limits,
+            headers,
+            resolved,
         })
     }
 
@@ -473,12 +531,25 @@ impl RangeSource {
     }
 
     async fn response(&self, start: u64, end: u64) -> Result<ActiveResponse, HttpError> {
-        let mut headers = HeaderMap::new();
+        let mut headers = self.headers.clone();
         let range = HeaderValue::from_str(&format!("bytes={start}-{}", end - 1))
             .map_err(|_| HttpError::InvalidResponse("invalid range request"))?;
         headers.insert(header::RANGE, range);
         headers.insert(header::IF_RANGE, self.validator.clone());
-        let response = self.transport.get(&self.url, headers, false).await?;
+        let response = self
+            .transport
+            .get(&self.url, headers, false)
+            .await
+            .map_err(|error| {
+                if self.resolved && matches!(error, HttpError::RepresentationChanged) {
+                    HttpError::ExpiredRepresentation
+                } else {
+                    error
+                }
+            })?;
+        if self.resolved && looks_like_page(response.headers()) {
+            return Err(HttpError::ExpiredRepresentation);
+        }
         match response.status() {
             StatusCode::PARTIAL_CONTENT => {}
             StatusCode::OK | StatusCode::RANGE_NOT_SATISFIABLE => {

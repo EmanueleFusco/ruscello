@@ -56,6 +56,22 @@ pub struct QueueEntry {
     pub working_directory: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent: Option<TorrentQueueState>,
+    #[serde(default, skip_serializing_if = "HttpQueueState::is_empty")]
+    pub http: HttpQueueState,
+}
+
+/// Optional file metadata supplied by a downloaded container or the user.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HttpQueueState {
+    pub mirrors: Vec<String>,
+    pub output_filename: Option<String>,
+}
+
+impl HttpQueueState {
+    fn is_empty(&self) -> bool {
+        self.mirrors.is_empty() && self.output_filename.is_none()
+    }
 }
 
 #[derive(Debug, Default)]

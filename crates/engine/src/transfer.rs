@@ -29,6 +29,7 @@ pub(super) struct Published {
 
 pub(super) struct Context {
     pub http: HttpDownloader,
+    pub resolver: crate::Resolver,
     pub limits: Limits,
     pub bandwidth: BandwidthLimit,
     pub disk: DiskPolicy,
@@ -44,11 +45,24 @@ pub(super) enum TransferError {
     Worker(#[from] tokio::task::JoinError),
     #[error("the saved checksum is invalid")]
     Checksum(#[from] crate::ChecksumError),
+    #[error(transparent)]
+    Resolver(#[from] crate::ResolveError),
 }
 
 impl TransferError {
     pub(super) fn cancelled(&self) -> bool {
-        matches!(self, Self::Http(HttpError::Cancelled))
+        matches!(
+            self,
+            Self::Http(HttpError::Cancelled) | Self::Resolver(crate::ResolveError::Cancelled)
+        )
+    }
+
+    pub(super) fn verification_required(&self) -> bool {
+        matches!(
+            self,
+            Self::Http(HttpError::VerificationRequired)
+                | Self::Resolver(crate::ResolveError::VerificationRequired)
+        )
     }
 
     pub(super) fn low_disk(&self) -> bool {
@@ -61,6 +75,12 @@ impl TransferError {
             Self::File(_) => FailureReason::FileSystem,
             Self::Worker(_) => FailureReason::Internal,
             Self::Checksum(_) => FailureReason::IntegrityCheck,
+            Self::Resolver(crate::ResolveError::Request(_)) => FailureReason::Network,
+            Self::Resolver(crate::ResolveError::InvalidLink) => FailureReason::UnsupportedSource,
+            Self::Resolver(crate::ResolveError::AccountRequired | crate::ResolveError::Keyring) => {
+                FailureReason::AccessDenied
+            }
+            Self::Resolver(_) => FailureReason::SourceUnavailable,
             Self::Http(HttpError::Storage(WriterError::ChecksumMismatch)) => {
                 FailureReason::IntegrityCheck
             }
@@ -76,7 +96,7 @@ impl TransferError {
 }
 
 pub(super) fn source_url(source: &Source) -> Result<Url, EngineError> {
-    let Source::Http { url } = source else {
+    let (Source::Http { url } | Source::Hoster { url }) = source else {
         return Err(EngineError::UnsupportedSource);
     };
     let mut url = Url::parse(url).map_err(|_| EngineError::InvalidUrl)?;
@@ -121,7 +141,7 @@ pub(super) async fn run(
         None => {
             let transfer_cancellation = cancellation.child_token();
             let default_connections = context.limits.connections_per_download;
-            let options = DownloadOptions {
+            let mut options = DownloadOptions {
                 directory: entry.working_directory.clone(),
                 connections: entry
                     .download
@@ -143,6 +163,13 @@ pub(super) async fn run(
                 bandwidth: context.bandwidth,
                 download_bandwidth: entry.download.bandwidth,
                 progress: Some(progress),
+                filename_hint: entry.http.output_filename.clone(),
+                mirrors: entry
+                    .http
+                    .mirrors
+                    .iter()
+                    .filter_map(|url| Url::parse(url).ok())
+                    .collect(),
                 checkpoint_job: Some(CheckpointJob {
                     id: entry.download.id.0,
                     destination: entry.download.destination.clone(),
@@ -157,6 +184,16 @@ pub(super) async fn run(
                 })),
                 ..DownloadOptions::default()
             };
+            if let Some(resolved) = crate::resolution::prepare_download(
+                &context.resolver,
+                &url,
+                &transfer_cancellation,
+                matches!(entry.download.source, Source::Hoster { .. }),
+            )
+            .await?
+            {
+                resolved.apply(&mut options);
+            }
             monitored_download(
                 &context.http,
                 &url,
@@ -486,6 +523,7 @@ mod tests {
             position: 0,
             working_directory: working_directory(&destination, id),
             torrent: None,
+            http: Default::default(),
         };
         let ready = ready_directory(&entry);
         fs::create_dir_all(&ready)?;

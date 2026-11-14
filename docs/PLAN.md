@@ -232,19 +232,19 @@ marked `#[ignore]` and documented.
 **Goal**: given any URL (web page, file hoster, direct link, list of links), determine what to download.
 Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
 
-- [ ] **M5.1 Resolution pipeline**: `URL → [Decrypter/Crawler] → candidates → [Host Plugin] →
+- [x] **M5.1 Resolution pipeline**: `URL → [Decrypter/Crawler] → candidates → [Host Plugin] →
       direct URL(s) + required headers/cookies + max allowed connections + expiration`.
       The final direct link is always downloaded by **our HTTP engine** (segmented, resumable). If a direct link
       expires mid-download, the engine requests a fresh link from the plugin and resumes from the exact byte offset.
-- [ ] **M5.2 `HostPlugin` / `CrawlerPlugin` traits** in Rust (compiled plugins, statically registered) with:
+- [x] **M5.2 `HostPlugin` / `CrawlerPlugin` traits** in Rust (compiled plugins, statically registered) with:
       `matches(url)`, `resolve(ctx) -> Resolution`, `requires_browser() -> bool`, hoster constraints (max connections,
       max parallel downloads per hoster, mandatory countdown waits). Execution context provides shared HTTP client,
       per-domain cookie jar, access to the browser helper (M6), and user-interaction requests.
-- [ ] **M5.3 Declarative "Recipes"** (TOML, hot-reloadable, user-extensible without recompiling) for
+- [x] **M5.3 Declarative "Recipes"** (TOML, hot-reloadable, user-extensible without recompiling) for
       simpler sites: steps like `get`, `submit_form{selector|fields}`, `wait{seconds}`, `extract{css|regex}`,
       `follow`, and in browser mode `click{selector}`, `wait_for{selector}`. This turns custom scripts
       (see legacy-scripts) into concise recipes.
-- [ ] **M5.4 Initial built-in plugins** (each backed by recorded HTML fixtures and offline tests):
+- [x] **M5.4 Initial built-in plugins** (backed by offline HTML, API, and URL fixtures):
   - generic "direct link" detector (identifies non-HTML responses);
   - **fuckingfast** (recognizes `fuckingfast.co/...` share pages as hoster pages rather than raw files; extracts the
     direct `/dl/...` download URL from the inline JavaScript `window.open("https://fuckingfast.co/dl/...")` or
@@ -256,7 +256,7 @@ Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
   - pixeldrain, gofile, mediafire, Google Drive (public files including large-file confirmation), public
     Dropbox/OneDrive links, GitHub Releases, SourceForge, archive.org;
   - generic "index page" crawler (extracts all supported hoster links from a page and groups them into a **Package**).
-- [ ] **M5.5 LinkGrabber with explainable scoring** (requirement R7). Page analysis (HTML via `scraper`, inline
+- [x] **M5.5 LinkGrabber with explainable scoring** (requirement R7). Page analysis (HTML via `scraper`, inline
       scripts via regex, JSON-LD/OpenGraph, `<video>/<source>`, player iframes, known hoster URLs,
       `.m3u8`/`.mpd` URLs, and network resources captured if opened in the browser helper). Each candidate
       receives an explainable score:
@@ -270,15 +270,19 @@ Inspired by JDownloader (host/decrypter plugins, LinkGrabber).
   pre-selected and score reasons shown in tooltips (e.g., *"4.2 GB archive · name matches page title"*).
   Type filters, search box, multi-select, "Download Selected". Configurable **auto-accept rules**
   (e.g., "if a known hoster plugin matches, start immediately without prompting").
-- [ ] **M5.6 Bulk import & `.dlc` container decryption**:
+- [x] **M5.6 Bulk import & `.dlc` container decryption**:
   - **`.dlc` (Download Link Container) support** (requirement R16): decrypt JDownloader `.dlc` files natively in Rust
     (extract 88-char key tail + Base64 payload, exchange key via `service.jdownloader.org/dlcrypt/service.php` with
     `dcrypt.it` fallback, AES-128-CBC decrypt `<rc>` and XML body — see exact specification in `docs/ARCHITECTURE.md`)
     to extract package name, file URLs, filenames, and sizes into a **Package**;
   - paste free-form text (extracts all URLs), `.txt` link lists, optional clipboard monitor (off by default),
     `.torrent`/`.metalink`/`.m3u` containers; automatic deduplication.
-- [ ] **M5.7 Hoster accounts** (premium/login credentials) stored in the OS keyring (`keyring` crate), never in
+- [x] **M5.7 Hoster accounts** (premium/login credentials) stored in the OS keyring (`keyring` crate), never in
       plaintext in SQLite.
+
+Browser-assisted verification, browser recipe execution, and network capture are connected through the resolver
+interface and require the M6 helper. The queue exposes `WaitingUser` for interactive verification.
+Gofile's official Premium API requires a user token for listing public shares. Stream transfers are covered by M7.
 
 ### Definition of Done — M5
 Offline fixture tests for every plugin; LinkGrabber scoring benchmark across a corpus of ≥ 30 saved pages with

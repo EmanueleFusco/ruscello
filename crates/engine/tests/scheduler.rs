@@ -110,14 +110,31 @@ async fn run_fifty() -> TestResult {
     let mut peak = 0;
     loop {
         let event = events.recv().await?;
-        let mid_transfer = matches!(&event, EngineEvent::Progress(updates)
-            if updates.iter().any(|update| update.progress.completed > 0 && update.progress.completed < SIZE));
+        let mid_transfer = match &event {
+            EngineEvent::Progress(updates) => updates
+                .iter()
+                .find(|update| {
+                    update.progress.completed > 0 && update.progress.completed < SIZE / 2
+                })
+                .map(|update| update.id),
+            _ => None,
+        };
         track(event, &mut active, &mut completed);
         peak = peak.max(active.len());
         assert!(peak <= 3);
-        if completed.len() >= 25 && mid_transfer && !active.is_empty() {
+        if completed.len() >= 25
+            && let Some(id) = mid_transfer.filter(|id| active.contains(id))
+        {
             assert!(completed.len() < 45);
-            break;
+            engine.pause(id).await?;
+            let working = output.join(RECOVERY_FOLDER).join(id.0.to_string());
+            if working.is_dir()
+                && scan_checkpoints(&working)?
+                    .iter()
+                    .any(|checkpoint| checkpoint.downloaded_bytes > 0)
+            {
+                break;
+            }
         }
     }
     assert_eq!(peak, 3);
@@ -141,6 +158,11 @@ async fn run_fifty() -> TestResult {
     let engine = EngineHandle::start(options).await?;
     let mut events = engine.subscribe();
     let snapshot = engine.snapshot().await?;
+    for download in &snapshot.downloads {
+        if download.status() == Status::Paused {
+            engine.resume(download.id).await?;
+        }
+    }
     active.clear();
     completed.clear();
     assert!(

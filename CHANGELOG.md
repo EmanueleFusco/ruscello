@@ -6,6 +6,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ## [Unreleased]
 
 ### Added
+- M5.1–M5.7: Hoster and page resolution, reloadable TOML recipes, and renewal of expired links and cookies
+  while preserving HTTP checkpoints with matching validators. The desktop LinkGrabber supports scoring
+  explanations, filters, selection, and named package imports in English and Italian.
+- Native DLC decryption, text/playlist/Metalink import, and hoster API tokens in the OS credential store.
+  The CLI can inspect pages, list imported URLs, and download recognized hoster links.
 - M4.1–M4.6: Full BitTorrent support powered by a single `librqbit` session (`ruscello-torrent`) using
   `rust-tls`, DHT/PEX/LSD/UPnP/trackers, fastresume state in the data directory, pre-add `.torrent`/magnet
   inspection with file selection, download/upload/seed-ratio/seed-time/max-peers limits, network interface

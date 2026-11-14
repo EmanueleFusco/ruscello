@@ -5,8 +5,10 @@ use reqwest::{
 use tokio::time::Instant;
 
 use crate::{
-    DownloadOptions, DownloadProgress, FileWriter, HttpError, Probe, probe::require_identity,
-    retry::status_error, transport::Transport,
+    DownloadOptions, DownloadProgress, FileWriter, HttpError, Probe,
+    probe::{looks_like_page, require_identity},
+    retry::status_error,
+    transport::Transport,
 };
 
 use super::{RATE_INTERVAL, TransferLimits};
@@ -19,11 +21,22 @@ pub(super) async fn download(
     writer: &mut FileWriter,
     options: &DownloadOptions,
     mut progress: DownloadProgress,
+    headers: HeaderMap,
 ) -> Result<u64, HttpError> {
     let transfer = async {
         let mut response = transport
-            .get(&probe.final_url, HeaderMap::new(), false)
-            .await?;
+            .get(&probe.final_url, headers, false)
+            .await
+            .map_err(|error| {
+                if options.resolved.is_some() && matches!(error, HttpError::RepresentationChanged) {
+                    HttpError::ExpiredRepresentation
+                } else {
+                    error
+                }
+            })?;
+        if options.resolved.is_some() && looks_like_page(response.headers()) {
+            return Err(HttpError::ExpiredRepresentation);
+        }
         if response.status() != StatusCode::OK {
             return Err(status_error(&response));
         }
