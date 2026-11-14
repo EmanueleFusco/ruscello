@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "Ruscello Download Manager Connector"
+  },
+  "extDescription": {
+    "message": "Send links, authenticated domain cookies, and intercepted downloads to Ruscello."
+  },
+  "menuDownload": {
+    "message": "Download with Ruscello"
+  },
+  "menuAnalyze": {
+    "message": "Analyze page with LinkGrabber"
+  }
+}

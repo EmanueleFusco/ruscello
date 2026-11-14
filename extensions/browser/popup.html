@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ruscello</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <span class="badge">R</span>
+      <span>Ruscello</span>
+    </div>
+    <span id="conn-pill" class="pill warn"></span>
+  </header>
+
+  <section id="pair-section" class="card hidden">
+    <input id="pin-input" type="text" maxlength="6" inputmode="numeric">
+    <button id="pair-btn" type="button" class="btn btn-primary btn-block"></button>
+  </section>
+
+  <section id="actions-section" class="card hidden">
+    <label class="switch-row">
+      <span id="intercept-label"></span>
+      <input id="intercept-toggle" type="checkbox">
+    </label>
+    <p id="intercept-desc" class="muted" style="margin:0"></p>
+
+    <form id="send-url-form" class="row">
+      <input id="send-url-input" type="text">
+      <button id="send-url-btn" type="submit" class="btn btn-primary"></button>
+    </form>
+
+    <button id="analyze-tab-btn" type="button" class="btn btn-block"></button>
+    <button id="cookies-btn" type="button" class="btn btn-block"></button>
+    <div class="row">
+      <button id="alt-speed-btn" type="button" class="btn" style="flex:1"></button>
+      <button id="disconnect-btn" type="button" class="btn btn-danger btn-sm"></button>
+    </div>
+  </section>
+
+  <p id="feedback-msg" class="status-msg hidden"></p>
+
+  <footer class="row between">
+    <button id="options-btn" type="button" class="btn btn-ghost btn-sm"></button>
+    <button id="lang-btn" type="button" class="btn btn-ghost btn-sm"></button>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
