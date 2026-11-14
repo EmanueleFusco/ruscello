@@ -318,6 +318,7 @@ impl Scheduler {
         automation_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut shutdown = None;
         let mut closing = false;
+        let mut shutdown_error = None;
         let mut schedule = true;
         loop {
             if closing
@@ -374,6 +375,14 @@ impl Scheduler {
                             Ok((task, result)) => (task, result),
                             Err(error) => (error.id(), Err(error.into())),
                         };
+                        if closing && shutdown_error.is_none() {
+                            shutdown_error = match &result {
+                                Err(TransferError::Http(HttpError::Storage(_))
+                                    | TransferError::File(_) | TransferError::Worker(_)) =>
+                                    Some(EngineError::ShutdownCheckpoint),
+                                _ => None,
+                            };
+                        }
                         self.finish(task, result, closing).await;
                         schedule = true;
                     }
@@ -452,14 +461,15 @@ impl Scheduler {
             let _ = self.sleep_inhibitor.set_inhibited(false, "Shutdown").await;
             self.sleep_inhibited = false;
         }
-        self.persist_torrents_on_shutdown().await;
+        let flushed = self.persist_torrents_on_shutdown().await;
         if let Some(manager) = self.torrent_manager.take() {
             manager.shutdown().await;
         }
         self.resolver.stop_browser_helper().await;
         let closed = self.storage.close().await.map_err(EngineError::from);
         if let Some(reply) = shutdown {
-            let _ = reply.send(closed);
+            let result = closed.and(flushed).and(shutdown_error.map_or(Ok(()), Err));
+            let _ = reply.send(result);
         }
     }
 
@@ -2314,9 +2324,9 @@ impl Scheduler {
         Ok(())
     }
 
-    async fn persist_torrents_on_shutdown(&mut self) {
+    async fn persist_torrents_on_shutdown(&mut self) -> Result<(), EngineError> {
         let Some(manager) = &self.torrent_manager else {
-            return;
+            return Ok(());
         };
         let ids: Vec<DownloadId> = self.active_torrents.keys().copied().collect();
         let mut changes = Vec::new();
@@ -2335,11 +2345,10 @@ impl Scheduler {
                 self.queue.insert(id, entry);
             }
         }
-        if !changes.is_empty()
-            && let Err(error) = self.storage.apply(changes).await
-        {
-            tracing::warn!(%error, "Could not flush torrent metrics during shutdown");
+        if !changes.is_empty() {
+            self.storage.apply(changes).await?;
         }
+        Ok(())
     }
 
     fn emit(&self, event: EngineEvent) {

@@ -8,6 +8,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ruscello/pull/57).
 
 ### Added
+- GitHub Releases updater with automatic and manual checks, localized in-app release notes and progress,
+  SHA-256 verification, checkpoint-safe shutdown, and restart on NSIS, AppImage, and macOS app bundles.
+- Tagged Windows, Linux, and macOS desktop packages with the native browser helper, plus SHA-256 sums.
+- Nightly parser fuzzing, an offline mixed-transfer soak, resource-budget tooling, and a personal-path audit.
+- Installation quickstart, FAQ, and coordinated vulnerability reporting policy.
 - M9.1–M9.8: Automation & Post-Processing (`ruscello-platform`, `ruscello-http`, `ruscello-engine`,
   `ruscello-api`, `ruscello-cli`, `ruscello-gui`):
   - Time-of-day scheduler (`ScheduleSettings`, `ScheduleRule`, `WeekdayMask`, injectable `Clock`) with

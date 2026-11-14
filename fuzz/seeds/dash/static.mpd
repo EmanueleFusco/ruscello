@@ -1,0 +1,1 @@
+<MPD type="static" mediaPresentationDuration="PT4S"><Period><AdaptationSet mimeType="video/mp4"><Representation id="0" bandwidth="128000"><SegmentTemplate duration="4" media="segment-$Number$.m4s" initialization="init.mp4"/></Representation></AdaptationSet></Period></MPD>

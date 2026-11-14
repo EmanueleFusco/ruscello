@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Ruscello
+Comment=Manage downloads and torrents
+Comment[it]=Gestisci download e torrent
+Exec=ruscello %U
+Icon=ruscello
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;
+MimeType=application/x-bittorrent;application/x-dlc;x-scheme-handler/magnet;

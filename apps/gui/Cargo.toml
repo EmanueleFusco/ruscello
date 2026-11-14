@@ -20,12 +20,13 @@ directories.workspace = true
 fluent-bundle.workspace = true
 fs4.workspace = true
 getrandom.workspace = true
+hex.workspace = true
 iced.workspace = true
 keyring.workspace = true
 notify-rust.workspace = true
 open.workspace = true
 qrcode.workspace = true
-reqwest = { workspace = true, features = ["rustls", "json"] }
+reqwest = { workspace = true, features = ["rustls", "stream"] }
 rfd.workspace = true
 ruscello-api.workspace = true
 ruscello-core.workspace = true
@@ -34,8 +35,9 @@ ruscello-platform.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
 tokio-util.workspace = true
 tracing.workspace = true
 tray-icon.workspace = true

@@ -194,11 +194,11 @@ def are_downloads_finished(download_folder):
 
 # --- MAIN SCRIPT ---
 
-download_folder = "C:\\Users\\emanu\\Desktop\\download"
+download_folder = "downloads"
 if not os.path.exists(download_folder):
     os.makedirs(download_folder)
 
-link_file = "C:\\Users\\emanu\\Desktop\\links.txt"
+link_file = "links.txt"
 
 print("Starting browser in UC Mode...")
 driver = Driver(

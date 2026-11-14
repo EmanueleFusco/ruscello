@@ -1,0 +1,46 @@
+[package]
+name = "ruscello-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+crc32fast = "1.5.5"
+libfuzzer-sys = "0.4"
+ruscello-http = { path = "../crates/http", features = ["fuzzing"] }
+ruscello-media = { path = "../crates/media", features = ["fuzzing"] }
+ruscello-resolver = { path = "../crates/resolver" }
+
+[[bin]]
+name = "content_disposition"
+path = "fuzz_targets/content_disposition.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "hls"
+path = "fuzz_targets/hls.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dash"
+path = "fuzz_targets/dash.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "recipe"
+path = "fuzz_targets/recipe.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "checkpoint"
+path = "fuzz_targets/checkpoint.rs"
+test = false
+doc = false
