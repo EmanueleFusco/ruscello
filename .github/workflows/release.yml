@@ -91,6 +91,31 @@ jobs:
           foreach ($file in 'ruscello.exe','ruscello-webview.exe','Uninstall.exe') {
             if (!(Test-Path "$install\$file")) { throw "Missing installed file $file" }
           }
+          $binaries = 'ruscello.exe','ruscello-webview.exe'
+          foreach ($file in $binaries) {
+            Set-Content -NoNewline "$install\$file" 'Previous installation fixture'
+          }
+          $quitting = Start-Process -FilePath "$env:SystemRoot\System32\ping.exe" -ArgumentList "-n 8 127.0.0.1" -WindowStyle Hidden -PassThru
+          $update = Start-Process -FilePath $output -ArgumentList "/S /UPDATE /WAITPID=$($quitting.Id) /D=$install" -PassThru
+          try {
+            if (!$update.WaitForExit(60000)) {
+              $update.Kill()
+              throw "Silent upgrade did not exit"
+            }
+            if ($update.ExitCode -ne 0) { exit $update.ExitCode }
+            if (!$quitting.HasExited) { throw "Upgrade did not wait for the exiting process" }
+            foreach ($file in $binaries) {
+              if ((Get-FileHash "$install\$file").Hash -ne (Get-FileHash "$bin\$file").Hash) {
+                throw "Upgrade did not replace $file"
+              }
+              if (Test-Path "$install\$file.old") { throw "Unexpected backup for $file" }
+            }
+          } finally {
+            if (!$quitting.HasExited) { $quitting.Kill() }
+            Get-Process -Name ruscello -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -eq "$install\ruscello.exe" } |
+              Stop-Process -ErrorAction SilentlyContinue
+          }
       - name: macOS disk image
         if: runner.os == 'macOS'
         shell: bash

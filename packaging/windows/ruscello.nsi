@@ -29,6 +29,23 @@ Function .onInit
   ${IfNot} ${Errors}
     StrCpy $UpdateMode "yes"
   ${EndIf}
+
+  ; The GUI must release its executable and single-instance lock before relaunch.
+  ClearErrors
+  ${GetOptions} $0 "/WAITPID=" $1
+  ${If} $UpdateMode == "yes"
+  ${AndIfNot} ${Errors}
+  ${AndIf} $1 != ""
+    System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i r1) p .r2'
+    ${If} $2 P<> 0
+      System::Call 'kernel32::WaitForSingleObject(p r2, i 30000) i .r3'
+      System::Call 'kernel32::CloseHandle(p r2)'
+      ${If} $3 != 0
+        SetErrorLevel 1
+        Quit
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 Section "Ruscello"

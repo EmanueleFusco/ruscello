@@ -376,8 +376,10 @@ impl PreparedUpdate {
                 installer.as_file().sync_all()?;
                 let (file, path) = installer.keep()?;
                 drop(file);
+                let wait_for_desktop = format!("/WAITPID={}", std::process::id());
                 let result = std::process::Command::new(&path)
                     .args(["/S", "/UPDATE"])
+                    .arg(wait_for_desktop)
                     .raw_arg(destination)
                     .spawn();
                 if result.is_err() {
@@ -534,6 +536,52 @@ mod tests {
         assert_eq!(state.apply()?, Some(image.clone()));
         assert_eq!(std::fs::read(image)?, b"new");
         assert_eq!(std::fs::read(&*state.file)?, b"new");
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn replaces_both_macos_binaries_and_rejects_an_incomplete_bundle() -> anyhow::Result<()> {
+        use std::{fs, process::Command};
+
+        let root = tempfile::tempdir()?;
+        let app = root.path().join("Renamed Ruscello.app");
+        let desktop = "Contents/MacOS/ruscello";
+        let helper = "Contents/MacOS/ruscello-webview";
+        fs::create_dir_all(app.join("Contents/MacOS"))?;
+        fs::write(app.join(desktop), b"old desktop")?;
+        fs::write(app.join(helper), b"old helper")?;
+
+        let folder = root.path().join("source");
+        let bundle = folder.join("Ruscello.app");
+        fs::create_dir_all(bundle.join("Contents/MacOS"))?;
+        fs::write(bundle.join(desktop), b"new desktop")?;
+        let disk_image = |name| -> anyhow::Result<_> {
+            let image = root.path().join(name);
+            let result = Command::new("/usr/bin/hdiutil")
+                .args(["create", "-quiet", "-format", "UDRO", "-srcfolder"])
+                .arg(&folder)
+                .arg(&image)
+                .output()?;
+            ensure!(
+                result.status.success(),
+                "Could not create fixture disk image: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            Ok(image)
+        };
+
+        let incomplete = disk_image("incomplete.dmg")?;
+        assert!(replace_bundle(&incomplete, &app).is_err());
+        assert_eq!(fs::read(app.join(desktop))?, b"old desktop");
+        assert_eq!(fs::read(app.join(helper))?, b"old helper");
+
+        fs::write(bundle.join(helper), b"new helper")?;
+        let complete = disk_image("complete.dmg")?;
+        let binary = replace_bundle(&complete, &app)?;
+        assert_eq!(binary, app.join(desktop));
+        assert_eq!(fs::read(binary)?, b"new desktop");
+        assert_eq!(fs::read(app.join(helper))?, b"new helper");
         Ok(())
     }
 }
