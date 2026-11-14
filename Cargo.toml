@@ -36,16 +36,20 @@ cbc = "0.2.1"
 cookie = "0.18.2"
 crc32fast = "1.5.5"
 directories = "6.0.0"
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 futures-util = { version = "0.3.34", default-features = false }
 fs4 = { version = "1.1.0", default-features = false }
 fluent-bundle = "0.16.0"
 getrandom = "0.4.3"
+hex = "0.4.3"
 httpdate = "1.0.3"
 infer = { version = "0.22.0", default-features = false }
 iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny-skia", "tokio", "canvas", "linux-theme-detection", "x11", "wayland"] }
 iced_test = "0.14.0"
 keyring = "4.2.0"
 librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
+lzma-rs = "0.3.0"
+m3u8-rs = "6.0.1"
 md-5 = "0.11.0"
 mime_guess = "2.0.5"
 notify-rust = { version = "4.19.0", default-features = false, features = ["d"] }
@@ -67,6 +71,7 @@ sha1 = "0.11.0"
 sha2 = "0.11.1"
 sys-locale = "0.3.2"
 tao = { version = "0.37.2", default-features = false, features = ["rwh_06"] }
+tar = { version = "0.4.46", default-features = false }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "time"] }
@@ -79,6 +84,7 @@ tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] 
 winreg = "0.56.0"
 windows-sys = "0.61.2"
 wry = { version = "0.57.2", default-features = false, features = ["os-webview"] }
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

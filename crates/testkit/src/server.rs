@@ -60,6 +60,7 @@ pub struct Request {
 #[derive(Debug)]
 pub enum Reply {
     Response(StatusCode, HeaderMap, String),
+    Bytes(StatusCode, HeaderMap, Vec<u8>),
     File(TestFile),
 }
 
@@ -68,6 +69,12 @@ impl Reply {
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
         Self::Response(StatusCode::OK, headers, contents.into())
+    }
+
+    pub fn bytes(content_type: &'static str, body: impl Into<Vec<u8>>) -> Self {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+        Self::Bytes(StatusCode::OK, headers, body.into())
     }
 
     pub fn status(status: StatusCode) -> Self {
@@ -333,6 +340,7 @@ async fn respond_custom(
         body,
     }) {
         Reply::Response(status, headers, body) => (status, headers, body).into_response(),
+        Reply::Bytes(status, headers, body) => (status, headers, body).into_response(),
         Reply::File(file) => respond_resource(&file.resource, peer.ip(), &parts.headers).await,
     }
 }
