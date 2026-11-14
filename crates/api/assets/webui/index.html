@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>Ruscello Remote</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <section id="login-view" class="login-screen hidden" aria-live="polite">
+      <div class="login-card">
+        <div class="brand-mark">
+          <span class="brand-badge">R</span>
+          <div>
+            <h1 id="login-title">Ruscello Remote</h1>
+            <p id="login-subtitle" class="muted"></p>
+          </div>
+        </div>
+        <form id="login-form" class="stack-md">
+          <div class="field-group">
+            <label for="login-password" id="login-password-label"></label>
+            <div class="password-wrap">
+              <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+              <button type="button" id="toggle-password-btn" class="btn btn-ghost btn-sm"></button>
+            </div>
+          </div>
+          <p id="login-error" class="error-banner hidden" role="alert"></p>
+          <button type="submit" id="login-submit-btn" class="btn btn-primary btn-block"></button>
+        </form>
+        <div class="login-footer">
+          <button type="button" id="login-lang-btn" class="btn btn-ghost btn-sm"></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="main-view" class="main-shell hidden">
+      <header class="topbar">
+        <div class="topbar-row">
+          <div class="brand-inline">
+            <span class="brand-badge">R</span>
+            <div>
+              <div class="title-line">
+                <strong id="app-title">Ruscello</strong>
+                <span id="conn-badge" class="conn-pill offline"></span>
+              </div>
+              <div class="rates-line" aria-live="off">
+                <span id="stat-down" class="rate-down">↓ 0 B/s</span>
+                <span id="stat-up" class="rate-up">↑ 0 B/s</span>
+                <span id="stat-counts" class="muted">0</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="toolbar-actions">
+            <button type="button" id="alt-speed-btn" class="btn btn-secondary" title="Alternate speed">
+              <span>🐢</span>
+              <span id="alt-speed-label"></span>
+            </button>
+            <button type="button" id="pause-all-btn" class="btn btn-secondary"></button>
+            <button type="button" id="add-open-btn" class="btn btn-primary"></button>
+            <button type="button" id="lang-btn" class="btn btn-ghost"></button>
+            <button type="button" id="logout-btn" class="btn btn-ghost hidden"></button>
+          </div>
+        </div>
+
+        <div class="filters-row">
+          <div id="filter-tabs" class="filter-tabs" role="tablist"></div>
+          <input id="search-input" class="search-input" type="search" autocomplete="off">
+        </div>
+      </header>
+
+      <main class="content-area">
+        <div id="toast-banner" class="toast-banner hidden" role="status"></div>
+        <div id="empty-state" class="empty-card hidden">
+          <p id="empty-title" class="empty-title"></p>
+          <p id="empty-hint" class="muted"></p>
+        </div>
+        <div id="queue-list" class="queue-list"></div>
+      </main>
+    </section>
+
+    <div id="add-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 id="add-modal-title"></h2>
+          <button type="button" id="add-close-btn" class="btn btn-ghost btn-sm" aria-label="Close">✕</button>
+        </div>
+        <form id="add-form" class="stack-md">
+          <div class="field-group">
+            <label for="add-urls" id="add-urls-label"></label>
+            <textarea id="add-urls" rows="5" placeholder="https://... or magnet:?xt=..."></textarea>
+          </div>
+          <div class="grid-two">
+            <div class="field-group">
+              <label for="add-package" id="add-package-label"></label>
+              <input id="add-package" type="text">
+            </div>
+            <div class="field-group">
+              <label for="add-file" id="add-file-label"></label>
+              <input id="add-file" type="file" accept=".torrent,.dlc,.txt,.metalink,.meta4">
+              <span id="add-file-name" class="muted small-note"></span>
+            </div>
+          </div>
+          <label class="checkbox-row">
+            <input id="add-start-now" type="checkbox" checked>
+            <span id="add-start-label"></span>
+          </label>
+          <p id="add-error" class="error-banner hidden" role="alert"></p>
+          <div class="modal-actions">
+            <button type="button" id="add-cancel-btn" class="btn btn-ghost"></button>
+            <button type="submit" id="add-submit-btn" class="btn btn-primary"></button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="remove-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+      <div class="modal-card modal-sm">
+        <div class="modal-header">
+          <h2 id="remove-modal-title"></h2>
+          <button type="button" id="remove-close-btn" class="btn btn-ghost btn-sm" aria-label="Close">✕</button>
+        </div>
+        <p id="remove-target-name" class="break-word"></p>
+        <label class="checkbox-row">
+          <input id="remove-delete-files" type="checkbox">
+          <span id="remove-delete-label"></span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="remove-cancel-btn" class="btn btn-ghost"></button>
+          <button type="button" id="remove-confirm-btn" class="btn btn-danger"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
