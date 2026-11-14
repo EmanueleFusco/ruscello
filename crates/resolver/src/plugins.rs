@@ -66,7 +66,7 @@ impl Builtin {
             Self::Pixeldrain => pixel_url(url)?,
             Self::Gofile => return gofile(ctx, url).await,
             Self::MediaFire => {
-                let response = ctx.client().get(url.clone()).send().await?;
+                let response = ctx.get(url.clone()).send().await?;
                 let base = response.url().clone();
                 let body = http::page(response).await?;
                 selected_link(&base, &body, "#downloadButton[href], a.input[href]")
@@ -190,7 +190,7 @@ static OPEN: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r#"window\s*\.\s*open\s*\(\s*["']([^"']+)["']"#).ok());
 
 async fn fuckingfast(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
-    let response = ctx.client().get(source.clone()).send().await?;
+    let response = ctx.get(source.clone()).send().await?;
     let base = response.url().clone();
     let direct = |value: &str| {
         http::join(&base, value)
@@ -214,16 +214,29 @@ async fn fuckingfast(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
         return Ok(url);
     }
     let body = http::page(response).await?;
-    OPEN.as_ref()
-        .and_then(|open| {
-            open.captures_iter(&body)
-                .find_map(|capture| direct(capture.get(1)?.as_str()))
-        })
-        .ok_or(ResolveError::NoDownload)
+    fuckingfast_link(source, &base, &body).ok_or(ResolveError::NoDownload)
+}
+
+pub(crate) fn fuckingfast_link(source: &Url, base: &Url, body: &str) -> Option<Url> {
+    if !Builtin::FuckingFast.matches(source) {
+        return None;
+    }
+    OPEN.as_ref()?.captures_iter(body).find_map(|capture| {
+        http::join(base, capture.get(1)?.as_str())
+            .filter(|url| url.origin() == source.origin() && url.path().starts_with("/dl/"))
+    })
+}
+
+pub(crate) fn browser_direct_link(base: &Url, body: &str) -> Option<Url> {
+    if Builtin::MediaFire.matches(base) {
+        selected_link(base, body, "#downloadButton[href], a.input[href]")
+    } else {
+        selected_link(base, body, "a[download][href]")
+    }
 }
 
 async fn xfilesharing(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
-    let mut response = ctx.client().get(source.clone()).send().await?;
+    let mut response = ctx.get(source.clone()).send().await?;
     for _ in 0..4 {
         let base = response.url().clone();
         if !http::is_html(&response) {
@@ -328,7 +341,7 @@ async fn onedrive(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
     if source.host_str() != Some("1drv.ms") {
         return Ok(direct);
     }
-    let response = ctx.client().get(direct).send().await?;
+    let response = ctx.get(direct).send().await?;
     let final_url = response.url().clone();
     if !http::is_html(&response) {
         http::status(&response)?;
@@ -344,7 +357,7 @@ async fn onedrive(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
 
 async fn drive(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
     let url = drive_url(source)?;
-    let response = ctx.client().get(url).send().await?;
+    let response = ctx.get(url).send().await?;
     let base = response.url().clone();
     http::status(&response)?;
     if !http::is_html(&response) {
@@ -430,12 +443,7 @@ async fn gofile_contents(
         .map_err(|_| ResolveError::InvalidLink)?
         .pop_if_empty()
         .push(id);
-    let response = ctx
-        .client()
-        .get(api)
-        .bearer_auth(&account.password)
-        .send()
-        .await?;
+    let response = ctx.get(api).bearer_auth(&account.password).send().await?;
     if response.status() == StatusCode::UNAUTHORIZED {
         return Err(ResolveError::AccountRequired);
     }
@@ -528,7 +536,7 @@ impl CrawlerPlugin for IndexCrawler {
     }
     fn crawl<'a>(&'a self, ctx: &'a Context, url: &'a Url) -> ResolveFuture<'a, PageAnalysis> {
         Box::pin(async move {
-            let response = ctx.client().get(url.clone()).send().await?;
+            let response = ctx.get(url.clone()).send().await?;
             if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
                 return Ok(PageAnalysis::direct(url.clone(), Some(0)));
             }

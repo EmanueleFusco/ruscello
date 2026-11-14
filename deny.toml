@@ -8,6 +8,7 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
+  { id = "RUSTSEC-2024-0370", reason = "The Wry/Tao helper's GTK3 bindings use proc-macro-error as a build-time macro. This is an unmaintained advisory with no reported vulnerability or patched GTK3 release. Revisit when the native backend updates its bindings." },
   { id = "RUSTSEC-2024-0436", reason = "iced 0.14 uses this build-time macro through wgpu's macOS Metal backend. Revisit when iced upgrades wgpu." },
   { id = "RUSTSEC-2026-0192", reason = "iced 0.14 uses this font parser through cosmic-text and winit. Revisit when iced migrates to a maintained font stack." },
   { id = "RUSTSEC-2026-0370", reason = "iced 0.14 uses this D-Bus crate through mundy for Linux system theme detection. Revisit when mundy upgrades to zbus 6." },

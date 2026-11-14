@@ -141,6 +141,7 @@ pub async fn probe(client: &Client, url: &Url) -> Result<Probe, HttpError> {
 }
 
 pub(crate) fn parse_probe(response: &Response) -> Result<Probe, HttpError> {
+    check_verification(response)?;
     let (size, supports_ranges) = probe_size(response)?;
     let headers = response.headers();
     let final_url = response.url().clone();
@@ -169,6 +170,18 @@ pub(crate) fn parse_probe(response: &Response) -> Result<Probe, HttpError> {
         validators,
         attachment,
     })
+}
+
+pub(crate) fn check_verification(response: &Response) -> Result<(), HttpError> {
+    let headers = response.headers();
+    if headers
+        .get("cf-mitigated")
+        .is_some_and(|value| value == "challenge")
+        || headers.contains_key("cf-chl-out")
+    {
+        return Err(HttpError::VerificationRequired);
+    }
+    Ok(())
 }
 
 fn attachment(headers: &HeaderMap) -> bool {

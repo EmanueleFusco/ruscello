@@ -4,7 +4,7 @@ use ruscello_http::{
     DownloadOptions, ExpiredLinkResolver, HttpError, ResolvedLink, ResolvedTransfer, TransferLink,
     Url,
 };
-use ruscello_resolver::{Resolution, ResolveError, Resolver};
+use ruscello_resolver::{BrowserLocale, Resolution, ResolveError, Resolver};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
@@ -34,6 +34,37 @@ pub async fn resolve_download(
     prepare_download(resolver, source, cancellation, false).await
 }
 
+/// Configures plugin resolution and renewal for the standalone CLI and queued transfers.
+pub async fn prepare_http_download(
+    resolver: &Resolver,
+    source: &Url,
+    options: &mut DownloadOptions,
+    hoster: bool,
+    interactive: Option<BrowserLocale>,
+) -> Result<(), ResolveError> {
+    let cancellation = options.cancellation.clone();
+    let resolved = match prepare_download(resolver, source, &cancellation, hoster).await {
+        Err(ResolveError::VerificationRequired) if interactive.is_some() => {
+            resolver
+                .verify(source, interactive.unwrap_or_default(), &cancellation)
+                .await?;
+            prepare_download(resolver, source, &cancellation, hoster).await?
+        }
+        result => result?,
+    };
+    if let Some(resolved) = resolved {
+        resolved.apply(options);
+    }
+    options.expired_link_resolver = Some(Arc::new(Refresh {
+        resolver: resolver.clone(),
+        source: source.clone(),
+        cancellation,
+        hoster,
+        interactive,
+    }));
+    Ok(())
+}
+
 pub(super) async fn prepare_download(
     resolver: &Resolver,
     source: &Url,
@@ -57,6 +88,7 @@ pub(super) async fn prepare_download(
             source: source.clone(),
             cancellation: cancellation.clone(),
             hoster,
+            interactive: None,
         }),
     }))
 }
@@ -66,6 +98,7 @@ struct Refresh {
     source: Url,
     cancellation: CancellationToken,
     hoster: bool,
+    interactive: Option<BrowserLocale>,
 }
 
 impl std::fmt::Debug for Refresh {
@@ -81,21 +114,37 @@ impl ExpiredLinkResolver for Refresh {
 
     fn resolve_transfer<'a>(&'a self, _expired: &'a Url) -> ResolvedTransfer<'a> {
         Box::pin(async move {
-            let refreshed = self
+            let mut refreshed = self
                 .resolver
-                .resolve_with_xfs(&self.source, &self.cancellation, self.hoster)
-                .await
-                .map_err(|error| match error {
-                    ResolveError::Cancelled => HttpError::Cancelled,
-                    ResolveError::VerificationRequired => HttpError::VerificationRequired,
-                    ResolveError::Status(status) => HttpError::Status(status),
-                    ResolveError::Request(error) => HttpError::Request(error),
-                    _ => HttpError::ResolutionFailed,
-                })?;
+                .recover_link(&self.source, &self.cancellation, self.hoster, true)
+                .await;
+            if matches!(refreshed, Err(ResolveError::VerificationRequired))
+                && let Some(locale) = self.interactive
+            {
+                self.resolver
+                    .verify(&self.source, locale, &self.cancellation)
+                    .await
+                    .map_err(http_error)?;
+                refreshed = self
+                    .resolver
+                    .recover_link(&self.source, &self.cancellation, self.hoster, false)
+                    .await;
+            }
             refreshed
+                .map_err(http_error)?
                 .map(transfer_link)
                 .ok_or(HttpError::ResolutionFailed)
         })
+    }
+}
+
+fn http_error(error: ResolveError) -> HttpError {
+    match error {
+        ResolveError::Cancelled => HttpError::Cancelled,
+        ResolveError::VerificationRequired => HttpError::VerificationRequired,
+        ResolveError::Status(status) => HttpError::Status(status),
+        ResolveError::Request(error) => HttpError::Request(error),
+        _ => HttpError::ResolutionFailed,
     }
 }
 

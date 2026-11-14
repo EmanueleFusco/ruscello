@@ -51,6 +51,9 @@ pub(super) struct Scheduler {
     hosts: HostConnections,
     http: HttpDownloader,
     resolver: crate::Resolver,
+    verifications: JoinSet<(ruscello_http::Url, Result<(), crate::ResolveError>)>,
+    pending_verifications: BTreeMap<String, Vec<Reply<()>>>,
+    verification_cancel: CancellationToken,
     torrent_manager: Option<Arc<TorrentManager>>,
     last_telemetry: Option<TorrentSessionTelemetry>,
     telemetry_ticks: u8,
@@ -72,6 +75,7 @@ pub(super) struct Scheduler {
 struct Active {
     task: Id,
     host: String,
+    session_version: u64,
     cancellation: CancellationToken,
     progress: watch::Receiver<DownloadProgress>,
     stop: Option<(Stop, Reply<()>)>,
@@ -193,6 +197,9 @@ impl Scheduler {
             hosts,
             http,
             resolver,
+            verifications: JoinSet::new(),
+            pending_verifications: BTreeMap::new(),
+            verification_cancel: CancellationToken::new(),
             torrent_manager,
             last_telemetry: None,
             telemetry_ticks: 0,
@@ -219,6 +226,7 @@ impl Scheduler {
                 && self.workers.is_empty()
                 && self.torrent_starts.is_empty()
                 && self.torrent_stops.is_empty()
+                && self.verifications.is_empty()
             {
                 break;
             }
@@ -243,6 +251,7 @@ impl Scheduler {
                     }
                     if closing {
                         commands.close();
+                        self.verification_cancel.cancel();
                         for active in self.active.values() {
                             active.cancellation.cancel();
                         }
@@ -277,6 +286,12 @@ impl Scheduler {
                         if let Ok((id, snapshot, result)) = joined {
                             self.finish_torrent_stop(id, snapshot, result).await;
                         }
+                        schedule = true;
+                    }
+                }
+                joined = self.verifications.join_next(), if !self.verifications.is_empty() => {
+                    if let Some(Ok((url, result))) = joined {
+                        self.finish_verification(url, result).await;
                         schedule = true;
                     }
                 }
@@ -331,8 +346,104 @@ impl Scheduler {
             Command::TorrentManager(reply) => {
                 let _ = reply.send(self.ensure_torrent_manager().await);
             }
+            Command::Verify(id, locale, reply) => self.start_verification(id, locale, reply),
+            Command::ResumeVerified(url, reply) => {
+                let _ = reply.send(self.resume_verified(&url).await);
+            }
             Command::Shutdown(_) => {}
         }
+    }
+
+    fn start_verification(
+        &mut self,
+        id: DownloadId,
+        locale: crate::BrowserLocale,
+        reply: Reply<()>,
+    ) {
+        let url = self.entry(id).and_then(|entry| {
+            if entry.download.status() == Status::WaitingUser {
+                source_url(&entry.download.source)
+            } else {
+                Err(EngineError::VerificationNotPending)
+            }
+        });
+        let url = match url {
+            Ok(url) => url,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let key = url.origin().ascii_serialization();
+        if let Some(waiters) = self.pending_verifications.get_mut(&key) {
+            waiters.push(reply);
+            return;
+        }
+        self.pending_verifications.insert(key, vec![reply]);
+        let resolver = self.resolver.clone();
+        let cancellation = self.verification_cancel.child_token();
+        self.verifications.spawn(async move {
+            let result = resolver.verify(&url, locale, &cancellation).await;
+            (url, result)
+        });
+    }
+
+    async fn finish_verification(
+        &mut self,
+        url: ruscello_http::Url,
+        result: Result<(), crate::ResolveError>,
+    ) {
+        let Some(mut waiters) = self
+            .pending_verifications
+            .remove(&url.origin().ascii_serialization())
+        else {
+            return;
+        };
+        let result = match result {
+            Ok(()) => self.resume_verified(&url).await,
+            Err(error) => Err(error.into()),
+        };
+        // The initiating caller receives the result. The verification window is shared.
+        if let Some(first) = waiters.pop() {
+            for waiter in waiters {
+                let reply = match &result {
+                    Ok(()) => Ok(()),
+                    Err(EngineError::Resolver(crate::ResolveError::Cancelled)) => {
+                        Err(crate::ResolveError::Cancelled.into())
+                    }
+                    Err(_) => {
+                        Err(crate::ResolveError::Browser(crate::BrowserFailure::Unavailable).into())
+                    }
+                };
+                let _ = waiter.send(reply);
+            }
+            let _ = first.send(result);
+        }
+    }
+
+    async fn resume_verified(&mut self, url: &ruscello_http::Url) -> Result<(), EngineError> {
+        let origin = url.origin();
+        let mut resumed = Vec::new();
+        for entry in self
+            .queue
+            .values()
+            .filter(|entry| entry.download.status() == Status::WaitingUser)
+        {
+            if source_url(&entry.download.source).is_ok_and(|other| other.origin() == origin) {
+                let mut entry = entry.clone();
+                entry.download.transition(Status::Queued)?;
+                resumed.push(entry);
+            }
+        }
+        if !resumed.is_empty() {
+            self.storage
+                .apply(resumed.iter().map(save_entry).collect())
+                .await?;
+            for entry in resumed {
+                self.record(entry);
+            }
+        }
+        Ok(())
     }
 
     async fn add(
@@ -920,6 +1031,7 @@ impl Scheduler {
                     let id = entry.download.id;
                     let cancellation = CancellationToken::new();
                     let (sender, progress) = watch::channel(DownloadProgress::default());
+                    let session_version = self.resolver.session_version(&url);
                     let task = self.workers.spawn(Box::pin(transfer::run(
                         transfer::Context {
                             http: self.http.clone(),
@@ -938,6 +1050,7 @@ impl Scheduler {
                         Active {
                             task: task.id(),
                             host,
+                            session_version,
                             cancellation,
                             progress,
                             stop: None,
@@ -1089,8 +1202,13 @@ impl Scheduler {
                             Stop::Cancel { .. } => self.apply_stop(entry, stop).await,
                         }
                     }
-                    Err(error) if !error.cancelled() && matches!(stop, Stop::Pause) => {
-                        self.transfer_failed(entry, error).await
+                    Err(error)
+                        if !error.cancelled()
+                            && !error.verification_required()
+                            && matches!(stop, Stop::Pause) =>
+                    {
+                        self.transfer_failed(entry, error, active.session_version)
+                            .await
                     }
                     Err(_) => self.apply_stop(entry, stop).await,
                 };
@@ -1105,7 +1223,8 @@ impl Scheduler {
                     Err(error) if error.cancelled() && closing => Ok(()),
                     Err(error) => {
                         tracing::debug!(id = id.0, %error, "Download worker failed");
-                        self.transfer_failed(entry, error).await
+                        self.transfer_failed(entry, error, active.session_version)
+                            .await
                     }
                 };
                 if let Err(error) = result {
@@ -1119,10 +1238,29 @@ impl Scheduler {
         &mut self,
         mut entry: QueueEntry,
         error: TransferError,
+        session_version: u64,
     ) -> Result<(), EngineError> {
         if error.verification_required() {
+            let id = entry.download.id;
+            let url = source_url(&entry.download.source)?;
+            let origin = url.origin();
+            if self.resolver.session_version(&url) > session_version {
+                entry.download.transition(Status::Queued)?;
+                return self.save(entry).await;
+            }
+            let first = !self.queue.values().any(|other| {
+                other.download.status() == Status::WaitingUser
+                    && source_url(&other.download.source).is_ok_and(|url| url.origin() == origin)
+            });
             entry.download.transition(Status::WaitingUser)?;
-            return self.save(entry).await;
+            self.save(entry).await?;
+            if first {
+                self.emit(EngineEvent::Log {
+                    id: Some(id),
+                    message: EngineLog::VerificationRequired,
+                });
+            }
+            return Ok(());
         }
         if error.low_disk() {
             let id = entry.download.id;

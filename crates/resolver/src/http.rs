@@ -1,9 +1,13 @@
 use std::time::Duration;
 
-use reqwest::{ClientBuilder, Response, Url, header};
+use reqwest::{
+    ClientBuilder, Response, Url,
+    header::{self, HeaderMap, HeaderValue},
+};
+use ruscello_browser::protocol::{CHALLENGE_SELECTOR, challenge_url};
 use scraper::{ElementRef, Html, Selector};
 
-use crate::{Context, ResolveError};
+use crate::{Context, HosterLimits, Resolution, ResolveError};
 
 pub(crate) const PAGE_LIMIT: usize = 2 * 1024 * 1024;
 
@@ -52,6 +56,33 @@ pub(crate) fn join(base: &Url, value: &str) -> Option<Url> {
     Some(url)
 }
 
+pub(crate) fn direct(
+    url: Url,
+    referer: &Url,
+    limits: HosterLimits,
+    mut headers: HeaderMap,
+) -> Resolution {
+    let mut referer = referer.clone();
+    referer.set_fragment(None);
+    if referer.origin() != url.origin() {
+        referer.set_query(None);
+        referer.set_path("/");
+    }
+    if (referer.scheme() != "https" || url.scheme() == "https")
+        && let Ok(mut value) = HeaderValue::from_str(referer.as_str())
+    {
+        value.set_sensitive(true);
+        headers.insert(header::REFERER, value);
+    }
+    Resolution {
+        url,
+        headers,
+        limits,
+        expires: None,
+        filename: None,
+    }
+}
+
 pub(crate) fn attachment(response: &Response) -> bool {
     response
         .headers()
@@ -80,6 +111,7 @@ pub(crate) fn status(response: &Response) -> Result<(), ResolveError> {
         .get("cf-mitigated")
         .is_some_and(|value| value == "challenge")
         || response.headers().get("cf-chl-out").is_some()
+        || challenge_url(response.url())
     {
         Err(ResolveError::VerificationRequired)
     } else if !response.status().is_success() {
@@ -117,7 +149,9 @@ pub(crate) async fn page(response: Response) -> Result<String, ResolveError> {
             && matches!(
                 error,
                 ResolveError::Status(
-                    reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    reqwest::StatusCode::UNAUTHORIZED
+                        | reqwest::StatusCode::FORBIDDEN
+                        | reqwest::StatusCode::SERVICE_UNAVAILABLE
                 )
             )
         {
@@ -130,15 +164,7 @@ pub(crate) async fn page(response: Response) -> Result<String, ResolveError> {
     let contents = read_body(response, PAGE_LIMIT).await?;
     let document = Html::parse_document(&contents);
     let challenge = contents.contains("/cdn-cgi/challenge-platform/")
-        || [
-            "form#challenge-form",
-            ".g-recaptcha[data-sitekey]",
-            ".h-captcha[data-sitekey]",
-            ".cf-turnstile[data-sitekey]",
-            "input[name=captcha_code]",
-        ]
-        .iter()
-        .any(|selector| first(&document, selector).is_some());
+        || first(&document, CHALLENGE_SELECTOR).is_some();
     if challenge {
         return Err(ResolveError::VerificationRequired);
     }
@@ -218,9 +244,9 @@ impl Form {
 
     pub(crate) async fn send(self, ctx: &Context, referer: &Url) -> Result<Response, ResolveError> {
         let request = if self.post {
-            ctx.client().post(self.url).form(&self.fields)
+            ctx.post(self.url).form(&self.fields)
         } else {
-            ctx.client().get(self.url).query(&self.fields)
+            ctx.get(self.url).query(&self.fields)
         };
         Ok(request
             .header(header::REFERER, referer.as_str())

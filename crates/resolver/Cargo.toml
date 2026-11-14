@@ -17,6 +17,7 @@ keyring.workspace = true
 percent-encoding.workspace = true
 quick-xml = { workspace = true, features = ["serialize"] }
 regex.workspace = true
+ruscello-browser.workspace = true
 reqwest = { workspace = true, features = ["rustls", "http2", "cookies", "json", "form", "query"] }
 scraper.workspace = true
 serde.workspace = true
