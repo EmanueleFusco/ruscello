@@ -117,4 +117,5 @@ for that origin resume. Add also offers **Analyze in browser** for pages with sc
   - **Media Sidecars**: opt in to managing `yt-dlp` or `ffmpeg`, or supply an executable path. The `yt-dlp` auto-update option is available here.
 - **Hoster Accounts**: save or remove Pixeldrain and Gofile API tokens in the operating system credential store.
 - **Advanced & About**: Open logs, copy a diagnostics report, and check for GitHub releases. About shows the
-  current version and available release notes. In-app download, installation, and restart are planned for M10.5.
+  current version, release date and notes, and a startup check toggle. **Update & restart** shows progress,
+  verifies the package, and saves active downloads before installation. The toolbar pill opens this page.

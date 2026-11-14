@@ -14,6 +14,7 @@ mod queue;
 mod settings;
 mod settings_view;
 mod theme;
+mod updater;
 mod view;
 
 #[cfg(test)]
@@ -93,7 +94,7 @@ fn run(
     let _log = logging::init("ruscello")?;
     let inputs = std::env::args_os()
         .skip(1)
-        .filter(|arg| arg != "--startup")
+        .filter(|arg| arg != "--startup" && arg != "--update-failed")
         .map(|arg| instance::normalize(&arg))
         .collect::<Vec<_>>();
     let Some(primary) = instance::start(paths.data(), inputs.clone())? else {
@@ -105,8 +106,11 @@ fn run(
         .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| paths.data().join("Downloads"));
     let database = paths.data().join("ruscello.db");
+    let restart = updater::Restart::default();
+    let app_restart = restart.clone();
+    let receiver = primary.receiver();
     let boot = move || {
-        App::boot(
+        let (mut app, task) = App::boot(
             preferences.clone(),
             config.clone(),
             database.clone(),
@@ -115,10 +119,17 @@ fn run(
             strings.clone(),
             desktop::Startup {
                 tray: events.clone(),
-                ipc: primary.receiver(),
+                ipc: receiver.clone(),
                 inputs: inputs.clone(),
             },
-        )
+        );
+        app.restart = app_restart.clone();
+        if std::env::var_os("RUSCELLO_UPDATE_FAILED").is_some()
+            || std::env::args_os().any(|arg| arg == "--update-failed")
+        {
+            app.banner = Some("update-install-error");
+        }
+        (app, task)
     };
     iced::daemon(boot, App::update, App::view)
         .title(App::title)
@@ -132,5 +143,32 @@ fn run(
         .font(&include_bytes!("../assets/Inter-Regular.ttf")[..])
         .font(icons::FONT)
         .run()?;
+    let prepared = restart
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(update) = prepared {
+        let (next, failed) = match update.apply() {
+            Ok(Some(path)) => (path, false),
+            Ok(None) => return Ok(()), // The Windows installer relaunches after replacement.
+            Err(error) => {
+                tracing::debug!(%error, "Could not apply the verified update");
+                (updater::relaunch_path()?, true)
+            }
+        };
+        // Release the IPC lock before the new instance tries to start.
+        drop(primary);
+        drop(update);
+        let mut command = std::process::Command::new(next);
+        command.env_remove("RUSCELLO_UPDATE_FAILED");
+        if failed {
+            command.env("RUSCELLO_UPDATE_FAILED", "1");
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = std::env::var_os("OWD") {
+            command.current_dir(directory);
+        }
+        command.spawn()?;
+    }
     Ok(())
 }

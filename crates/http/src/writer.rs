@@ -743,3 +743,8 @@ impl Coverage {
         end == 0 || self.0.len() == 1 && self.0.get(&0) == Some(&end)
     }
 }
+
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_checkpoint(input: &[u8]) {
+    let _ = control::decode(input);
+}

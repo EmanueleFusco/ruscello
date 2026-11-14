@@ -177,6 +177,12 @@ expect_download = true
   queue does not persist them. Firefox and readable Chromium cookies can be imported for an explicit site.
 - Standard OS directories resolved via the `directories` crate (`%APPDATA%\Ruscello`, `~/.local/share/ruscello`, etc.).
 
+## Desktop updates
+
+See [ADR-0011](adr/0011-desktop-release-updates.md). The desktop updater stages and checks the complete
+package before using the engine's graceful shutdown path. Update errors are reported through the GUI,
+and package installation starts only after the browser helper and queue have been closed.
+
 ## Recommended External Crates (Verify Latest Releases on crates.io)
 
 | Area | Crates |

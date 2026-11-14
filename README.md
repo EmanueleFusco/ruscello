@@ -3,8 +3,12 @@
 Ruscello is a Rust download manager for Windows, Linux, and macOS. Its persistent queue handles
 HTTP, HTTPS, FTP, FTPS, file hosters, BitTorrent, and media streams.
 
-`main` includes the implementation through **M9 Automation & Post-Processing**. **M10** covers
-hardening, performance, packaging, and the 1.0 release. See the [project status](docs/PLAN.md#current-status).
+Get the Windows installer, Linux AppImage or Debian package, or macOS disk image from
+[GitHub Releases](https://github.com/EmanueleFusco/ruscello/releases).
+
+[Quickstart](docs/QUICKSTART.md) · [FAQ](docs/FAQ.md) · [Roadmap](docs/PLAN.md) · [Security](SECURITY.md)
+
+![The Ruscello desktop download queue](docs/images/queue.png)
 
 ## Key Features
 
@@ -26,7 +30,7 @@ hardening, performance, packaging, and the 1.0 release. See the [project status]
   completion actions, watch folders, automatic checksum verification and archive extraction, and an
   optional post-download command. Configure these in **Settings → Automation**.
 - **Desktop settings** include English and Italian with live switching, categories and rules, and hardware or
-  software rendering.
+  software rendering. **Settings → About** shows the version, release notes, and available in-app updates.
 
 When a site requires verification, select **Open verification** on the waiting download. Ruscello resumes
 waiting downloads for that site when you finish in the browser window. Use **Analyze in browser** in Add to

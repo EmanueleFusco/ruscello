@@ -1845,3 +1845,146 @@ async fn submits_ftp_url_through_add_dialog_and_masks_password() -> anyhow::Resu
     engine.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn update_banner_stages_verified_release_and_checkpoints_active_download()
+-> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    let server = TestServer::start().await?;
+    let fixture = server.file(
+        FileSpec::random(88, 8 * 1024 * 1024)
+            .filename("update-resume.bin")
+            .throttle_per_conn(256 * 1024),
+    );
+    let options = EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    let engine = EngineHandle::start(options.clone()).await?;
+    let mut request = ruscello_engine::AddDownload::new(Source::Http {
+        url: fixture.url().into(),
+    });
+    request.max_connections = Some(std::num::NonZeroUsize::MIN);
+    let id = engine.add(request).await?;
+    let snapshot = tokio::time::timeout(Duration::from_secs(12), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            poll.tick().await;
+            let snapshot = engine.snapshot().await?;
+            if snapshot
+                .downloads
+                .iter()
+                .any(|entry| entry.id == id && entry.downloaded_bytes > 0)
+            {
+                break Ok::<_, ruscello_engine::EngineError>(snapshot);
+            }
+        }
+    })
+    .await??;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(&mut app, Message::Snapshot(Some(Box::new(snapshot)))).await;
+    let bytes = b"desktop update package fixture";
+    let release = crate::updater::fixture_release(&server, bytes, bytes, "v1.1.0", "1.0.0")
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Fixture release was not discovered"))?;
+    apply(
+        &mut app,
+        Message::UpdateChecked(crate::updater::UpdateStatus::Available(Box::new(release))),
+    )
+    .await;
+    let banner = app
+        .strings
+        .with("update-available", [("version", "v1.1.0".to_owned())]);
+    let message = click(&app, &banner)?;
+    apply(&mut app, message).await;
+    assert!(simulator(&app).find("Check now").is_ok());
+    assert!(
+        simulator(&app)
+            .find("A release note from the local fixture.")
+            .is_ok()
+    );
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+    let message = click(&app, "Aggiorna e riavvia")?;
+    let task = app.update(message);
+    assert!(app.update_progress.is_some());
+    let download_status = app.strings.with(
+        "update-downloading",
+        [
+            ("downloaded", crate::view::size(&app.strings, 0)),
+            ("total", crate::view::size(&app.strings, 0)),
+        ],
+    );
+    assert!(simulator(&app).find(download_status.as_str()).is_ok());
+    for message in task_messages(task).await {
+        apply(&mut app, message).await;
+    }
+
+    assert!(
+        app.restart
+            .lock()
+            .is_ok_and(|mut restart| restart.take().is_some())
+    );
+    assert!(engine.snapshot().await.is_err());
+    let resumed = EngineHandle::start(options).await?;
+    let snapshot = resumed.snapshot().await?;
+    let recovered = snapshot
+        .downloads
+        .iter()
+        .find(|entry| entry.id == id)
+        .ok_or_else(|| anyhow::anyhow!("Missing checkpointed download"))?;
+    assert!(recovered.downloaded_bytes > 0);
+    assert!(recovered.downloaded_bytes < 8 * 1024 * 1024);
+    resumed.shutdown().await?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "generates documentation screenshots in a temporary directory"]
+fn render_quickstart_screenshots() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    app.preferences.motion = false;
+    let mut download = Download::new(
+        DownloadId(1),
+        Source::Http {
+            url: "https://example.test/field-recordings.zip".into(),
+        },
+        temp.path().to_owned(),
+    );
+    download.filename = Some("field-recordings.zip".into());
+    download.total_bytes = Some(240 * 1024 * 1024);
+    download.transition(Status::Downloading)?;
+    download.downloaded_bytes = 96 * 1024 * 1024;
+    let id = download.id;
+    let _ = app.update(Message::Snapshot(Some(Box::new(
+        ruscello_engine::EngineSnapshot {
+            downloads: vec![download],
+            packages: Vec::new(),
+            limits: Default::default(),
+            temporary_bandwidth: None,
+            recovery: ruscello_engine::DatabaseRecovery::Unchanged,
+            categories: Default::default(),
+            torrent: Default::default(),
+            telemetry: Default::default(),
+            sidecars: Default::default(),
+            automation: Default::default(),
+            completion_countdown: None,
+            schedule: Default::default(),
+        },
+    ))));
+    let _ = app.update(Message::Select(id));
+    app.disk_space = Some(128 * 1024 * 1024 * 1024);
+    let theme = Theme::Light;
+    let output = std::env::var_os("RUSCELLO_SCREENSHOT_DIR")
+        .map_or_else(|| temp.path().to_owned(), std::path::PathBuf::from);
+    simulator(&app)
+        .snapshot(&theme)?
+        .matches_image(output.join("queue.png"))?;
+    let _ = app.update(Message::SettingsPage(Page::About));
+    simulator(&app)
+        .snapshot(&theme)?
+        .matches_image(output.join("about.png"))?;
+    Ok(())
+}

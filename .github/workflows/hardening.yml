@@ -1,0 +1,73 @@
+name: Hardening
+
+on:
+  schedule:
+    - cron: '20 2 * * *'
+  workflow_dispatch:
+    inputs:
+      full_soak:
+        description: Run the full 24-hour soak test
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: ./scripts/run-fuzz.sh 60
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings
+          path: fuzz/artifacts
+
+  soak:
+    # Hosted runners are limited to six hours. Use a maintained label for the full run.
+    runs-on: ${{ inputs.full_soak && 'ruscello-soak-linux' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ inputs.full_soak && 1510 || 45 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run loopback soak
+        env:
+          RUSCELLO_SOAK_SECONDS: ${{ inputs.full_soak && '86400' || '90' }}
+          RUSCELLO_SOAK_DOWNLOADS: '200'
+        run: cargo test --release --locked -p ruscello-cli --test soak mixed_download_soak -- --ignored --nocapture
+
+  budget:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          ./scripts/ci-linux-deps.sh
+          sudo apt-get install -y --no-install-recommends aria2 xvfb xauth x11-utils
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p ruscello-gui -p ruscello-cli
+      - name: Desktop resource thresholds
+        run: xvfb-run -a ./scripts/bench-resources.py --backend Software
+      - name: Segmented throughput
+        if: success() || failure()
+        run: cargo test --release --locked -p ruscello-cli --test http_benchmark -- --ignored --nocapture
+      - name: Crash and resume
+        if: success() || failure()
+        run: cargo test --release --locked -p ruscello-cli --test crash_resume

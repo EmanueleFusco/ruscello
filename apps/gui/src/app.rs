@@ -34,8 +34,10 @@ use crate::{
     i18n::Strings,
     preferences::{Appearance, Locale, Preferences, Renderer},
     queue::{self, Queue, StatusFilter},
-    settings::{self, Draft, Folder, Number, Page, UpdateStatus},
-    theme, view,
+    settings::{self, Draft, Folder, Number, Page},
+    theme,
+    updater::{self, PreparedUpdate, UpdateProgress, UpdateStatus},
+    view,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -252,6 +254,9 @@ pub(crate) enum Message {
     CheckAutomatically(bool),
     CheckUpdates,
     UpdateChecked(UpdateStatus),
+    InstallUpdate,
+    UpdateProgress(UpdateProgress),
+    UpdateStaged(Option<PreparedUpdate>),
     OpenRelease,
     CopyDiagnostics,
     OpenLogs,
@@ -359,6 +364,7 @@ pub(crate) struct App {
     pub(crate) disk_space: Option<u64>,
     pub(crate) booting: bool,
     closing: bool,
+    draining: bool,
     saving: bool,
     dirty: bool,
     pub(crate) settings: bool,
@@ -405,6 +411,10 @@ pub(crate) struct App {
     pub(crate) cookie_importing: bool,
     pub(crate) cookie_count: Option<usize>,
     pub(crate) update_status: UpdateStatus,
+    pub(crate) update_progress: Option<UpdateProgress>,
+    pub(crate) stopping_for_update: bool,
+    staged_update: Option<PreparedUpdate>,
+    pub(crate) restart: updater::Restart,
     pub(crate) category_draft: settings::CategoryDraft,
     pub(crate) automation_draft: settings::AutomationDraft,
     default_destination: PathBuf,
@@ -442,7 +452,6 @@ impl App {
             .clone()
             .and_then(|directory| ruscello_engine::BrowserOptions::installed(directory).ok());
         options.browser_enabled = preferences.browser_helper;
-        options.eager_torrent_session = true;
         options.resolver =
             ruscello_engine::Resolver::new(config.parent().map(|parent| parent.join("recipes")))
                 .ok();
@@ -476,6 +485,7 @@ impl App {
             disk_space: None,
             booting: true,
             closing: false,
+            draining: false,
             saving: false,
             dirty: false,
             settings: false,
@@ -515,6 +525,10 @@ impl App {
             cookie_importing: false,
             cookie_count: None,
             update_status: UpdateStatus::Idle,
+            update_progress: None,
+            stopping_for_update: false,
+            staged_update: None,
+            restart: updater::Restart::default(),
             category_draft: settings::CategoryDraft::default(),
             automation_draft: settings::AutomationDraft::default(),
             default_destination,
@@ -918,12 +932,23 @@ impl App {
                 return Task::perform(desktop::associations(), Message::ActionResult);
             }
             Message::Stopped(saved) => {
+                self.draining = false;
                 self.engine = None;
+                let update = self.staged_update.take();
+                self.stopping_for_update = false;
                 if saved {
+                    *self
+                        .restart
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = update;
                     return iced::exit();
                 }
                 self.closing = false;
-                self.banner = Some("shutdown-failed");
+                self.banner = Some(if update.is_some() {
+                    "update-checkpoint-error"
+                } else {
+                    "shutdown-failed"
+                });
             }
             Message::Search(value) => {
                 self.queue.search = value;
@@ -1793,11 +1818,51 @@ impl App {
                 self.preferences.check_updates = value;
                 return self.save_preferences();
             }
-            Message::CheckUpdates if !matches!(self.update_status, UpdateStatus::Checking) => {
+            Message::CheckUpdates
+                if !self.closing
+                    && self.update_progress.is_none()
+                    && !matches!(self.update_status, UpdateStatus::Checking) =>
+            {
                 self.update_status = UpdateStatus::Checking;
-                return Task::perform(settings::check_updates(), Message::UpdateChecked);
+                return Task::perform(updater::check_updates(), Message::UpdateChecked);
             }
             Message::UpdateChecked(status) => self.update_status = status,
+            Message::InstallUpdate if self.can_install_update() => {
+                if let UpdateStatus::Available(release) = &self.update_status
+                    && let Some(asset) = release.asset.clone()
+                {
+                    self.banner = None;
+                    self.update_progress = Some(UpdateProgress::default());
+                    return Task::stream(iced::stream::channel(
+                        16,
+                        |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+                            use iced::futures::SinkExt as _;
+                            let prepared = updater::download_and_install(asset, |progress| {
+                                let _ = output.clone().try_send(Message::UpdateProgress(progress));
+                            })
+                            .await
+                            .inspect_err(
+                                |error| tracing::debug!(%error, "Could not stage the update"),
+                            )
+                            .ok();
+                            let _ = output.send(Message::UpdateStaged(prepared)).await;
+                        },
+                    ));
+                }
+            }
+            Message::UpdateProgress(progress) => self.update_progress = Some(progress),
+            Message::UpdateStaged(prepared) => {
+                self.update_progress = None;
+                if self.closing {
+                    return Task::none();
+                }
+                if let Some(prepared) = prepared {
+                    self.staged_update = Some(prepared);
+                    self.stopping_for_update = true;
+                    return self.quit();
+                }
+                self.banner = Some("update-download-error");
+            }
             Message::OpenRelease => {
                 if let UpdateStatus::Available(release) = &self.update_status {
                     let url = release.html_url.clone();
@@ -2844,15 +2909,20 @@ impl App {
             .any(|download| download.status() == Status::Paused)
     }
 
+    pub(crate) fn can_install_update(&self) -> bool {
+        !self.booting && !self.closing && self.engine.is_some() && self.update_progress.is_none()
+    }
+
     fn finish_close(&mut self) -> Task<Message> {
         #[cfg(windows)]
         if self.nvidia_busy {
             return Task::none();
         }
-        if self.booting || self.saving {
+        if self.booting || self.saving || self.draining {
             return Task::none();
         }
         if let Some(engine) = self.engine.take() {
+            self.draining = true;
             let api = self.api.take();
             self.api_control = None;
             return Task::perform(

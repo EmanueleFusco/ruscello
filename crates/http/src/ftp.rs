@@ -457,10 +457,13 @@ async fn attempt_transfer(
     match transfer_result {
         Ok(()) => finalize_writer(writer, options, progress).await,
         Err(error) => {
-            if !matches!(error, HttpError::Storage(_)) {
-                let _ = writer.checkpoint().await;
-            }
+            let checkpoint = if matches!(error, HttpError::Storage(_)) {
+                Ok(())
+            } else {
+                writer.checkpoint().await
+            };
             writer.close().await;
+            checkpoint?;
             Err(error)
         }
     }
@@ -517,8 +520,9 @@ async fn restart_from_zero(
     {
         Ok(()) => finalize_writer(writer, options, progress).await,
         Err(error) => {
-            let _ = writer.checkpoint().await;
+            let checkpoint = writer.checkpoint().await;
             writer.close().await;
+            checkpoint?;
             Err(error)
         }
     }

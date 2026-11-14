@@ -302,3 +302,17 @@ impl MediaEngine {
         self.sidecars.status(settings).await
     }
 }
+
+/// Parser entry points for cargo-fuzz.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing {
+    /// Exercises native HLS master and media playlist parsing.
+    pub fn hls(input: &[u8]) {
+        crate::hls::fuzz_parse(input);
+    }
+
+    /// Exercises native DASH MPD parsing.
+    pub fn dash(input: &[u8]) {
+        crate::dash::fuzz_parse(input);
+    }
+}

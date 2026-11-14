@@ -185,8 +185,8 @@ def are_downloads_finished(download_folder):
 
 
 # --- Driver Setup ---
-link_file = "C:\\Users\\emanu\\Desktop\\links.txt"
-download_folder = "C:\\Users\\emanu\\Desktop\\download"
+link_file = "links.txt"
+download_folder = "downloads"
 
 if not os.path.exists(download_folder):
     print(f"Download folder '{download_folder}' not found. Creating...")

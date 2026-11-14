@@ -42,3 +42,6 @@ ruscello-testkit.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+fuzzing = []

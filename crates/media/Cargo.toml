@@ -33,6 +33,7 @@ tracing.workspace = true
 zip.workspace = true
 
 [features]
+fuzzing = []
 live-tests = []
 
 [dev-dependencies]
