@@ -445,7 +445,9 @@ impl Resolver {
                 if matches!(
                     error,
                     ResolveError::Browser(
-                        BrowserFailure::Unavailable | BrowserFailure::ProfileInUse
+                        BrowserFailure::Unavailable
+                            | BrowserFailure::ProfileInUse
+                            | BrowserFailure::Timeout
                     )
                 ) {
                     ResolveError::VerificationRequired
