@@ -11,6 +11,8 @@ pub use url::Url;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_HTML: usize = 2 * 1024 * 1024;
 pub const MAX_RESOURCES: usize = 512;
+pub const MAX_IMPORT_COOKIES: usize = 512;
+pub const MAX_COOKIE_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

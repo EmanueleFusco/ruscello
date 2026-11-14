@@ -4,8 +4,8 @@ use cookie::Cookie;
 use ruscello_browser::{
     import,
     protocol::{
-        Failure, Locale, MAX_HTML, Request, Response, Session, Step, Url, View, challenge_url,
-        web_url,
+        Failure, Locale, MAX_COOKIE_BYTES, MAX_HTML, MAX_IMPORT_COOKIES, Request, Response,
+        Session, Step, Url, View, challenge_url, web_url,
     },
 };
 use tao::{event_loop::EventLoopProxy, window::Window};
@@ -44,9 +44,12 @@ impl Job {
             Request::Open { url, view, steps } if web_url(&url) && steps.len() <= 32 => {
                 (url, view, steps)
             }
-            Request::Import { url, cookies } if web_url(&url) && cookies.len() <= 512 => {
+            Request::Import { url, cookies }
+                if web_url(&url) && cookies.len() <= MAX_IMPORT_COOKIES =>
+            {
                 let count = cookies
                     .iter()
+                    .filter(|value| value.len() <= MAX_COOKIE_BYTES)
                     .filter_map(|value| import::for_site(value, &url).ok())
                     .filter(|cookie| webview.set_cookie(cookie).is_ok())
                     .count();
@@ -389,7 +392,7 @@ fn scoped(mut cookie: Cookie<'static>, url: &Url) -> Option<String> {
     // The resolver keys exported credentials by exact origin. Keep them host-only in its jar.
     cookie.unset_domain();
     let value = cookie.to_string();
-    (value.len() <= 4096).then_some(value)
+    (value.len() <= MAX_COOKIE_BYTES).then_some(value)
 }
 
 fn error(kind: Failure) -> Response {

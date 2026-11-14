@@ -12,7 +12,7 @@ mod ftp;
 mod server;
 
 pub use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
-pub use browser::BrowserFixture;
+pub use browser::{BrowserFixture, XfsBrowserFixture};
 pub use fixture::{FileSpec, Payload, Representation};
 pub use ftp::{FtpServerOptions, MockFtpServer};
 pub use server::{Reply, Request, RequestRecord, TestFile, TestServer};

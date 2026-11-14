@@ -85,19 +85,10 @@ impl NativeBrowser {
             return Ok((0, Session::default()));
         }
         let cancellation = CancellationToken::new();
-        let result = self
+        let count = self
             .client
-            .request(
-                Request::Import {
-                    url: url.clone(),
-                    cookies,
-                },
-                &cancellation,
-            )
+            .import_cookies(url, cookies, &cancellation)
             .await?;
-        let Response::Imported { count } = result else {
-            return Err(Failure::Unavailable.into());
-        };
         Ok((count, self.read_session(url, &cancellation).await?))
     }
 

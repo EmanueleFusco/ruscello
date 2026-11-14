@@ -20,11 +20,15 @@ pub enum Browser {
 /// Reads cookies for the selected host. Profiles and cookie values stay out of logs.
 /// Chromium profiles protected by OS encryption usually have no readable values.
 pub fn installed(browser: Browser, site: &Url) -> Vec<String> {
+    from_roots(browser, site, roots(browser))
+}
+
+fn from_roots(browser: Browser, site: &Url, roots: Vec<PathBuf>) -> Vec<String> {
     if !web_url(site) {
         return Vec::new();
     }
     let mut result = BTreeMap::new();
-    for root in roots(browser) {
+    for root in roots {
         let mut profiles = std::fs::read_dir(&root)
             .into_iter()
             .flatten()
@@ -177,7 +181,6 @@ fn read(path: &Path, browser: Browser, url: &Url) -> Result<Vec<Cookie<'static>>
                 Some(cookie.build())
             },
         )
-        .take(512)
         .collect())
 }
 
@@ -229,14 +232,48 @@ pub fn for_site(value: &str, url: &Url) -> io::Result<Cookie<'static>> {
 mod tests {
     use super::*;
 
+    const FIREFOX_SCHEMA: &str = "CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT, path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, sameSite INTEGER, originAttributes TEXT);";
+
+    #[test]
+    fn aggregates_more_than_one_protocol_batch_across_profiles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::protocol::MAX_IMPORT_COOKIES;
+
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+        for (profile, names) in [
+            ("a.default", 0..MAX_IMPORT_COOKIES),
+            ("b.default", MAX_IMPORT_COOKIES - 1..MAX_IMPORT_COOKIES + 1),
+        ] {
+            let profile = root.join(profile);
+            std::fs::create_dir(&profile)?;
+            let mut db = Connection::open(profile.join("cookies.sqlite"))?;
+            db.execute_batch(FIREFOX_SCHEMA)?;
+            let transaction = db.transaction()?;
+            for name in names {
+                transaction.execute("INSERT INTO moz_cookies VALUES (?1,'value','example.test','/',4000000000,1,1,1,'')", [format!("cookie-{name}")])?;
+            }
+            transaction.commit()?;
+        }
+        let url = Url::parse("https://example.test/")?;
+        let cookies = from_roots(Browser::Firefox, &url, vec![root.to_owned()]);
+        assert_eq!(cookies.len(), MAX_IMPORT_COOKIES + 1);
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.starts_with(&format!("cookie-{MAX_IMPORT_COOKIES}=")))
+        );
+        Ok(())
+    }
+
     #[test]
     fn firefox_import_preserves_site_scope_and_http_only() -> Result<(), Box<dyn std::error::Error>>
     {
         let tmp = tempfile::tempdir()?;
         let path = tmp.path().join("cookies.sqlite");
         let db = Connection::open(&path)?;
-        db.execute_batch("CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT, path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, sameSite INTEGER, originAttributes TEXT);
-            INSERT INTO moz_cookies VALUES ('valid','data','.example.test','/download',4000000000,1,1,1,''),
+        db.execute_batch(FIREFOX_SCHEMA)?;
+        db.execute_batch("INSERT INTO moz_cookies VALUES ('valid','data','.example.test','/download',4000000000,1,1,1,''),
                 ('expired','data','.example.test','/',1,1,0,1,''),
                 ('private','data','.example.test','/',4000000000,1,0,1,'^userContextId=2'),
                 ('different','data','.other.test','/',4000000000,1,0,1,''),

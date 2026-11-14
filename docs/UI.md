@@ -57,7 +57,7 @@ rather than cluttering toolbars.
 
 ## Unified "Add Download" Dialog
 
-1. Paste URLs, magnet links, or text containing links. Drop or choose `.torrent`, `.dlc`, `.txt`, Metalink,
+1. Paste HTTP, HTTPS, FTP, or FTPS URLs, magnet links, or text containing links. Drop or choose `.torrent`, `.dlc`, `.txt`, Metalink,
    M3U, or link shortcut files. The Add dialog can prefill URLs from the clipboard. The optional hoster
    auto-accept setting starts batches containing only recognized hoster links.
    The GUI accepts dropped link shortcuts when the window system delivers them as files. On native Wayland, use paste
@@ -98,7 +98,7 @@ for that origin resume. Add also offers **Analyze in browser** for pages with sc
 
 ## Settings Pages
 
-- **General**: Language (*System Default / English / Italiano*), Theme, **UI Renderer** (*Hardware GPU `wgpu` [Default] / Software 2D `tiny-skia` [prevents G-SYNC/OLED flicker & NVIDIA game overlay]*, applied on restart), Launch at startup, System tray behavior, Queue completion action.
+- **General**: Language (*System Default / English / Italiano*), Theme, **UI Renderer** (*Hardware GPU `wgpu` [Default] / Software 2D `tiny-skia` [prevents G-SYNC/OLED flicker & NVIDIA game overlay]*, applied on restart), Launch at startup, and System tray behavior.
   Windows also offers an optional **Fixed refresh rate (NVIDIA)** setting for hardware rendering. It shows existing
   fixed-refresh profiles and can restore an override applied by Ruscello. Restart the app after changing the profile.
 - **Downloads**: Default folder, max concurrent downloads, max connections per file/host, temporary folder.
@@ -109,11 +109,12 @@ for that origin resume. Add also offers **Analyze in browser** for pages with sc
 - **Integrations & Remote Web UI**:
   - **Browser helper**: enable the helper and explicitly import cookies for a website from Firefox or
     a readable Chromium profile. Cookies stay in Ruscello's browser profile and in memory during resolution.
-    For encrypted Chromium profiles, use the verification window. Browser extension support is planned for M8.
+    For encrypted Chromium profiles, use the verification window or send a link with the paired browser extension.
   - **Link imports**: the clipboard monitor, hoster auto-accept, and dcrypt.it fallback are opt-in.
     The alternate DLC service receives the encrypted container when the primary key service fails.
   - **LAN Remote Web UI (qBittorrent-style)**: toggle *Enable Remote Web UI on local network*, port number, **Require Password** toggle (user can choose password-protected or no-password access on LAN), clickable LAN URL (`http://192.168.x.x:9666`), and a **QR Code** to open the interface immediately on a smartphone browser.
-  - **Browser Extension**: pairing token and instructions.
-  - **Sidecars & Clipboard**: `yt-dlp`/`ffmpeg` sidecar manager & auto-update, optional clipboard monitor.
+  - **Browser Extension**: start a pairing window, approve or reject pairing requests, or revoke paired extensions.
+  - **Media Sidecars**: opt in to managing `yt-dlp` or `ffmpeg`, or supply an executable path. The `yt-dlp` auto-update option is available here.
 - **Hoster Accounts**: save or remove Pixeldrain and Gofile API tokens in the operating system credential store.
-- **Advanced & About**: Logs (open log file / copy diagnostics report without secrets, as in `Scaricatore-di-Porto-rust`), proxy, custom User-Agent, DNS, reset, and **In-App Updates** (current version, *Check for updates automatically on startup* toggle, *Check Now* button, release notes viewer, and one-click *Download & Install Update* with progress bar).
+- **Advanced & About**: Open logs, copy a diagnostics report, and check for GitHub releases. About shows the
+  current version and available release notes. In-app download, installation, and restart are planned for M10.5.

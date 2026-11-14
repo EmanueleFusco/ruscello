@@ -5,7 +5,10 @@ use std::sync::{
 
 use tokio::sync::Notify;
 
-use crate::{FileSpec, HeaderValue, Reply, Request, StatusCode, TestFile, TestServer, header};
+use crate::{
+    FileSpec, HeaderMap, HeaderValue, Method, Reply, Request, StatusCode, TestFile, TestServer,
+    header,
+};
 
 /// Loopback verification and download pages shared by native WebView tests.
 #[derive(Debug)]
@@ -196,4 +199,114 @@ fn verified(gate: &Gate, request: &Request) -> bool {
         && gate.user_agent.lock().is_ok_and(|expected| {
             expected.is_some() && expected.as_ref() == request.headers.get(header::USER_AGENT)
         })
+}
+
+/// A batch of XFileSharing-like pages that reject early downloads and count popup requests.
+#[derive(Debug)]
+pub struct XfsBrowserFixture {
+    pub shares: Vec<String>,
+    pub files: Vec<TestFile>,
+    popups: Arc<AtomicUsize>,
+    early: Arc<AtomicUsize>,
+}
+
+impl XfsBrowserFixture {
+    pub fn register(server: &TestServer) -> Self {
+        use std::time::{Duration, Instant};
+
+        // Longer than the helper's normal DOM settling delays across all three steps.
+        const COUNTDOWN_SECONDS: u64 = 2;
+        let popups = Arc::new(AtomicUsize::new(0));
+        for name in ["one", "two", "three"] {
+            let popups = popups.clone();
+            server.route(&format!("/xfs-popup/{name}"), move |_| {
+                popups.fetch_add(1, Ordering::Relaxed);
+                Reply::html("Unexpected popup")
+            });
+        }
+        let early = Arc::new(AtomicUsize::new(0));
+        let mut shares = Vec::new();
+        let mut files = Vec::new();
+        for index in 0..10 {
+            let stage = format!("/xfs/{index}/countdown");
+            let transfer = format!("/xfs/{index}/attachment");
+            let filename = format!("xfs-{index}.bin");
+            let file = server.file(
+                FileSpec::random(index, 4096)
+                    .filename(&filename)
+                    .content_disposition(format!("attachment; filename={filename}"))
+                    .content_type("application/octet-stream"),
+            );
+            let began = Arc::new(Mutex::new(None::<Instant>));
+            shares.push(server.route(&format!("/xfs/{index}"), {
+                let stage = stage.clone();
+                move |request| {
+                    // Force the resolver down the real built-in XFS browser fallback.
+                    if request.headers.get(header::USER_AGENT)
+                        .and_then(|ua| ua.to_str().ok())
+                        .is_some_and(|ua| ua.starts_with("Ruscello/"))
+                    {
+                        let mut headers = HeaderMap::new();
+                        headers.insert("cf-mitigated", HeaderValue::from_static("challenge"));
+                        return Reply::Response(StatusCode::FORBIDDEN, headers, String::new());
+                    }
+                    Reply::html(format!(r#"<form action="{stage}" method="post">
+                        <input type="hidden" name="op" value="download1">
+                        <button id="method_free" name="method_free" value="Free Download">Free Download</button>
+                    </form>"#))
+                }
+            }));
+            server.route(&stage, {
+                let began = began.clone();
+                let transfer = transfer.clone();
+                move |request| {
+                    if request.method != Method::POST || !request.body.split(|&byte| byte == b'&').any(|pair| pair == b"op=download1") {
+                        return Reply::status(StatusCode::BAD_REQUEST);
+                    }
+                    let Ok(mut started) = began.lock() else { return Reply::status(StatusCode::INTERNAL_SERVER_ERROR); };
+                    *started = Some(Instant::now());
+                    Reply::html(format!(r#"
+                        <div id="countdown" data-seconds="{COUNTDOWN_SECONDS}">{COUNTDOWN_SECONDS}</div>
+                        <a id="downloadbtn" href="{transfer}">Download</a>
+                        <script>
+                        document.getElementById('downloadbtn').onclick = () => {{
+                            window.open('/xfs-popup/one'); window.open('/xfs-popup/two'); window.open('/xfs-popup/three');
+                        }};
+                        </script>
+                    "#))
+                }
+            });
+            server.route(&transfer, {
+                let file = file.clone();
+                let early = early.clone();
+                move |_| {
+                    if began.lock().is_ok_and(|started| {
+                        started.is_some_and(|time| {
+                            time.elapsed() >= Duration::from_secs(COUNTDOWN_SECONDS)
+                        })
+                    }) {
+                        Reply::File(file.clone())
+                    } else {
+                        early.fetch_add(1, Ordering::Relaxed);
+                        Reply::status(StatusCode::CONFLICT)
+                    }
+                }
+            });
+            files.push(file);
+        }
+        Self {
+            shares,
+            files,
+            popups,
+            early,
+        }
+    }
+
+    pub fn popup_requests(&self) -> usize {
+        self.popups.load(Ordering::Relaxed)
+    }
+
+    pub fn early_requests(&self) -> usize {
+        self.early.load(Ordering::Relaxed)
+    }
 }

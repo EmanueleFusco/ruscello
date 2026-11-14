@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 
 ## [Unreleased]
 
+The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ruscello/pull/57).
+
 ### Added
 - M9.1–M9.8: Automation & Post-Processing (`ruscello-platform`, `ruscello-http`, `ruscello-engine`,
   `ruscello-api`, `ruscello-cli`, `ruscello-gui`):
@@ -106,9 +108,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
   and kept advanced Add fields labeled while editing.
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.
 - Isolated rotating CLI logs from the GUI and browser helper log retention.
-- Moved FTP/FTPS support from M1.11 to M9.8.
 
 ### Fixed
+- Browser cookie import sends multiple bounded requests when cookies from several profiles exceed a single
+  helper request. Added regression coverage for idle exit, crash recovery, and a ten-link XFileSharing batch.
 - Prevented the scheduler from treating a removed BitTorrent handle as a failed download while force recheck
   replaces it.
 - Fixed a Windows race condition during BitTorrent force recheck where `librqbit`'s fastresume `.bitv` file could

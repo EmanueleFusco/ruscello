@@ -1,26 +1,36 @@
 # Ruscello
 
-Ruscello is a desktop download manager written in Rust for HTTP, file hosters, and BitTorrent. The
-M5 milestone (`v0.5.0`) adds LinkGrabber, hoster plugins, and native JDownloader DLC import to the
-persistent download queue. The desktop app supports Windows, Linux, and macOS.
+Ruscello is a Rust download manager for Windows, Linux, and macOS. Its persistent queue handles
+HTTP, HTTPS, FTP, FTPS, file hosters, BitTorrent, and media streams.
+
+`main` includes the implementation through **M9 Automation & Post-Processing**. **M10** covers
+hardening, performance, packaging, and the 1.0 release. See the [project status](docs/PLAN.md#current-status).
 
 ## Key Features
 
 - **HTTP and HTTPS** downloads use dynamic segmentation, bandwidth limits, and crash-safe checkpoints.
   The queue supports pause, resume, retry, checksum verification, and verified mirrors.
+- **FTP and FTPS** support byte-offset resume via `REST` on servers that offer it. `ftps://` uses
+  explicit TLS by default and implicit TLS when port 990 is specified.
 - **BitTorrent** accepts magnets and `.torrent` files, with file selection, seeding limits, and piece rechecks.
 - **Hoster plugins** cover `fuckingfast.co`, XFileSharing/DataNodes, and other services. Ruscello can renew an
   expired link and resume when the new response matches the saved file validators. Custom TOML recipes load
   without restarting the app. Pixeldrain and Gofile API tokens use the operating system credential store.
 - **LinkGrabber** analyzes pages and explains why it ranked each result. Search or filter the list, select
   files, and queue them as packages. Import JDownloader `.dlc`, text lists, Metalink, and M3U playlists.
+- **Media** includes native HLS and DASH transfers, quality selection, and playlist packages. Optional
+  `yt-dlp` expands site support and `ffmpeg` merges separate audio and video tracks.
+- **Remote control** includes a mobile-friendly LAN Web UI in **Settings → Integrations** and a
+  [browser extension](extensions/browser/README.md) for Chrome/Chromium and Firefox.
+- **Automation** includes time-of-day speed limits and queue scheduling, sleep inhibition and queue
+  completion actions, watch folders, automatic checksum verification and archive extraction, and an
+  optional post-download command. Configure these in **Settings → Automation**.
 - **Desktop settings** include English and Italian with live switching, categories and rules, and hardware or
   software rendering.
 
 When a site requires verification, select **Open verification** on the waiting download. Ruscello resumes
 waiting downloads for that site when you finish in the browser window. Use **Analyze in browser** in Add to
 include resources loaded by page scripts. **Settings → Integrations** offers site-scoped browser cookie import.
-HLS/DASH transfers, the LAN web interface, and automatic archive extraction are on the [roadmap](docs/PLAN.md).
 
 ## Development
 
@@ -43,7 +53,10 @@ Developer & agent documentation: [AGENTS.md](AGENTS.md), [Architecture](docs/ARC
 cargo run -p ruscello-cli -- get <url> -o downloads -x 16
 cargo run -p ruscello-cli -- get <url> --browser
 cargo run -p ruscello-cli -- inspect <page-url> --browser
+cargo run -p ruscello-cli -- get <stream-url> --format best
 cargo run -p ruscello-cli -- import links.dlc
+cargo run -p ruscello-cli -- queue <url>
+cargo run -p ruscello-cli -- status
 cargo run -p ruscello-cli -- --language it --help
 ```
 
@@ -51,6 +64,7 @@ Progress appears on standard error in a terminal. Use `--progress` to display it
 `--quiet` to suppress it. Standard output contains the path to the completed file.
 Press Ctrl+C to interrupt a download. Run the same command to resume when the server supports validated byte ranges.
 Use `--checksum sha256:<hex>` to verify the completed file, and repeat `--mirror <url>` to add verified sources.
+The `queue` and `status` commands connect to the running desktop app.
 
 The `inspect` and `import` commands print URLs to standard output. In the desktop app, use **Add** to review
 and queue discovered files or imported packages. DLC import requests a key from JDownloader and decrypts
