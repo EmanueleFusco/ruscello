@@ -7,7 +7,8 @@ use std::{
 
 use reqwest::{
     Client, Response, StatusCode, Url,
-    header::{self, HeaderMap},
+    cookie::{CookieStore, Jar},
+    header::{self, HeaderMap, HeaderValue},
 };
 use tokio::sync::watch;
 
@@ -154,6 +155,8 @@ impl Transport {
             header::ACCEPT_ENCODING,
             header::HeaderValue::from_static("identity"),
         );
+        let mut initial_cookie = headers.get(header::COOKIE).cloned();
+        let mut redirect_cookies: Option<Jar> = None;
         let mut url = url.clone();
         for _ in 0..=10 {
             if !matches!(url.scheme(), "http" | "https")
@@ -198,10 +201,54 @@ impl Transport {
                     }
                 }
                 headers = safe;
+                initial_cookie = None;
             }
+            apply_redirect_cookies(
+                &mut headers,
+                &initial_cookie,
+                &mut redirect_cookies,
+                &url,
+                response.headers(),
+                &next,
+            );
             url = next;
         }
         Err(HttpError::InvalidResponse("too many redirects"))
+    }
+}
+
+fn apply_redirect_cookies(
+    headers: &mut HeaderMap,
+    initial_cookie: &Option<HeaderValue>,
+    jar: &mut Option<Jar>,
+    current: &Url,
+    response_headers: &HeaderMap,
+    next: &Url,
+) {
+    for raw in response_headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+    {
+        jar.get_or_insert_with(Jar::default)
+            .add_cookie_str(raw, current);
+    }
+    let Some(jar_value) = jar.as_ref().and_then(|cookies| cookies.cookies(next)) else {
+        return;
+    };
+    let merged = match initial_cookie
+        .as_ref()
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+    {
+        Some(existing) => jar_value
+            .to_str()
+            .ok()
+            .and_then(|added| HeaderValue::from_str(&format!("{existing}; {added}")).ok()),
+        None => Some(jar_value),
+    };
+    if let Some(value) = merged {
+        headers.insert(header::COOKIE, value);
     }
 }
 

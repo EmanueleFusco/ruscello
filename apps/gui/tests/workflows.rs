@@ -2173,6 +2173,20 @@ async fn italian_labels_fit_without_clipping_and_panes_resize_and_persist() -> a
     app.preferences.motion = false;
     apply(&mut app, Message::Locale(Locale::Italian)).await;
 
+    let id = DownloadId(1);
+    let mut download = Download::new(
+        id,
+        Source::Http {
+            url: "https://example.test/fixture.zip".into(),
+        },
+        temp.path().to_owned(),
+    );
+    download.filename = Some("fixture.zip".into());
+    download.transition(ruscello_core::Status::Downloading)?;
+    app.queue.order.push(id);
+    app.queue.downloads.insert(id, download);
+    app.queue.rebuild();
+
     let viewport = Size::new(1024.0, 680.0);
     apply(&mut app, Message::Resize(viewport)).await;
     {
@@ -2200,6 +2214,8 @@ async fn italian_labels_fit_without_clipping_and_panes_resize_and_persist() -> a
         let adv = check_unclipped(&mut ui, "Avanzamento")?;
         let speed = check_unclipped(&mut ui, "Velocità")?;
         let eta = check_unclipped(&mut ui, "Tempo stimato")?;
+        let active_status = check_unclipped(&mut ui, "Download in corso")?;
+        assert!(active_status.width >= 95.0);
         assert!(dim.x + dim.width <= adv.x);
         assert!(adv.x + adv.width <= speed.x);
         assert!(speed.x + speed.width <= eta.x);

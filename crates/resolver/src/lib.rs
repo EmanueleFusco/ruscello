@@ -396,18 +396,47 @@ impl Resolver {
                 .header(header::RANGE, "bytes=0-")
                 .send()
                 .await?;
-            let result = if http::is_html(&response) {
-                http::page(response).await.map(|_| None)
-            } else {
-                http::status(&response).map(|()| {
-                    Some(ctx.direct(response.url().clone(), url, HosterLimits::default()))
-                })
-            };
+            if http::is_html(&response) {
+                let base = response.url().clone();
+                let body = match http::page(response).await {
+                    Ok(body) => body,
+                    Err(ResolveError::VerificationRequired) => {
+                        return self
+                            .browser_verification_fallback(url, None, &ctx, HosterLimits::default())
+                            .await;
+                    }
+                    Err(error) => return Err(error),
+                };
+                match plugins::resolve_generic_html(&ctx, &base, &body).await {
+                    Ok(Some(direct)) => {
+                        return Ok(Some(ctx.direct(direct, url, HosterLimits::default())));
+                    }
+                    Ok(None) | Err(ResolveError::VerificationRequired) => {
+                        if plugins::is_countdown_page(&body)
+                            && !plugins::has_countdown_captcha(&body)
+                            && self.browser.is_some()
+                        {
+                            let countdown = Recipe::countdown_browser();
+                            return self
+                                .browser_verification_fallback(
+                                    url,
+                                    Some(&countdown),
+                                    &ctx,
+                                    HosterLimits::SERIAL,
+                                )
+                                .await;
+                        }
+                        return Err(ResolveError::VerificationRequired);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let result = http::status(&response)
+                .map(|()| Some(ctx.direct(response.url().clone(), url, HosterLimits::default())));
             if matches!(result, Err(ResolveError::VerificationRequired)) {
                 return self
-                    .browser_fallback(url, None, &ctx, HosterLimits::default())
-                    .await
-                    .map(Some);
+                    .browser_verification_fallback(url, None, &ctx, HosterLimits::default())
+                    .await;
             }
             result
         };
@@ -460,6 +489,19 @@ impl Resolver {
         http::validate(&resolution.url)?;
         tracing::debug!(plugin = plugin.name(), "Resolved hoster link");
         Ok(Some(resolution))
+    }
+
+    async fn browser_verification_fallback(
+        &self,
+        url: &Url,
+        recipe: Option<&Recipe>,
+        ctx: &Context,
+        limits: HosterLimits,
+    ) -> Result<Option<Resolution>, ResolveError> {
+        match self.browser_fallback(url, recipe, ctx, limits).await {
+            Err(ResolveError::NoDownload) => Err(ResolveError::VerificationRequired),
+            result => result.map(Some),
+        }
     }
 
     async fn browser_fallback(

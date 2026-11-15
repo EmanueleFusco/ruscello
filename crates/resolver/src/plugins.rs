@@ -280,7 +280,52 @@ pub(crate) fn browser_direct_link(base: &Url, body: &str) -> Option<Url> {
 }
 
 async fn xfilesharing(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
-    let mut response = ctx.get(source.clone()).send().await?;
+    let response = ctx.get(source.clone()).send().await?;
+    follow_xfs(ctx, response).await
+}
+
+pub(crate) async fn resolve_generic_html(
+    ctx: &Context,
+    base: &Url,
+    body: &str,
+) -> Result<Option<Url>, ResolveError> {
+    if let Some(url) = browser_direct_link(base, body) {
+        return Ok(Some(url));
+    }
+    match xfs_step(base, body) {
+        Ok((XfsStep::Link(url), delay)) => {
+            ctx.wait(delay).await?;
+            Ok(Some(url))
+        }
+        Ok((XfsStep::Form(form), delay)) => {
+            ctx.wait(delay).await?;
+            let response = form.send(ctx, base).await?;
+            follow_xfs(ctx, response).await.map(Some)
+        }
+        Err(ResolveError::VerificationRequired) => Err(ResolveError::VerificationRequired),
+        Err(_) => Ok(None),
+    }
+}
+
+const COUNTDOWN_SELECTOR: &str = "download-countdown, #download-countdown, .download-countdown";
+
+pub(crate) fn is_countdown_page(body: &str) -> bool {
+    let document = Html::parse_document(body);
+    http::first(&document, COUNTDOWN_SELECTOR).is_some()
+}
+
+pub(crate) fn has_countdown_captcha(body: &str) -> bool {
+    let document = Html::parse_document(body);
+    let Ok(selector) = scraper::Selector::parse(COUNTDOWN_SELECTOR) else {
+        return false;
+    };
+    document.select(&selector).any(|element| {
+        element.attr("data-has-captcha") == Some("true")
+            || element.attr(":has-captcha") == Some("true")
+    })
+}
+
+async fn follow_xfs(ctx: &Context, mut response: reqwest::Response) -> Result<Url, ResolveError> {
     for _ in 0..4 {
         let base = response.url().clone();
         if !http::is_html(&response) {
@@ -352,7 +397,7 @@ fn xfs_step(base: &Url, body: &str) -> Result<(XfsStep, Duration), ResolveError>
             ));
         }
     }
-    if http::first(&document, "download-countdown").is_some() {
+    if http::first(&document, COUNTDOWN_SELECTOR).is_some() {
         return Err(ResolveError::VerificationRequired);
     }
     Err(ResolveError::NoDownload)

@@ -15,6 +15,8 @@ use crate::{Message, TICK, dom};
 
 const SETTLE: Duration = Duration::from_millis(350);
 const PAGE_TIMEOUT: Duration = Duration::from_secs(30);
+const EVAL_TIMEOUT: Duration = Duration::from_secs(2);
+const VERIFY_IDLE_TICK: Duration = Duration::from_millis(250);
 
 pub(super) struct Job {
     pub id: u64,
@@ -27,7 +29,8 @@ pub(super) struct Job {
     user_agent: String,
     loading: bool,
     navigating: bool,
-    evaluating: bool,
+    evaluating: Option<Instant>,
+    eval_seq: u64,
     saw_challenge: bool,
     deadline: Instant,
     step_deadline: Instant,
@@ -64,6 +67,7 @@ impl Job {
                 set_title(window, locale, source.host_str().unwrap_or_default());
                 window.set_visible(true);
                 window.set_focus();
+                let _ = webview.focus();
                 Duration::from_secs(590)
             }
             View::Resolve => Duration::from_secs(3700),
@@ -74,9 +78,14 @@ impl Job {
             steps.next();
         }
         let current = steps.next();
+        let next_tick = if matches!(view, View::Verify(_)) {
+            now
+        } else {
+            now + SETTLE
+        };
         Ok(Self {
             id,
-            next_tick: now + SETTLE,
+            next_tick,
             page: source.clone(),
             source,
             view,
@@ -85,7 +94,8 @@ impl Job {
             user_agent: String::new(),
             loading: false,
             navigating: false,
-            evaluating: false,
+            evaluating: None,
+            eval_seq: 0,
             saw_challenge: false,
             deadline: now + timeout,
             step_deadline: now
@@ -100,11 +110,36 @@ impl Job {
 
     pub(super) fn load_started(&mut self) {
         self.loading = true;
+        self.evaluating = None;
+        self.eval_seq = self.eval_seq.wrapping_add(1);
     }
 
-    pub(super) fn load_finished(&mut self) {
+    pub(super) fn load_finished(&mut self, webview: &WebView) {
         self.loading = false;
+        self.evaluating = None;
+        self.eval_seq = self.eval_seq.wrapping_add(1);
         self.next_tick = Instant::now() + SETTLE;
+        if matches!(self.view, View::Verify(_)) {
+            let _ = webview.focus();
+        }
+    }
+
+    pub(super) fn new_window(&mut self, webview: &WebView, target: Url) -> Option<Response> {
+        if !matches!(self.view, View::Verify(_) | View::Resolve)
+            || (!same_site(&self.page, &target) && !same_site(&self.source, &target))
+        {
+            return None;
+        }
+        let _ = webview.load_url(target.as_str());
+        self.page = target;
+        self.navigating = true;
+        self.loading = true;
+        self.evaluating = None;
+        self.eval_seq = self.eval_seq.wrapping_add(1);
+        if matches!(self.view, View::Verify(_)) {
+            let _ = webview.focus();
+        }
+        None
     }
 
     pub(super) fn update_title(&self, window: &Window, host: &str) {
@@ -127,12 +162,24 @@ impl Job {
         if now >= self.deadline || now >= self.step_deadline {
             return Some(error(Failure::Timeout));
         }
+        if self
+            .evaluating
+            .is_some_and(|started| now.saturating_duration_since(started) >= EVAL_TIMEOUT)
+        {
+            self.evaluating = None;
+            self.eval_seq = self.eval_seq.wrapping_add(1);
+        }
         if now < self.next_tick {
             return None;
         }
-        self.next_tick = now + TICK;
+        self.next_tick = now
+            + if matches!(self.view, View::Verify(_)) && self.navigating && !self.loading {
+                VERIFY_IDLE_TICK
+            } else {
+                TICK
+            };
         if self.loading
-            || self.evaluating
+            || self.evaluating.is_some()
             || cfg!(any(target_os = "macos", target_os = "linux"))
                 && !self.navigating
                 && !blank_ready
@@ -152,20 +199,30 @@ impl Job {
         );
         let proxy = proxy.clone();
         let id = self.id;
+        self.eval_seq = self.eval_seq.wrapping_add(1);
+        let seq = self.eval_seq;
         if webview
             .evaluate_script_with_callback(&script, move |value| {
-                let _ = proxy.send_event(Message::Evaluated(id, value));
+                let _ = proxy.send_event(Message::Evaluated(id, seq, value));
             })
             .is_err()
         {
             return Some(error(Failure::Unavailable));
         }
-        self.evaluating = true;
+        self.evaluating = Some(now);
         None
     }
 
-    pub(super) fn evaluated(&mut self, webview: &WebView, value: &str) -> Option<Response> {
-        self.evaluating = false;
+    pub(super) fn evaluated(
+        &mut self,
+        webview: &WebView,
+        seq: u64,
+        value: &str,
+    ) -> Option<Response> {
+        if seq != self.eval_seq {
+            return None;
+        }
+        self.evaluating = None;
         let Ok(mut snapshot) = serde_json::from_str::<dom::Snapshot>(value) else {
             return None;
         };
@@ -399,4 +456,72 @@ fn set_title(window: &Window, locale: Locale, host: &str) {
         Locale::It => "Verifica richiesta",
     };
     window.set_title(&format!("{title} — {host} — Ruscello"));
+}
+
+fn same_site(left: &Url, right: &Url) -> bool {
+    let (Some(a), Some(b)) = (left.host_str(), right.host_str()) else {
+        return false;
+    };
+    let a = a.trim_end_matches('.').to_ascii_lowercase();
+    let b = b.trim_end_matches('.').to_ascii_lowercase();
+    if a == b {
+        return true;
+    }
+    match (site_root(&a), site_root(&b)) {
+        (Some(root_a), Some(root_b)) => root_a == root_b,
+        _ => false,
+    }
+}
+
+fn site_root(host: &str) -> Option<&str> {
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return Some(host);
+    }
+    let labels: Vec<&str> = host.split('.').filter(|label| !label.is_empty()).collect();
+    if labels.len() < 2 {
+        return None;
+    }
+    let tld = labels[labels.len() - 1];
+    let sld = labels[labels.len() - 2];
+    let take = if labels.len() >= 3
+        && tld.len() == 2
+        && matches!(sld, "co" | "com" | "net" | "org" | "gov" | "edu")
+    {
+        3
+    } else {
+        2
+    };
+    let offset = host
+        .match_indices('.')
+        .nth_back(take - 1)
+        .map_or(0, |(index, _)| index + 1);
+    Some(&host[offset..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_same_site_and_rejects_third_party_popups() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let page = Url::parse("https://datanodes.to/abc/file.rar")?;
+        assert!(same_site(
+            &page,
+            &Url::parse("https://dl3.datanodes.to/d/123")?
+        ));
+        assert!(same_site(
+            &page,
+            &Url::parse("https://datanodes.to/download")?
+        ));
+        assert!(!same_site(&page, &Url::parse("https://other.to/download")?));
+        assert!(!same_site(
+            &page,
+            &Url::parse("https://ads.example.net/pop")?
+        ));
+        let co_uk = Url::parse("https://dl.example.co.uk/file")?;
+        assert!(same_site(&co_uk, &Url::parse("https://example.co.uk/dl")?));
+        assert!(!same_site(&co_uk, &Url::parse("https://other.co.uk/ad")?));
+        Ok(())
+    }
 }

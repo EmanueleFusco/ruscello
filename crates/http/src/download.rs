@@ -276,7 +276,8 @@ impl HttpDownloader {
             () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
             result = self.transport.probe_with(&current.url, current.headers.clone()) => result?,
         };
-        if resolved && !data.attachment && is_page(data.content_type.as_deref()) {
+        let detect_page = resolved || options.expired_link_resolver.is_some();
+        if detect_page && !data.attachment && is_page(data.content_type.as_deref()) {
             return Err(HttpError::ExpiredRepresentation);
         }
         if let Some(filename) = &options.filename_hint {
@@ -312,7 +313,7 @@ impl HttpDownloader {
                         size,
                         limits.clone(),
                         headers.clone(),
-                        resolved,
+                        (resolved, detect_page),
                     )
                 })
                 .flatten()
@@ -376,7 +377,7 @@ impl HttpDownloader {
                     &mut writer,
                     options,
                     progress,
-                    (headers, resolved),
+                    (headers, resolved, detect_page),
                 )
                 .await
                 {
@@ -455,7 +456,7 @@ impl HttpDownloader {
                     primary.size,
                     limits.clone(),
                     HeaderMap::new(),
-                    false,
+                    (false, primary.detect_page),
                 )
             {
                 sources.push(source);
@@ -510,6 +511,7 @@ struct RangeSource {
     limits: TransferLimits,
     headers: HeaderMap,
     resolved: bool,
+    detect_page: bool,
 }
 
 impl RangeSource {
@@ -519,7 +521,7 @@ impl RangeSource {
         size: u64,
         limits: TransferLimits,
         headers: HeaderMap,
-        resolved: bool,
+        (resolved, detect_page): (bool, bool),
     ) -> Option<Self> {
         if !probe.supports_ranges {
             return None;
@@ -533,6 +535,7 @@ impl RangeSource {
             limits,
             headers,
             resolved,
+            detect_page,
         })
     }
 
@@ -560,7 +563,7 @@ impl RangeSource {
                     error
                 }
             })?;
-        if self.resolved && looks_like_page(response.headers()) {
+        if self.detect_page && looks_like_page(response.headers()) {
             return Err(HttpError::ExpiredRepresentation);
         }
         match response.status() {

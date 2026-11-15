@@ -5,12 +5,12 @@ use std::{
     time::Duration,
 };
 
-use reqwest::StatusCode;
+use reqwest::{StatusCode, header};
 use ruscello_http::{
     DownloadOptions, DownloadProgress, ExpiredLinkResolver, HttpDownloader, ResolvedLink,
     RetryPolicy, Url,
 };
-use ruscello_testkit::{FileSpec, TestServer};
+use ruscello_testkit::{FileSpec, HeaderMap, HeaderValue, Reply, TestServer};
 use tokio::{
     sync::watch,
     time::{self, Instant},
@@ -157,5 +157,41 @@ async fn enforces_runtime_bandwidth_limits_on_a_download() -> TestResult {
     let path = time::timeout(Duration::from_secs(6), downloader.download(&url, settings)).await??;
     assert!(started.elapsed() >= Duration::from_millis(1750));
     assert_eq!(std::fs::read(path)?, file.payload().bytes(0..MIB / 2));
+    Ok(())
+}
+
+#[tokio::test]
+async fn forwards_redirect_cookies_and_refreshes_generic_html_pages() -> TestResult {
+    let server = TestServer::start().await?;
+    let fresh = server.file(FileSpec::random(37, 256));
+    let _landing = server.route("/download", |request| {
+        let cookie = request
+            .headers
+            .get(header::COOKIE)
+            .and_then(|value| value.to_str().ok());
+        if cookie.is_some_and(|value| value.contains("file_code=z70o0ame3mwc")) {
+            Reply::html(
+                "<div id=\"download-countdown\" data-countdown=\"5\" data-has-captcha=\"false\"></div>",
+            )
+        } else {
+            Reply::status(StatusCode::NOT_FOUND)
+        }
+    });
+    let entry = server.route("/z70o0ame3mwc/file.rar", |_| {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::LOCATION, HeaderValue::from_static("/download"));
+        headers.insert(
+            header::SET_COOKIE,
+            HeaderValue::from_static("file_code=z70o0ame3mwc; Path=/"),
+        );
+        Reply::Response(StatusCode::FOUND, headers, String::new())
+    });
+    let directory = tempfile::tempdir()?;
+    let mut settings = options(&directory);
+    settings.expired_link_resolver = Some(Arc::new(LocalResolver(Url::parse(fresh.url())?)));
+    let path = HttpDownloader::new()?
+        .download(&Url::parse(&entry)?, settings)
+        .await?;
+    assert_eq!(std::fs::read(path)?, fresh.payload().bytes(0..256));
     Ok(())
 }

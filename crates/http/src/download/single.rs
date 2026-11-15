@@ -21,7 +21,7 @@ pub(super) async fn download(
     writer: &mut FileWriter,
     options: &DownloadOptions,
     mut progress: DownloadProgress,
-    (headers, resolved): (HeaderMap, bool),
+    (headers, resolved, detect_page): (HeaderMap, bool, bool),
 ) -> Result<u64, HttpError> {
     let transfer = async {
         let mut response = transport
@@ -34,7 +34,7 @@ pub(super) async fn download(
                     error
                 }
             })?;
-        if resolved && looks_like_page(response.headers()) {
+        if detect_page && looks_like_page(response.headers()) {
             return Err(HttpError::ExpiredRepresentation);
         }
         if response.status() != StatusCode::OK {

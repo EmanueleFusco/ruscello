@@ -190,9 +190,9 @@ impl Column {
         match self {
             Self::Size => 70,
             Self::Progress => 80,
-            Self::Speed => 112,
+            Self::Speed => 96,
             Self::Eta => 94,
-            Self::Status => 100,
+            Self::Status => 116,
         }
     }
 

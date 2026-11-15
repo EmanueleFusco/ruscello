@@ -38,8 +38,9 @@ enum Message {
     LoadStarted,
     LoadFinished,
     BlankReady,
-    Evaluated(u64, String),
+    Evaluated(u64, u64, String),
     Download(Url),
+    NewWindow(Url),
 }
 
 fn main() -> std::process::ExitCode {
@@ -147,7 +148,7 @@ fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(Message::LoadFinished) => {
                 if let Some(active) = &mut job {
-                    active.load_finished();
+                    active.load_finished(&webview);
                 }
                 None
             }
@@ -155,13 +156,16 @@ fn run() -> anyhow::Result<()> {
                 blank_ready = true;
                 None
             }
-            Event::UserEvent(Message::Evaluated(id, payload)) => job
+            Event::UserEvent(Message::Evaluated(id, seq, payload)) => job
                 .as_mut()
                 .filter(|active| active.id == id)
-                .and_then(|active| active.evaluated(&webview, &payload)),
+                .and_then(|active| active.evaluated(&webview, seq, &payload)),
             Event::UserEvent(Message::Download(url)) => job
                 .as_mut()
                 .and_then(|active| active.download(&webview, url)),
+            Event::UserEvent(Message::NewWindow(url)) => job
+                .as_mut()
+                .and_then(|active| active.new_window(&webview, url)),
             Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. })
             | Event::UserEvent(Message::Tick) => job
                 .as_mut()
@@ -269,13 +273,21 @@ fn webview(
 ) -> anyhow::Result<WebView> {
     let load_proxy = proxy.clone();
     let download_proxy = proxy.clone();
+    let new_window_proxy = proxy.clone();
     let builder = WebViewBuilder::new_with_web_context(context)
         .with_devtools(false)
         .with_navigation_handler(|target| {
             target == "about:blank" || Url::parse(&target).is_ok_and(|url| web_url(&url))
         })
         .with_permission_handler(|_| wry::PermissionResponse::Deny)
-        .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
+        .with_new_window_req_handler(move |target, _| {
+            if let Ok(url) = Url::parse(&target)
+                && web_url(&url)
+            {
+                let _ = new_window_proxy.send_event(Message::NewWindow(url));
+            }
+            NewWindowResponse::Deny
+        })
         .with_download_started_handler(move |target, _| {
             if let Ok(url) = Url::parse(&target)
                 && web_url(&url)

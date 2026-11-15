@@ -10,7 +10,8 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
 ### Fixed
 - Prevented third-party HTTP/2, GPU, and torrent `DEBUG` traces (such as `h2::codec::framed_read`) from bloating daily log files in `ruscello-platform`.
 - Cleaned up empty `.ruscello-incoming/<id>/.ready-<id>` staging directories after failed or stopped non-torrent transfers and during startup reconciliation while preserving resumable `.rscpart` checkpoints.
-- Fixed download row filename/size overlap, clipped Italian sidebar/header labels (`Dimensione`, `Tempo stimato`, `In condivisione`, `Arrestati`), and two-line simultaneous upload/download speed clipping in `ruscello-gui`.
+- Fixed download row filename/size overlap, clipped Italian sidebar/header labels (`Dimensione`, `Tempo stimato`, `In condivisione`, `Arrestati`), clipped `Download in corso` status label, and two-line simultaneous upload/download speed clipping in `ruscello-gui`.
+- Preserved `Set-Cookie` headers across HTTP redirect hops in `ruscello-http`, detected HTML landing pages on generic URLs without failing prematurely, added generic XFS/countdown HTML recovery and interactive `VerificationRequired` fallback in `ruscello-resolver`, and improved `ruscello-webview` click responsiveness by focusing the WebView and routing same-site `window.open`/`target="_blank"` navigations in-place instead of dropping them.
 
 ### Changed
 - Added explicit `Stop` (`Status::Stopped`) semantics without removing items from the queue across `ruscello-core`, `ruscello-engine`, `ruscello-api`, and `ruscello-gui` (including stopping active `Seeding` torrents into `Completed` and resuming seeding on demand).

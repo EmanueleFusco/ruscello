@@ -18,7 +18,7 @@ md-5.workspace = true
 mime_guess.workspace = true
 percent-encoding.workspace = true
 postcard.workspace = true
-reqwest = { workspace = true, features = ["rustls", "http2"] }
+reqwest = { workspace = true, features = ["rustls", "http2", "cookies"] }
 rustls.workspace = true
 rustls-pki-types.workspace = true
 rustls-platform-verifier.workspace = true

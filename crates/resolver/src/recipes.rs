@@ -78,9 +78,23 @@ impl Recipe {
             patterns: Vec::new(),
             steps: vec![
                 submit("download1", "#method_free, [name=method_free]"),
-                RecipeStep::WaitFor { selector: "#downloadbtn, #downloadlink, #direct_link".into() },
+                RecipeStep::WaitFor { selector: "#download-button, a#download-link[href], #downloadbtn, #downloadlink, #direct_link".into() },
                 RecipeStep::Wait { seconds: None, from_page: Some("#countdown [data-seconds], #countdown span, #countdown, #seconds, [data-countdown]".into()), default_seconds: Some(0) },
-                RecipeStep::Click { selector: "#downloadbtn, #downloadlink, #direct_link".into() },
+                RecipeStep::Click { selector: "#download-button, a#download-link[href], #downloadbtn, #downloadlink, #direct_link".into() },
+                RecipeStep::ExpectDownload(true),
+            ],
+        }
+    }
+
+    pub(crate) fn countdown_browser() -> Self {
+        // Wait for the site's native JS countdown to finish before clicking the download control.
+        Self {
+            config: Config { name: "Countdown".into(), patterns: Vec::new(), max_connections: Some(NonZeroUsize::MIN), max_parallel: Some(NonZeroUsize::MIN), browser: true },
+            patterns: Vec::new(),
+            steps: vec![
+                RecipeStep::Wait { seconds: None, from_page: Some("#countdown [data-seconds], #countdown span, #countdown, #seconds, [data-countdown]".into()), default_seconds: Some(0) },
+                RecipeStep::WaitFor { selector: "#download-button, a#download-link[href], #downloadbtn, #downloadlink, #direct_link".into() },
+                RecipeStep::Click { selector: "#download-button, a#download-link[href], #downloadbtn, #downloadlink, #direct_link".into() },
                 RecipeStep::ExpectDownload(true),
             ],
         }
