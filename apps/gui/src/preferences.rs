@@ -208,6 +208,8 @@ pub(crate) struct Preferences {
     pub(crate) browser_helper: bool,
     pub(crate) auto_accept_hosters: bool,
     pub(crate) monitor_clipboard: bool,
+    pub(crate) sidebar_width: Option<f32>,
+    pub(crate) details_height: Option<f32>,
 }
 
 impl Default for Preferences {
@@ -235,6 +237,8 @@ impl Default for Preferences {
             autostart: false,
             torrent: TorrentPreferences::default(),
             sidecars: ruscello_engine::SidecarSettings::default(),
+            sidebar_width: None,
+            details_height: None,
         }
     }
 }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use iced::{
     Event, event,
     keyboard::{self, Key, key::Named},
-    window,
+    mouse, window,
 };
 use ruscello_core::{DownloadId, Priority, Status};
 use ruscello_engine::EngineHandle;
@@ -42,6 +42,10 @@ pub(crate) fn event(event: Event, status: event::Status, _: window::Id) -> Optio
         Event::Window(window::Event::Unfocused) => {
             Some(Message::Modifiers(keyboard::Modifiers::default()))
         }
+        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Message::PointerMoved(position))
+        }
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(Message::EndResize),
         Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
             Some(Message::Modifiers(modifiers))
         }

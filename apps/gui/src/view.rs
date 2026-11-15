@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Fill, Padding, Theme,
+    Alignment, Element, Fill, Padding, Theme, mouse,
     widget::{
         self, button, column, container, mouse_area, progress_bar, row, rule, space, text,
         text_editor, tooltip,
@@ -15,7 +15,7 @@ use ruscello_engine::{
 use crate::{
     actions::Action,
     add::{Input, Probe, TorrentPreview},
-    app::{App, Column, DetailTab, Message},
+    app::{App, Column, DetailTab, Divider, Message},
     i18n::{self, Strings},
     icons::{self, icon},
     queue::{self, FILE_TYPES, ListRow, ROW_HEIGHT, StatusFilter},
@@ -25,11 +25,11 @@ use crate::{
 };
 
 const TOOLBAR_BUTTON_SIZE: u32 = 36;
-const SIDEBAR_WIDTH: u32 = 176;
-const ROW_ACTION_WIDTH: u32 = 24;
+const ROW_ACTION_WIDTH: u32 = 22;
 const ROW_ACTIONS_WIDTH: u32 = ROW_ACTION_WIDTH * 4;
-const TABLE_CELL_GAP: u32 = 5;
+const TABLE_CELL_GAP: u32 = 6;
 const TABLE_RIGHT_PADDING: u32 = 8;
+const SPLITTER_SIZE: f32 = 10.0;
 
 pub(crate) fn queue_id() -> widget::Id {
     widget::Id::new("download-list")
@@ -53,7 +53,9 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
     } else {
         column![
             toolbar(app),
-            row![sidebar(app), center(app)].spacing(14).height(Fill),
+            row![sidebar(app), vertical_splitter(app), center(app)]
+                .spacing(0)
+                .height(Fill),
             status_bar(app)
         ]
         .spacing(12)
@@ -328,10 +330,52 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             .width(Fill)
             .height(Fill),
     )
-    .width(SIDEBAR_WIDTH)
+    .width(app.sidebar_width())
     .height(Fill)
     .padding(10)
     .style(theme::panel)
+    .into()
+}
+
+fn vertical_splitter(app: &App) -> Element<'_, Message> {
+    let (hovered, dragging) = app.divider_state(Divider::Sidebar);
+    let grip = container(space::horizontal())
+        .width(3)
+        .height(36)
+        .style(move |theme| theme::splitter_handle(theme, hovered, dragging));
+    mouse_area(
+        container(grip)
+            .width(SPLITTER_SIZE)
+            .height(Fill)
+            .center_x(SPLITTER_SIZE)
+            .center_y(Fill),
+    )
+    .on_press(Message::StartResize(Divider::Sidebar))
+    .on_right_press(Message::ResetDivider(Divider::Sidebar))
+    .on_enter(Message::HoverDivider(Some(Divider::Sidebar)))
+    .on_exit(Message::HoverDivider(None))
+    .interaction(mouse::Interaction::ResizingHorizontally)
+    .into()
+}
+
+fn horizontal_splitter(app: &App) -> Element<'_, Message> {
+    let (hovered, dragging) = app.divider_state(Divider::Details);
+    let grip = container(space::horizontal())
+        .width(36)
+        .height(3)
+        .style(move |theme| theme::splitter_handle(theme, hovered, dragging));
+    mouse_area(
+        container(grip)
+            .width(Fill)
+            .height(SPLITTER_SIZE)
+            .center_x(Fill)
+            .center_y(SPLITTER_SIZE),
+    )
+    .on_press(Message::StartResize(Divider::Details))
+    .on_right_press(Message::ResetDivider(Divider::Details))
+    .on_enter(Message::HoverDivider(Some(Divider::Details)))
+    .on_exit(Message::HoverDivider(None))
+    .interaction(mouse::Interaction::ResizingVertically)
     .into()
 }
 
@@ -394,6 +438,11 @@ fn center(app: &App) -> Element<'_, Message> {
     if app.menu.is_some() {
         table = table.push(context_menu(app));
     }
+    let middle: Element<'_, Message> = if app.preferences.details {
+        horizontal_splitter(app)
+    } else {
+        space::vertical().height(SPLITTER_SIZE).into()
+    };
     column![
         container(table.spacing(4))
             .style(theme::panel)
@@ -401,9 +450,10 @@ fn center(app: &App) -> Element<'_, Message> {
             .padding(1)
             .width(Fill)
             .height(Fill),
+        middle,
         details(app, app.details_height())
     ]
-    .spacing(10)
+    .spacing(0)
     .width(Fill)
     .height(Fill)
     .into()
@@ -424,7 +474,7 @@ fn header(app: &App) -> Element<'_, Message> {
                 .style(muted)
         )
         .padding(Padding {
-            right: 6.0,
+            right: 8.0,
             ..Padding::ZERO
         })
         .clip(true)
@@ -558,7 +608,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             .spacing(6)
         )
         .padding(Padding {
-            right: 6.0,
+            right: 8.0,
             ..Padding::ZERO
         })
         .height(Fill)

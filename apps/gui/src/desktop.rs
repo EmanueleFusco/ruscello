@@ -215,3 +215,72 @@ fn register_associations(exe: PathBuf) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn apply_window_theme(raw_window_id: u64, dark: bool) {
+    #[cfg(windows)]
+    titlebar::apply(raw_window_id, dark);
+    #[cfg(not(windows))]
+    let _ = (raw_window_id, dark);
+}
+
+#[cfg(windows)]
+mod titlebar {
+    #![allow(unsafe_code)]
+
+    use std::ffi::c_void;
+
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_CAPTION_COLOR: u32 = 35;
+    const DWMWA_TEXT_COLOR: u32 = 36;
+
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: *mut c_void,
+            attribute: u32,
+            value: *const c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    pub(super) fn apply(raw_window_id: u64, dark: bool) {
+        if raw_window_id == 0 {
+            return;
+        }
+        let hwnd = raw_window_id as usize as *mut c_void;
+        let dark_mode: i32 = i32::from(dark);
+        // COLORREF uses 0x00BBGGRR matching `theme.rs` palette background and text colors.
+        let caption: u32 = if dark { 0x0021_1610 } else { 0x00f9_f4f1 };
+        let text: u32 = if dark { 0x00f8_eee9 } else { 0x003a_2417 };
+        let border: u32 = if dark { 0x003c_2b20 } else { 0x00e0_d6cd };
+        // SAFETY: `raw_window_id` comes from `iced::window::raw_id` for this process's live window
+        // HWND, and each attribute pointer references an aligned 4-byte scalar with exact byte size.
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                (&raw const dark_mode).cast(),
+                size_of::<i32>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CAPTION_COLOR,
+                (&raw const caption).cast(),
+                size_of::<u32>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TEXT_COLOR,
+                (&raw const text).cast(),
+                size_of::<u32>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                (&raw const border).cast(),
+                size_of::<u32>() as u32,
+            );
+        }
+    }
+}

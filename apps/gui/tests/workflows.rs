@@ -2161,3 +2161,91 @@ async fn stops_download_without_removing_it_and_exposes_seeding_stop_controls() 
     assert!(simulator(&app).find("Resume seeding").is_ok());
     Ok(())
 }
+
+#[tokio::test]
+async fn italian_labels_fit_without_clipping_and_panes_resize_and_persist() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    app.preferences.motion = false;
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+
+    let viewport = Size::new(1024.0, 680.0);
+    apply(&mut app, Message::Resize(viewport)).await;
+    {
+        let mut ui = simulator_at(&app, viewport);
+        let check_unclipped = |ui: &mut iced_test::Simulator<'_, Message>, label: &str| {
+            let element = ui
+                .find(label)
+                .map_err(|err| anyhow::anyhow!("missing {label}: {err}"))?;
+            let full = element.bounds();
+            let visible = element
+                .visible_bounds()
+                .ok_or_else(|| anyhow::anyhow!("missing visible bounds for {label}"))?;
+            assert!(
+                visible.width + 0.5 >= full.width,
+                "{label} clipped: visible={visible:?}, full={full:?}"
+            );
+            Ok::<_, anyhow::Error>(visible)
+        };
+        let seeding = check_unclipped(&mut ui, "In condivisione")?;
+        assert!(
+            seeding.width >= 85.0,
+            "unexpected seeding width: {seeding:?}"
+        );
+        let dim = check_unclipped(&mut ui, "Dimensione")?;
+        let adv = check_unclipped(&mut ui, "Avanzamento")?;
+        let speed = check_unclipped(&mut ui, "Velocità")?;
+        let eta = check_unclipped(&mut ui, "Tempo stimato")?;
+        assert!(dim.x + dim.width <= adv.x);
+        assert!(adv.x + adv.width <= speed.x);
+        assert!(speed.x + speed.width <= eta.x);
+        assert!(eta.x + eta.width <= viewport.width - 100.0);
+    }
+
+    let initial_sidebar = app.sidebar_width();
+    let initial_details = app.expanded_details_height();
+
+    apply(
+        &mut app,
+        Message::PointerMoved(iced::Point::new(208.0, 300.0)),
+    )
+    .await;
+    apply(&mut app, Message::StartResize(crate::app::Divider::Sidebar)).await;
+    apply(
+        &mut app,
+        Message::PointerMoved(iced::Point::new(274.0, 300.0)),
+    )
+    .await;
+    apply(&mut app, Message::EndResize).await;
+    assert!(app.sidebar_width() > initial_sidebar + 50.0);
+
+    apply(
+        &mut app,
+        Message::PointerMoved(iced::Point::new(500.0, 480.0)),
+    )
+    .await;
+    apply(&mut app, Message::StartResize(crate::app::Divider::Details)).await;
+    apply(
+        &mut app,
+        Message::PointerMoved(iced::Point::new(500.0, 420.0)),
+    )
+    .await;
+    apply(&mut app, Message::EndResize).await;
+    assert!(app.expanded_details_height() > initial_details + 50.0);
+
+    let persisted = crate::preferences::Preferences::load(&temp.path().join("gui.json"))?;
+    assert_eq!(persisted.sidebar_width, Some(app.sidebar_width()));
+    assert_eq!(
+        persisted.details_height,
+        Some(app.expanded_details_height())
+    );
+
+    apply(
+        &mut app,
+        Message::ResetDivider(crate::app::Divider::Sidebar),
+    )
+    .await;
+    assert_eq!(app.sidebar_width(), initial_sidebar);
+    Ok(())
+}

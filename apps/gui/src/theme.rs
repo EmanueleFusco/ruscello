@@ -369,3 +369,22 @@ pub(crate) fn status_color(theme: &Theme, status: ruscello_core::Status) -> Colo
         _ => palette.primary,
     }
 }
+
+pub(crate) fn splitter_handle(theme: &Theme, hovered: bool, dragging: bool) -> container::Style {
+    let colors = surfaces(theme);
+    let color = if dragging {
+        theme.palette().primary
+    } else if hovered {
+        colors.muted
+    } else {
+        Color {
+            a: 0.6,
+            ..colors.line
+        }
+    };
+    container::Style {
+        background: Some(color.into()),
+        border: iced::border::rounded(2),
+        ..container::Style::default()
+    }
+}

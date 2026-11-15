@@ -7,7 +7,7 @@ use std::{
 };
 
 use iced::{
-    Animation, Element, Size, Subscription, Task, clipboard, event,
+    Animation, Element, Point, Size, Subscription, Task, clipboard, event,
     futures::{Stream, stream},
     keyboard,
     widget::{operation, scrollable::AbsoluteOffset, text_editor},
@@ -54,7 +54,25 @@ pub(crate) enum DetailTab {
 
 const MOTION_DURATION: Duration = Duration::from_millis(144);
 pub(crate) const DETAILS_COLLAPSED_HEIGHT: f32 = 48.0;
-const DETAILS_HEIGHT: f32 = 158.0;
+const DEFAULT_DETAILS_HEIGHT: f32 = 166.0;
+const MIN_DETAILS_HEIGHT: f32 = 110.0;
+const MAX_DETAILS_HEIGHT: f32 = 420.0;
+const DEFAULT_SIDEBAR_WIDTH: f32 = 192.0;
+const MIN_SIDEBAR_WIDTH: f32 = 150.0;
+const MAX_SIDEBAR_WIDTH: f32 = 360.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Divider {
+    Sidebar,
+    Details,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DragState {
+    divider: Divider,
+    origin: Point,
+    initial: f32,
+}
 
 impl DetailTab {
     pub(crate) fn allowed(self, is_torrent: bool) -> bool {
@@ -96,11 +114,11 @@ impl Column {
 
     pub(crate) fn width(self) -> u32 {
         match self {
-            Self::Size => 60,
-            Self::Progress => 86,
-            Self::Speed => 114,
-            Self::Eta => 60,
-            Self::Status => 106,
+            Self::Size => 70,
+            Self::Progress => 80,
+            Self::Speed => 112,
+            Self::Eta => 94,
+            Self::Status => 100,
         }
     }
 
@@ -149,6 +167,12 @@ pub(crate) enum Message {
         height: f32,
     },
     Resize(Size),
+    StartResize(Divider),
+    HoverDivider(Option<Divider>),
+    PointerMoved(Point),
+    EndResize,
+    ResetDivider(Divider),
+    WindowHandle(u64),
     SystemTheme(iced::theme::Mode),
     ToggleDetails,
     Motion(bool),
@@ -374,6 +398,10 @@ pub(crate) struct App {
     pub(crate) detail_tab: DetailTab,
     pub(crate) offset: f32,
     pub(crate) viewport_height: f32,
+    window_size: Size,
+    cursor: Point,
+    dragging: Option<DragState>,
+    hovered_divider: Option<Divider>,
     pub(crate) banner: Option<&'static str>,
     pub(crate) show_columns: bool,
     system_theme: iced::theme::Mode,
@@ -421,6 +449,7 @@ pub(crate) struct App {
     pub(crate) category_draft: settings::CategoryDraft,
     pub(crate) automation_draft: settings::AutomationDraft,
     default_destination: PathBuf,
+    raw_window_id: Option<u64>,
     tray: Option<tray_icon::TrayIcon>,
     tray_events: desktop::Receiver<desktop::Event>,
     ipc_events: desktop::Receiver<Vec<String>>,
@@ -509,6 +538,10 @@ impl App {
             detail_tab: DetailTab::General,
             offset: 0.0,
             viewport_height: 720.0,
+            window_size: Size::new(1120.0, 720.0),
+            cursor: Point::ORIGIN,
+            dragging: None,
+            hovered_divider: None,
             banner: restore_failed.then_some("restore-failed"),
             show_columns: false,
             system_theme: iced::theme::Mode::default(),
@@ -549,6 +582,7 @@ impl App {
             category_draft: settings::CategoryDraft::default(),
             automation_draft: settings::AutomationDraft::default(),
             default_destination,
+            raw_window_id: None,
             tray: None,
             tray_events: desktop.tray,
             ipc_events: desktop.ipc,
@@ -577,11 +611,18 @@ impl App {
         self.strings.get("app-name")
     }
 
+    pub(crate) fn is_dark(&self) -> bool {
+        matches!(
+            (self.preferences.appearance, self.system_theme),
+            (Appearance::Dark, _) | (Appearance::System, iced::theme::Mode::Dark)
+        )
+    }
+
     pub(crate) fn theme(&self, _: window::Id) -> Option<iced::Theme> {
-        let appearance = match (self.preferences.appearance, self.system_theme) {
-            (Appearance::System, iced::theme::Mode::Dark) => Appearance::Dark,
-            (Appearance::System, _) => Appearance::Light,
-            (appearance, _) => appearance,
+        let appearance = if self.is_dark() {
+            Appearance::Dark
+        } else {
+            Appearance::Light
         };
         theme::theme(appearance)
     }
@@ -745,9 +786,32 @@ impl App {
         }
     }
 
+    pub(crate) fn sidebar_width(&self) -> f32 {
+        let max = (self.window_size.width - 700.0).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+        self.preferences
+            .sidebar_width
+            .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+            .clamp(MIN_SIDEBAR_WIDTH, max)
+    }
+
+    pub(crate) fn expanded_details_height(&self) -> f32 {
+        let max = (self.window_size.height - 290.0).clamp(MIN_DETAILS_HEIGHT, MAX_DETAILS_HEIGHT);
+        self.preferences
+            .details_height
+            .unwrap_or(DEFAULT_DETAILS_HEIGHT)
+            .clamp(MIN_DETAILS_HEIGHT, max)
+    }
+
+    pub(crate) fn divider_state(&self, divider: Divider) -> (bool, bool) {
+        (
+            self.hovered_divider == Some(divider),
+            self.dragging.is_some_and(|drag| drag.divider == divider),
+        )
+    }
+
     pub(crate) fn details_height(&self) -> f32 {
         DETAILS_COLLAPSED_HEIGHT
-            + (DETAILS_HEIGHT - DETAILS_COLLAPSED_HEIGHT) * self.details_progress()
+            + (self.expanded_details_height() - DETAILS_COLLAPSED_HEIGHT) * self.details_progress()
     }
 
     pub(crate) fn details_tabs_opacity(&self) -> f32 {
@@ -979,6 +1043,7 @@ impl App {
                 self.tray = desktop::tray(&self.strings)
                     .inspect_err(|_| tracing::debug!("System tray unavailable"))
                     .ok();
+                return window::raw_id::<Message>(self.window).map(Message::WindowHandle);
             }
             Message::Incoming(inputs) => {
                 if self.add.as_ref().is_some_and(|dialog| dialog.submitting) {
@@ -1076,8 +1141,65 @@ impl App {
                 self.offset = offset;
                 self.viewport_height = height;
             }
-            Message::Resize(size) => self.viewport_height = size.height,
-            Message::SystemTheme(mode) => self.system_theme = mode,
+            Message::Resize(size) => {
+                self.window_size = size;
+                self.viewport_height = size.height;
+            }
+            Message::HoverDivider(divider) => self.hovered_divider = divider,
+            Message::StartResize(divider) => {
+                let initial = match divider {
+                    Divider::Sidebar => self.sidebar_width(),
+                    Divider::Details => self.expanded_details_height(),
+                };
+                self.dragging = Some(DragState {
+                    divider,
+                    origin: self.cursor,
+                    initial,
+                });
+            }
+            Message::PointerMoved(position) => {
+                self.cursor = position;
+                if let Some(drag) = self.dragging {
+                    match drag.divider {
+                        Divider::Sidebar => {
+                            let max = (self.window_size.width - 700.0)
+                                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                            let width = (drag.initial + (position.x - drag.origin.x))
+                                .clamp(MIN_SIDEBAR_WIDTH, max);
+                            self.preferences.sidebar_width = Some(width);
+                        }
+                        Divider::Details => {
+                            let max = (self.window_size.height - 290.0)
+                                .clamp(MIN_DETAILS_HEIGHT, MAX_DETAILS_HEIGHT);
+                            let height = (drag.initial - (position.y - drag.origin.y))
+                                .clamp(MIN_DETAILS_HEIGHT, max);
+                            self.preferences.details_height = Some(height);
+                        }
+                    }
+                }
+            }
+            Message::EndResize => {
+                if self.dragging.take().is_some() {
+                    return self.save_preferences();
+                }
+            }
+            Message::ResetDivider(divider) => {
+                match divider {
+                    Divider::Sidebar => self.preferences.sidebar_width = None,
+                    Divider::Details => self.preferences.details_height = None,
+                }
+                return self.save_preferences();
+            }
+            Message::WindowHandle(raw_id) => {
+                self.raw_window_id = Some(raw_id);
+                desktop::apply_window_theme(raw_id, self.is_dark());
+            }
+            Message::SystemTheme(mode) => {
+                self.system_theme = mode;
+                if let Some(raw_id) = self.raw_window_id {
+                    desktop::apply_window_theme(raw_id, self.is_dark());
+                }
+            }
             Message::ToggleDetails => {
                 self.preferences.details = !self.preferences.details;
                 let refresh = if self.preferences.details && self.selected_is_torrent() {
@@ -1125,6 +1247,9 @@ impl App {
             }
             Message::Appearance(appearance) => {
                 self.preferences.appearance = appearance;
+                if let Some(raw_id) = self.raw_window_id {
+                    desktop::apply_window_theme(raw_id, self.is_dark());
+                }
                 return self.save_preferences();
             }
             Message::Saved(saved) => {
