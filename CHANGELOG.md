@@ -7,19 +7,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 
 The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ruscello/pull/57).
 
-### Fixed
-- Prevented third-party HTTP/2, GPU, and torrent `DEBUG` traces (such as `h2::codec::framed_read`) from bloating daily log files in `ruscello-platform`.
-- Cleaned up empty `.ruscello-incoming/<id>/.ready-<id>` staging directories after failed or stopped non-torrent transfers and during startup reconciliation while preserving resumable `.rscpart` checkpoints.
-- Fixed download row filename/size overlap, clipped Italian sidebar/header labels (`Dimensione`, `Tempo stimato`, `In condivisione`, `Arrestati`), clipped `Download in corso` status label, and two-line simultaneous upload/download speed clipping in `ruscello-gui`.
-- Preserved `Set-Cookie` headers across HTTP redirect hops in `ruscello-http`, detected HTML landing pages on generic URLs without failing prematurely, added generic XFS/countdown HTML recovery and interactive `VerificationRequired` fallback in `ruscello-resolver`, and improved `ruscello-webview` click responsiveness by focusing the WebView, routing same-site `new_window` navigations only during interactive verification (`View::Verify`), and disarming click-hijacking popunder overlays after native third-party popup blocking.
-
-### Changed
-- Added explicit `Stop` (`Status::Stopped`) semantics without removing items from the queue across `ruscello-core`, `ruscello-engine`, `ruscello-api`, and `ruscello-gui` (including stopping active `Seeding` torrents into `Completed` and resuming seeding on demand).
-- Added subtle UI transition animations across filter pills, hovered rows, banners, column chooser, context menus, and confirmation dialogs, plus single-line table cell alignment in `ruscello-gui`.
-- Added draggable, persisted splitters for resizing the sidebar and details panel in `ruscello-gui`, and themed the native Windows titlebar to match the active light/dark palette via DWM attributes.
-- Refined the mobile/LAN WebUI (`ruscello-api`) to inherit the desktop app's selected language and theme (`System`/`Light`/`Dark`), display the Ruscello application icon, align colors with the desktop palette, and expose `Stopped` status filtering and stop controls.
-- Enabled right-click text context menus (`Cut`, `Copy`, `Paste`, `Select all`, `Clear`) on text fields and the Add dialog URL editor, plus a direct `Paste` button, row/header checkboxes, left-mouse drag selection across package groups, and a multi-selection action bar in `ruscello-gui`.
-
 ### Added
 - GitHub Releases updater with automatic and manual checks, localized in-app release notes and progress,
   SHA-256 verification, checkpoint-safe shutdown, and restart on NSIS, AppImage, and macOS app bundles.
@@ -120,7 +107,11 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
   and checkpoint-preserving pauses when available disk space is low.
 
 ### Changed
-- Updated GitHub Actions checkout to use Node.js 24 and refreshed the README and UI guide for M5.
+- Added explicit `Stop` (`Status::Stopped`) semantics without removing items from the queue across `ruscello-core`, `ruscello-engine`, `ruscello-api`, and `ruscello-gui` (including stopping active `Seeding` torrents into `Completed` and resuming seeding on demand).
+- Enabled right-click text context menus (`Cut`, `Copy`, `Paste`, `Select all`, `Clear`) on text fields and the Add dialog URL editor, plus a direct `Paste` button, row/header checkboxes, left-mouse drag selection across package groups, and a multi-selection action bar in `ruscello-gui`.
+- Added draggable, persisted splitters for resizing the sidebar and details panel in `ruscello-gui`, themed the native Windows titlebar to match the active light/dark palette via DWM attributes, added subtle UI transition animations across interactive controls, and enforced single-line table cell alignment.
+- Refined the mobile/LAN WebUI (`ruscello-api`) to inherit the desktop app's selected language and theme (`System`/`Light`/`Dark`), display the Ruscello application icon, align colors with the desktop palette, and expose `Stopped` status filtering and stop controls.
+- Updated GitHub Actions checkout to use Node.js 24, upgraded the Fedora RPM build container to Fedora 44, and refreshed the README and UI guide for M5.
 - Refined the desktop queue, Settings, and Add dialog with a blue accent, clearer toolbar icons, and
   short, optional selection and panel transitions. The Details heading toggles the panel and stays
   visible when collapsed. The tabs fade as the panel expands and collapses.
@@ -135,6 +126,10 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
   same benchmark and is available in Settings.
 
 ### Fixed
+- Preserved `Set-Cookie` headers across HTTP redirect hops in `ruscello-http`, detected HTML landing pages on generic URLs without failing prematurely, added generic XFS/countdown HTML recovery and interactive `VerificationRequired` fallback in `ruscello-resolver`, and improved `ruscello-webview` click responsiveness by focusing the WebView, routing same-site `new_window` navigations only during interactive verification (`View::Verify`), and disarming click-hijacking popunder overlays after native third-party popup blocking.
+- Fixed download row filename/size overlap, clipped Italian sidebar/header labels (`Dimensione`, `Tempo stimato`, `In condivisione`, `Arrestati`), clipped `Download in corso` status label, and two-line simultaneous upload/download speed clipping in `ruscello-gui`.
+- Cleaned up empty `.ruscello-incoming/<id>/.ready-<id>` staging directories after failed or stopped non-torrent transfers and during startup reconciliation while preserving resumable `.rscpart` checkpoints.
+- Prevented third-party HTTP/2, GPU, and torrent `DEBUG` traces (such as `h2::codec::framed_read`) from bloating daily log files in `ruscello-platform`.
 - Fixed `.dlc` container decryption when AES-CBC plaintext contains zero padding followed by PKCS#7 padding.
 - Fixed `fuckingfast.co` resolution to handle `hx-post` endpoints returning `Hx-Redirect` URLs on `dl.fuckingfast.co` (including browser fallback clicking), removed the serial host limit on `fuckingfast.co`, and avoided treating passive Cloudflare `jsd/main.js` scripts on `200 OK` pages as interactive challenges.
 - Fixed segmented HTTP range downloads failing at 100% when an HTTP/2 server sends an empty trailing `END_STREAM` chunk.
