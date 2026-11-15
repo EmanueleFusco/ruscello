@@ -16,7 +16,7 @@ use crate::{Message, TICK, dom};
 const SETTLE: Duration = Duration::from_millis(350);
 const PAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const EVAL_TIMEOUT: Duration = Duration::from_secs(2);
-const VERIFY_IDLE_TICK: Duration = Duration::from_millis(250);
+const VERIFY_IDLE_TICK: Duration = Duration::from_millis(500);
 
 pub(super) struct Job {
     pub id: u64,
@@ -125,9 +125,7 @@ impl Job {
     }
 
     pub(super) fn new_window(&mut self, webview: &WebView, target: Url) -> Option<Response> {
-        if !matches!(self.view, View::Verify(_) | View::Resolve)
-            || (!same_site(&self.page, &target) && !same_site(&self.source, &target))
-        {
+        if !should_follow_new_window(&self.view, &self.page, &self.source, &target) {
             return None;
         }
         let _ = webview.load_url(target.as_str());
@@ -136,9 +134,7 @@ impl Job {
         self.loading = true;
         self.evaluating = None;
         self.eval_seq = self.eval_seq.wrapping_add(1);
-        if matches!(self.view, View::Verify(_)) {
-            let _ = webview.focus();
-        }
+        let _ = webview.focus();
         None
     }
 
@@ -458,6 +454,10 @@ fn set_title(window: &Window, locale: Locale, host: &str) {
     window.set_title(&format!("{title} — {host} — Ruscello"));
 }
 
+fn should_follow_new_window(view: &View, page: &Url, source: &Url, target: &Url) -> bool {
+    matches!(view, View::Verify(_)) && (same_site(page, target) || same_site(source, target))
+}
+
 fn same_site(left: &Url, right: &Url) -> bool {
     let (Some(a), Some(b)) = (left.host_str(), right.host_str()) else {
         return false;
@@ -522,6 +522,41 @@ mod tests {
         let co_uk = Url::parse("https://dl.example.co.uk/file")?;
         assert!(same_site(&co_uk, &Url::parse("https://example.co.uk/dl")?));
         assert!(!same_site(&co_uk, &Url::parse("https://other.co.uk/ad")?));
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_only_interactive_same_site_new_windows() -> Result<(), Box<dyn std::error::Error>> {
+        let source = Url::parse("https://datanodes.to/abc/file.rar")?;
+        let page = Url::parse("https://datanodes.to/download")?;
+        let dl = Url::parse("https://dl3.datanodes.to/d/123")?;
+        let ad = Url::parse("https://ads.example.net/pop")?;
+        assert!(should_follow_new_window(
+            &View::Verify(Locale::En),
+            &page,
+            &source,
+            &dl
+        ));
+        assert!(!should_follow_new_window(
+            &View::Verify(Locale::En),
+            &page,
+            &source,
+            &ad
+        ));
+        assert!(!should_follow_new_window(
+            &View::Resolve,
+            &page,
+            &source,
+            &dl
+        ));
+        let loopback = Url::parse("http://127.0.0.1:8080/browser-recipe")?;
+        let loopback_popup = Url::parse("http://127.0.0.1:8080/popup-one")?;
+        assert!(!should_follow_new_window(
+            &View::Resolve,
+            &loopback,
+            &loopback,
+            &loopback_popup
+        ));
         Ok(())
     }
 }

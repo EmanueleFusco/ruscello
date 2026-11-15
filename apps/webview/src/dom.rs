@@ -15,6 +15,30 @@ pub(super) const CAPTURE_RESOURCES: &str = r#"
             }
         } catch (_) {}
     };
+    const nativeOpen = window.open;
+    window.open = function(target, name, features) {
+        const win = nativeOpen.call(this, target, name, features);
+        if (win) return win;
+        let sameOrigin = false;
+        try {
+            sameOrigin = Boolean(target) && new URL(String(target), document.baseURI).origin === location.origin;
+        } catch (_) {}
+        if (sameOrigin || !target || target === 'about:blank') return null;
+        // Native popup blocking returns null, which leaves third-party popunder overlays
+        // re-arming over download buttons on every click. Return an inert handle only
+        // after native blocking has already prevented any navigation or network load.
+        const inert = {
+            closed: false,
+            close() { this.closed = true; },
+            focus() {},
+            blur() {},
+            postMessage() {},
+            location: { href: 'about:blank' },
+            opener: null,
+        };
+        setTimeout(() => { inert.closed = true; }, 800);
+        return inert;
+    };
     const fetch = window.fetch;
     window.fetch = function(input, ...args) {
         record(input instanceof Request ? input.url : input);
