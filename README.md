@@ -3,7 +3,7 @@
 Ruscello Download Manager is a Rust desktop app for Windows, Linux, and macOS. Its persistent queue handles
 HTTP, HTTPS, FTP, FTPS, file hosters, BitTorrent, and media streams.
 
-Get the Windows installer, Linux AppImage or Debian package, or macOS disk image from
+Get the Windows installer, Linux AppImage / Debian / Fedora package (or Arch `PKGBUILD`), or macOS disk image from
 [GitHub Releases](https://github.com/EmanueleFusco/ruscello/releases).
 
 [Quickstart](docs/QUICKSTART.md) · [FAQ](docs/FAQ.md) · [Roadmap](docs/PLAN.md) · [Security](SECURITY.md)

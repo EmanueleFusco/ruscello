@@ -10,7 +10,7 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
 ### Added
 - GitHub Releases updater with automatic and manual checks, localized in-app release notes and progress,
   SHA-256 verification, checkpoint-safe shutdown, and restart on NSIS, AppImage, and macOS app bundles.
-- Tagged Windows, Linux, and macOS desktop packages with the native browser helper, plus SHA-256 sums.
+- Tagged desktop packages with the native browser helper and SHA-256 sums for Linux (`x86_64`/`aarch64` `.AppImage`, `.deb`, and Fedora `.rpm`), Windows (`x86_64`/`aarch64` NSIS), and macOS (`aarch64`/`x86_64` `.dmg`), plus an Arch Linux `PKGBUILD` and draft release publishing.
 - Nightly parser fuzzing, an offline mixed-transfer soak, resource-budget tooling, and a personal-path audit.
 - Installation quickstart, FAQ, and coordinated vulnerability reporting policy.
 - Ruscello application icon for Windows, macOS, and Linux, including the launcher and system tray.

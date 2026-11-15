@@ -1,0 +1,51 @@
+# Maintainer: Ruscello maintainers
+pkgname=ruscello
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Desktop HTTP/FTP, media, and BitTorrent download manager'
+arch=('x86_64' 'aarch64')
+url='https://github.com/EmanueleFusco/ruscello'
+license=('GPL-3.0-or-later')
+depends=(
+  'dbus'
+  'gcc-libs'
+  'glibc'
+  'gtk3'
+  'hicolor-icon-theme'
+  'libsoup3'
+  'libxkbcommon'
+  'webkit2gtk-4.1'
+)
+makedepends=(
+  'cargo'
+  'cmake'
+  'pkgconf'
+)
+optdepends=(
+  'ffmpeg: audio/video remuxing for media downloads'
+  'yt-dlp: media site metadata extraction'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$srcdir/$pkgname-$pkgver"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "$srcdir/$pkgname-$pkgver"
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p ruscello-gui -p ruscello-webview
+}
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+  install -Dm755 target/release/ruscello "$pkgdir/usr/bin/ruscello"
+  install -Dm755 target/release/ruscello-webview "$pkgdir/usr/bin/ruscello-webview"
+  install -Dm644 packaging/linux/org.ruscello.Ruscello.desktop \
+    "$pkgdir/usr/share/applications/org.ruscello.Ruscello.desktop"
+  install -Dm644 apps/gui/assets/ruscello.png \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/ruscello.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
