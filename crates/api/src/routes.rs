@@ -72,6 +72,7 @@ pub(crate) fn loopback_router(server: SharedServer, shutdown: CancellationToken)
         .route("/api/v1/downloads/pause-all", post(pause_all))
         .route("/api/v1/downloads/resume-all", post(resume_all))
         .route("/api/v1/downloads/{id}/pause", post(pause_download))
+        .route("/api/v1/downloads/{id}/stop", post(stop_download))
         .route("/api/v1/downloads/{id}/resume", post(resume_download))
         .route(
             "/api/v1/downloads/{id}/force-start",
@@ -109,6 +110,7 @@ pub(crate) fn lan_router(server: SharedServer, shutdown: CancellationToken) -> R
         .route("/api/v1/downloads/pause-all", post(pause_all))
         .route("/api/v1/downloads/resume-all", post(resume_all))
         .route("/api/v1/downloads/{id}/pause", post(pause_download))
+        .route("/api/v1/downloads/{id}/stop", post(stop_download))
         .route("/api/v1/downloads/{id}/resume", post(resume_download))
         .route(
             "/api/v1/downloads/{id}/force-start",
@@ -126,6 +128,7 @@ pub(crate) fn lan_router(server: SharedServer, shutdown: CancellationToken) -> R
         .route("/index.html", get(webui::index_html))
         .route("/style.css", get(webui::style_css))
         .route("/app.js", get(webui::app_js))
+        .route("/icon.png", get(webui::icon_png))
         .route("/api/v1/health", get(health))
         .route("/api/v1/auth/login", post(auth_login))
         .route("/api/v1/auth/logout", post(auth_logout))
@@ -264,7 +267,7 @@ async fn health(
     request_uri: axum::http::Uri,
 ) -> Json<HealthResponse> {
     let authenticated = check_request_auth(&ctx, &headers, request_uri.query());
-    let (auth_required, locale) = ctx
+    let (auth_required, locale, theme) = ctx
         .server
         .auth
         .lock()
@@ -279,14 +282,16 @@ async fn health(
                     Language::English => "en".to_owned(),
                     Language::Italian => "it".to_owned(),
                 },
+                guard.theme,
             )
         })
-        .unwrap_or((true, "en".to_owned()));
+        .unwrap_or((true, "en".to_owned(), crate::types::ApiTheme::System));
 
     Json(HealthResponse {
         ok: true,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         locale,
+        theme,
         auth_required,
         authenticated,
     })
@@ -785,6 +790,15 @@ async fn pause_download(
     Path(id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     ctx.server.engine.pause(DownloadId(id)).await?;
+    let _ = ctx.server.telemetry.refresh_snapshot().await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn stop_download(
+    State(ctx): State<RouteCtx>,
+    Path(id): Path<u64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    ctx.server.engine.stop(DownloadId(id)).await?;
     let _ = ctx.server.telemetry.refresh_snapshot().await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

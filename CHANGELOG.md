@@ -16,6 +16,8 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
 - Added explicit `Stop` (`Status::Stopped`) semantics without removing items from the queue across `ruscello-core`, `ruscello-engine`, `ruscello-api`, and `ruscello-gui` (including stopping active `Seeding` torrents into `Completed` and resuming seeding on demand).
 - Added subtle UI transition animations across filter pills, hovered rows, banners, column chooser, context menus, and confirmation dialogs, plus single-line table cell alignment in `ruscello-gui`.
 - Added draggable, persisted splitters for resizing the sidebar and details panel in `ruscello-gui`, and themed the native Windows titlebar to match the active light/dark palette via DWM attributes.
+- Refined the mobile/LAN WebUI (`ruscello-api`) to inherit the desktop app's selected language and theme (`System`/`Light`/`Dark`), display the Ruscello application icon, align colors with the desktop palette, and expose `Stopped` status filtering and stop controls.
+- Enabled right-click text context menus (`Cut`, `Copy`, `Paste`, `Select all`, `Clear`) on text fields and the Add dialog URL editor, plus a direct `Paste` button, row/header checkboxes, left-mouse drag selection across package groups, and a multi-selection action bar in `ruscello-gui`.
 
 ### Added
 - GitHub Releases updater with automatic and manual checks, localized in-app release notes and progress,

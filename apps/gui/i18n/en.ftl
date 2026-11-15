@@ -446,3 +446,11 @@ log-watch-imported = Imported links from watch folder.
 log-schedule-paused = Queue paused by schedule.
 log-schedule-resumed = Queue resumed by schedule.
 log-completion-failed = Could not run queue completion power action.
+
+cut = Cut
+copy = Copy
+paste = Paste
+select-all-text = Select all
+clear-text = Clear
+selected-count = { $count } selected
+deselect = Deselect

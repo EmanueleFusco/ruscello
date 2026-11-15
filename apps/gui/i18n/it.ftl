@@ -446,3 +446,11 @@ log-watch-imported = Link importati dalla cartella monitorata.
 log-schedule-paused = Coda messa in pausa dal pianificatore.
 log-schedule-resumed = Coda ripresa dal pianificatore.
 log-completion-failed = Impossibile eseguire l'azione di risparmio energetico.
+
+cut = Taglia
+copy = Copia
+paste = Incolla
+select-all-text = Seleziona tutto
+clear-text = Svuota
+selected-count = { $count } selezionati
+deselect = Deseleziona

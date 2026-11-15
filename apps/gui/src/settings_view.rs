@@ -5,7 +5,7 @@ use iced::{
 use ruscello_engine::SidecarKind;
 
 use crate::{
-    app::{App, AutomationMsg, Message},
+    app::{App, AutomationMsg, AutomationTextField, Message, TextTarget},
     icons::icon,
     preferences::{Appearance, Locale, Renderer},
     settings::{
@@ -15,7 +15,7 @@ use crate::{
     },
     theme,
     updater::UpdateStatus,
-    view::{heading, muted, option},
+    view::{context_field, heading, muted, option},
 };
 
 pub(crate) fn view(app: &App) -> Element<'_, Message> {
@@ -305,14 +305,17 @@ fn automation_power_section(app: &App) -> Element<'_, Message> {
         section = section.push(
             row![
                 text(l.get("automation-countdown-secs")).width(220),
-                theme::field(
-                    &l.get("seconds-placeholder"),
-                    &draft.completion_countdown_secs
-                )
-                .width(120)
-                .on_input(|val| Message::Automation(
-                    AutomationMsg::CompletionCountdownChanged(val)
-                )),
+                context_field(
+                    TextTarget::Automation(AutomationTextField::CompletionCountdown),
+                    theme::field(
+                        &l.get("seconds-placeholder"),
+                        &draft.completion_countdown_secs
+                    )
+                    .width(120)
+                    .on_input(|val| Message::Automation(
+                        AutomationMsg::CompletionCountdownChanged(val)
+                    )),
+                ),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
@@ -352,11 +355,14 @@ fn automation_schedule_section(app: &App) -> Element<'_, Message> {
         section = section.push(
             row![
                 text(l.get("schedule-speed-limit")).width(220),
-                theme::field(&l.get("bytes-per-sec-hint"), &draft.outside_speed_bps)
-                    .width(160)
-                    .on_input(
-                        |val| Message::Automation(AutomationMsg::OutsideHoursSpeedChanged(val))
-                    ),
+                context_field(
+                    TextTarget::Automation(AutomationTextField::OutsideSpeed),
+                    theme::field(&l.get("bytes-per-sec-hint"), &draft.outside_speed_bps)
+                        .width(160)
+                        .on_input(|val| Message::Automation(
+                            AutomationMsg::OutsideHoursSpeedChanged(val)
+                        )),
+                ),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
@@ -407,9 +413,12 @@ fn schedule_rule_card<'a>(
             theme::check(rule.enabled).on_toggle(move |enabled| {
                 Message::Automation(AutomationMsg::ToggleScheduleRuleEnabled(index, enabled))
             }),
-            theme::field(&l.get("schedule-rule-name"), &rule.name).on_input(move |val| {
-                Message::Automation(AutomationMsg::ScheduleRuleName(index, val))
-            }),
+            context_field(
+                TextTarget::Automation(AutomationTextField::ScheduleName(index)),
+                theme::field(&l.get("schedule-rule-name"), &rule.name).on_input(move |val| {
+                    Message::Automation(AutomationMsg::ScheduleRuleName(index, val))
+                }),
+            ),
             theme::action(text(l.get("remove"))).on_press(Message::Automation(
                 AutomationMsg::RemoveScheduleRule(index)
             )),
@@ -419,17 +428,23 @@ fn schedule_rule_card<'a>(
         days,
         row![
             text(l.get("schedule-from")).size(12).style(muted),
-            theme::field("23:00", &rule.start_hhmm)
-                .width(80)
-                .on_input(move |val| {
-                    Message::Automation(AutomationMsg::ScheduleRuleStart(index, val))
-                }),
+            context_field(
+                TextTarget::Automation(AutomationTextField::ScheduleStart(index)),
+                theme::field("23:00", &rule.start_hhmm)
+                    .width(80)
+                    .on_input(move |val| {
+                        Message::Automation(AutomationMsg::ScheduleRuleStart(index, val))
+                    }),
+            ),
             text(l.get("schedule-to")).size(12).style(muted),
-            theme::field("07:00", &rule.end_hhmm)
-                .width(80)
-                .on_input(move |val| {
-                    Message::Automation(AutomationMsg::ScheduleRuleEnd(index, val))
-                }),
+            context_field(
+                TextTarget::Automation(AutomationTextField::ScheduleEnd(index)),
+                theme::field("07:00", &rule.end_hhmm)
+                    .width(80)
+                    .on_input(move |val| {
+                        Message::Automation(AutomationMsg::ScheduleRuleEnd(index, val))
+                    }),
+            ),
         ]
         .align_y(Alignment::Center)
         .spacing(8),
@@ -440,11 +455,14 @@ fn schedule_rule_card<'a>(
         card = card.push(
             row![
                 text(l.get("schedule-speed-limit")).width(200),
-                theme::field(&l.get("bytes-per-sec-hint"), &rule.speed_bps)
-                    .width(160)
-                    .on_input(move |val| {
-                        Message::Automation(AutomationMsg::ScheduleRuleSpeedChanged(index, val))
-                    }),
+                context_field(
+                    TextTarget::Automation(AutomationTextField::ScheduleSpeed(index)),
+                    theme::field(&l.get("bytes-per-sec-hint"), &rule.speed_bps)
+                        .width(160)
+                        .on_input(move |val| {
+                            Message::Automation(AutomationMsg::ScheduleRuleSpeedChanged(index, val))
+                        }),
+                ),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
@@ -499,12 +517,15 @@ fn automation_post_process_section(app: &App) -> Element<'_, Message> {
             .label(l.get("automation-delete-archives"))
             .on_toggle(|enabled| Message::Automation(AutomationMsg::ToggleDeleteArchives(enabled))),
         row![
-            theme::field(
-                &l.get("extract-password-placeholder"),
-                &draft.new_archive_password
-            )
-            .secure(true)
-            .on_input(|val| Message::Automation(AutomationMsg::ArchivePasswordInput(val))),
+            context_field(
+                TextTarget::Automation(AutomationTextField::ArchivePassword),
+                theme::field(
+                    &l.get("extract-password-placeholder"),
+                    &draft.new_archive_password
+                )
+                .secure(true)
+                .on_input(|val| Message::Automation(AutomationMsg::ArchivePasswordInput(val))),
+            ),
             theme::action(text(l.get("extract-add-password")))
                 .on_press(Message::Automation(AutomationMsg::AddArchivePassword)),
         ]
@@ -513,9 +534,12 @@ fn automation_post_process_section(app: &App) -> Element<'_, Message> {
         passwords,
         row![
             text(l.get("automation-external-extractor")).width(210),
-            theme::field("7z / unrar", &draft.external_extractor_path).on_input(|val| {
-                Message::Automation(AutomationMsg::ExternalExtractorChanged(val))
-            }),
+            context_field(
+                TextTarget::Automation(AutomationTextField::ExternalExtractor),
+                theme::field("7z / unrar", &draft.external_extractor_path).on_input(|val| {
+                    Message::Automation(AutomationMsg::ExternalExtractorChanged(val))
+                }),
+            ),
             theme::action(text(l.get("choose-file")))
                 .on_press(Message::Automation(AutomationMsg::PickExternalExtractor)),
         ]
@@ -523,19 +547,25 @@ fn automation_post_process_section(app: &App) -> Element<'_, Message> {
         .spacing(8),
         rule::horizontal(1).style(theme::separator),
         text(l.get("automation-post-command")).size(14),
-        theme::field(
-            &l.get("automation-post-command-placeholder"),
-            &draft.post_download_command,
-        )
-        .on_input(|val| Message::Automation(AutomationMsg::PostCommandChanged(val))),
+        context_field(
+            TextTarget::Automation(AutomationTextField::PostCommand),
+            theme::field(
+                &l.get("automation-post-command-placeholder"),
+                &draft.post_download_command,
+            )
+            .on_input(|val| Message::Automation(AutomationMsg::PostCommandChanged(val))),
+        ),
         text(l.get("automation-post-command-help"))
             .size(12)
             .style(muted),
         row![
             text(l.get("automation-post-timeout")).width(210),
-            theme::field("60", &draft.post_download_timeout_secs)
-                .width(120)
-                .on_input(|val| Message::Automation(AutomationMsg::PostTimeoutChanged(val))),
+            context_field(
+                TextTarget::Automation(AutomationTextField::PostTimeout),
+                theme::field("60", &draft.post_download_timeout_secs)
+                    .width(120)
+                    .on_input(|val| Message::Automation(AutomationMsg::PostTimeoutChanged(val))),
+            ),
         ]
         .align_y(Alignment::Center)
         .spacing(8),
@@ -558,9 +588,12 @@ fn automation_watch_folders_section(app: &App) -> Element<'_, Message> {
             .on_toggle(|enabled| Message::Automation(AutomationMsg::ToggleWatchEnabled(enabled))),
         row![
             text(l.get("automation-watch-interval")).width(210),
-            theme::field("5", &draft.watch_poll_interval_secs)
-                .width(120)
-                .on_input(|val| Message::Automation(AutomationMsg::WatchPollChanged(val))),
+            context_field(
+                TextTarget::Automation(AutomationTextField::WatchPoll),
+                theme::field("5", &draft.watch_poll_interval_secs)
+                    .width(120)
+                    .on_input(|val| Message::Automation(AutomationMsg::WatchPollChanged(val))),
+            ),
         ]
         .align_y(Alignment::Center)
         .spacing(8),
@@ -607,9 +640,12 @@ fn watch_folder_card<'a>(
             theme::check(rule.enabled).on_toggle(move |enabled| {
                 Message::Automation(AutomationMsg::ToggleWatchRuleEnabled(index, enabled))
             }),
-            theme::field(&l.get("folder"), &rule.directory).on_input(move |val| {
-                Message::Automation(AutomationMsg::WatchRuleDirChanged(index, val))
-            }),
+            context_field(
+                TextTarget::Automation(AutomationTextField::WatchDir(index)),
+                theme::field(&l.get("folder"), &rule.directory).on_input(move |val| {
+                    Message::Automation(AutomationMsg::WatchRuleDirChanged(index, val))
+                }),
+            ),
             theme::action(text(l.get("choose-folder")))
                 .on_press(Message::Automation(AutomationMsg::PickWatchRuleDir(index))),
             theme::action(text(l.get("remove")))
@@ -637,9 +673,12 @@ fn watch_folder_card<'a>(
         .spacing(12),
         row![
             text(l.get("category")).width(120),
-            theme::field(&l.get("optional-category"), &rule.category).on_input(move |val| {
-                Message::Automation(AutomationMsg::WatchRuleCategoryChanged(index, val))
-            }),
+            context_field(
+                TextTarget::Automation(AutomationTextField::WatchCategory(index)),
+                theme::field(&l.get("optional-category"), &rule.category).on_input(move |val| {
+                    Message::Automation(AutomationMsg::WatchRuleCategoryChanged(index, val))
+                }),
+            ),
         ]
         .align_y(Alignment::Center)
         .spacing(8),
@@ -714,9 +753,12 @@ fn torrent(app: &App) -> Element<'_, Message> {
         controls = controls.push(
             row![
                 text(label.clone()).width(260),
-                theme::field(&label, value)
-                    .on_input(move |value| Message::TorrentField(field, value))
-                    .width(160),
+                context_field(
+                    TextTarget::TorrentField(field),
+                    theme::field(&label, value)
+                        .on_input(move |value| Message::TorrentField(field, value))
+                        .width(160),
+                ),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
@@ -726,9 +768,12 @@ fn torrent(app: &App) -> Element<'_, Message> {
     controls = controls.push(
         row![
             text(blocklist_label.clone()).width(260),
-            theme::field(&blocklist_label, &preferences.blocklist)
-                .on_input(|value| Message::TorrentField(TorrentField::Blocklist, value))
-                .width(Fill),
+            context_field(
+                TextTarget::TorrentField(TorrentField::Blocklist),
+                theme::field(&blocklist_label, &preferences.blocklist)
+                    .on_input(|value| Message::TorrentField(TorrentField::Blocklist, value))
+                    .width(Fill),
+            ),
             theme::action(text(l.get("choose-files"))).on_press(Message::PickBlocklist),
         ]
         .align_y(Alignment::Center)
@@ -772,8 +817,11 @@ fn categories(app: &App) -> Element<'_, Message> {
     }
     categories = categories.push(
         row![
-            theme::field(&l.get("category-name"), &app.category_draft.name)
-                .on_input(|name| Message::CategoryEdit(CategoryEdit::Name, name)),
+            context_field(
+                TextTarget::CategoryName,
+                theme::field(&l.get("category-name"), &app.category_draft.name)
+                    .on_input(|name| Message::CategoryEdit(CategoryEdit::Name, name)),
+            ),
             theme::action(text(l.get("create-category")))
                 .style(theme::primary)
                 .on_press_maybe(
@@ -818,8 +866,11 @@ fn categories(app: &App) -> Element<'_, Message> {
         .push(text(l.get("rule-pattern")).size(13).style(muted))
         .push(
             row![
-                theme::field("", &app.category_draft.rule)
-                    .on_input(|rule| Message::CategoryEdit(CategoryEdit::Rule, rule)),
+                context_field(
+                    TextTarget::CategoryRule,
+                    theme::field("", &app.category_draft.rule)
+                        .on_input(|rule| Message::CategoryEdit(CategoryEdit::Rule, rule)),
+                ),
                 theme::action(text(l.get("add-rule"))).on_press_maybe(
                     (app.category_draft.category.is_some()
                         && !app.category_draft.rule.trim().is_empty())
@@ -845,7 +896,10 @@ fn integrations(app: &App) -> Element<'_, Message> {
             .label(l.get("browser-helper-enabled"))
             .on_toggle(Message::BrowserHelper),
         text(l.get("browser-helper-detail")).size(12).style(muted),
-        theme::field(&l.get("cookie-site"), &app.cookie_site).on_input(Message::CookieSite),
+        context_field(
+            TextTarget::CookieSite,
+            theme::field(&l.get("cookie-site"), &app.cookie_site).on_input(Message::CookieSite),
+        ),
         row![
             theme::action(text(l.get("cookie-import-firefox"))).on_press_maybe(
                 can_import.then_some(Message::ImportCookies(InstalledBrowser::Firefox))
@@ -907,11 +961,14 @@ fn integrations(app: &App) -> Element<'_, Message> {
         }
         controls = controls.push(
             row![
-                theme::field(&l.get("lan-password"), &app.lan_password.0)
-                    .secure(true)
-                    .on_input(
-                        |password| Message::LanPassword(crate::settings::LanPassword(password))
-                    ),
+                context_field(
+                    TextTarget::LanPassword,
+                    theme::field(&l.get("lan-password"), &app.lan_password.0)
+                        .secure(true)
+                        .on_input(|password| {
+                            Message::LanPassword(crate::settings::LanPassword(password))
+                        }),
+                ),
                 theme::action(text(l.get("save-password"))).on_press_maybe(
                     (!app.lan_password.0.is_empty()).then_some(Message::SaveLanPassword)
                 ),
@@ -1035,10 +1092,19 @@ fn hosters(app: &App) -> Element<'_, Message> {
             ),
         ]
         .spacing(5),
-        theme::field(&l.get("hoster-username"), &draft.username).on_input(Message::HosterUsername),
-        theme::field(&l.get("hoster-secret"), &draft.password.0)
-            .secure(true)
-            .on_input(|password| Message::HosterPassword(crate::settings::LanPassword(password))),
+        context_field(
+            TextTarget::HosterUsername,
+            theme::field(&l.get("hoster-username"), &draft.username)
+                .on_input(Message::HosterUsername),
+        ),
+        context_field(
+            TextTarget::HosterPassword,
+            theme::field(&l.get("hoster-secret"), &draft.password.0)
+                .secure(true)
+                .on_input(|password| {
+                    Message::HosterPassword(crate::settings::LanPassword(password))
+                }),
+        ),
         row![
             theme::action(text(l.get("hoster-save"))).on_press_maybe(
                 (available && !draft.password.0.is_empty()).then_some(Message::SaveHoster)
@@ -1140,9 +1206,12 @@ fn number(app: &App, field: Number) -> Element<'_, Message> {
     let label = app.strings.get(field.key());
     row![
         text(label.clone()).width(260),
-        theme::field(&label, &app.settings_draft.fields[field.index()])
-            .on_input(move |value| Message::SettingNumber(field, value))
-            .width(160)
+        context_field(
+            TextTarget::SettingNumber(field),
+            theme::field(&label, &app.settings_draft.fields[field.index()])
+                .on_input(move |value| Message::SettingNumber(field, value))
+                .width(160),
+        ),
     ]
     .align_y(Alignment::Center)
     .spacing(8)
@@ -1243,9 +1312,12 @@ fn sidecar_card(app: &App, kind: SidecarKind) -> Element<'_, Message> {
 
     card = card.push(
         row![
-            theme::field(&l.get("sidecar-custom-path"), custom_value)
-                .on_input(move |value| Message::SidecarCustomPath(kind, value))
-                .width(Fill),
+            context_field(
+                TextTarget::SidecarPath(kind),
+                theme::field(&l.get("sidecar-custom-path"), custom_value)
+                    .on_input(move |value| Message::SidecarCustomPath(kind, value))
+                    .width(Fill),
+            ),
             theme::action(text(
                 l.with("sidecar-pick-binary", [("name", tool_name.to_owned())])
             ))

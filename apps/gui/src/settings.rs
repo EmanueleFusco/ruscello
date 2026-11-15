@@ -55,7 +55,7 @@ impl Page {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Number {
     Concurrent,
     PerHost,
@@ -138,7 +138,7 @@ pub(crate) enum TorrentOption {
     Lsd,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TorrentField {
     Port,
     DownloadLimit,

@@ -260,7 +260,16 @@ async fn lan_webui_optional_auth_cookie_session_and_rate_limiting() -> TestResul
         .unwrap_or_default();
     assert!(csp.contains("default-src 'self'"));
     let html = index.text().await?;
-    assert!(html.contains("/app.js") && html.contains("/style.css"));
+    assert!(html.contains("/app.js") && html.contains("/style.css") && html.contains("/icon.png"));
+
+    let icon = client.get(format!("{lan_base}/icon.png")).send().await?;
+    assert_eq!(icon.status(), StatusCode::OK);
+    assert_eq!(
+        icon.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
 
     let js = client
         .get(format!("{lan_base}/app.js"))
@@ -299,6 +308,7 @@ async fn lan_webui_optional_auth_cookie_session_and_rate_limiting() -> TestResul
         lan_password_hash: Some(password_hash),
         alternate_bandwidth: NonZeroU64::MIN.saturating_add(128 * 1024 - 1),
         locale: Language::English,
+        theme: Default::default(),
     })
     .await;
 
@@ -367,6 +377,7 @@ async fn lan_webui_optional_auth_cookie_session_and_rate_limiting() -> TestResul
             lan_password_hash: None,
             alternate_bandwidth: NonZeroU64::MIN.saturating_add(128 * 1024 - 1),
             locale: Language::English,
+            theme: Default::default(),
         })
         .await;
     assert_eq!(disabled, LanStatus::Disabled);

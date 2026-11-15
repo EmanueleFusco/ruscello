@@ -14,8 +14,8 @@ use iced::{
     window,
 };
 use ruscello_api::{
-    ApiConfig, ApiController, ApiEvent, ApiHandle, ApiRuntimeUpdate, ApiServer, DEFAULT_LOCAL_PORT,
-    LanStatus, PairingOverview,
+    ApiConfig, ApiController, ApiEvent, ApiHandle, ApiRuntimeUpdate, ApiServer, ApiTheme,
+    DEFAULT_LOCAL_PORT, LanStatus, PairingOverview,
 };
 use ruscello_core::{CategoryId, DownloadId, FileType, PackageId, Source, Status, TorrentSource};
 use ruscello_engine::{
@@ -72,6 +72,80 @@ struct DragState {
     divider: Divider,
     origin: Point,
     initial: f32,
+}
+
+#[derive(Debug, Clone)]
+struct RowDragState {
+    anchor_row: usize,
+    origin: Point,
+    start_offset: f32,
+    moved: bool,
+    base_selection: BTreeSet<DownloadId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutomationTextField {
+    CompletionCountdown,
+    OutsideSpeed,
+    ScheduleName(usize),
+    ScheduleStart(usize),
+    ScheduleEnd(usize),
+    ScheduleSpeed(usize),
+    ArchivePassword,
+    ExternalExtractor,
+    PostCommand,
+    PostTimeout,
+    WatchPoll,
+    WatchDir(usize),
+    WatchCategory(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextTarget {
+    AddEditor,
+    Search,
+    GrabberSearch,
+    AddConnections,
+    AddChecksum,
+    AddBandwidth,
+    CategoryName,
+    CategoryRule,
+    CookieSite,
+    HosterUsername,
+    HosterPassword,
+    LanPassword,
+    TorrentField(settings::TorrentField),
+    SettingNumber(Number),
+    SidecarPath(SidecarKind),
+    Automation(AutomationTextField),
+}
+
+impl TextTarget {
+    pub(crate) fn widget_id(self) -> iced::widget::Id {
+        match self {
+            Self::AddEditor => view::add_id(),
+            Self::Search => view::search_id(),
+            _ => iced::widget::Id::from(format!("text-target-{self:?}")),
+        }
+    }
+
+    pub(crate) fn is_secret(self) -> bool {
+        matches!(
+            self,
+            Self::LanPassword
+                | Self::HosterPassword
+                | Self::Automation(AutomationTextField::ArchivePassword)
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextMenuAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Clear,
 }
 
 impl DetailTab {
@@ -160,7 +234,12 @@ pub(crate) enum Message {
     Status(StatusFilter),
     FileType(Option<FileType>),
     Category(Option<CategoryId>),
+    #[cfg(test)]
     Select(DownloadId),
+    RowPress(DownloadId),
+    ToggleSelect(DownloadId),
+    ToggleSelectAll,
+    ClearSelection,
     Package(PackageId),
     Scrolled {
         offset: f32,
@@ -188,6 +267,12 @@ pub(crate) enum Message {
     OpenAdd,
     CloseAdd,
     Clipboard(Option<String>),
+    PasteAddEditor,
+    PasteIntoAdd(Option<String>),
+    OpenTextMenu(TextTarget),
+    CloseTextMenu,
+    RunTextMenu(TextMenuAction),
+    TextMenuPaste(TextTarget, Option<String>),
     EditAdd(text_editor::Action),
     Files(Vec<PathBuf>),
     FilesLoaded(Vec<Input>),
@@ -402,6 +487,9 @@ pub(crate) struct App {
     cursor: Point,
     dragging: Option<DragState>,
     hovered_divider: Option<Divider>,
+    row_drag: Option<RowDragState>,
+    pub(crate) text_menu: Option<(TextTarget, Point)>,
+    text_selected_all: Option<TextTarget>,
     pub(crate) banner: Option<&'static str>,
     pub(crate) show_columns: bool,
     system_theme: iced::theme::Mode,
@@ -542,6 +630,9 @@ impl App {
             cursor: Point::ORIGIN,
             dragging: None,
             hovered_divider: None,
+            row_drag: None,
+            text_menu: None,
+            text_selected_all: None,
             banner: restore_failed.then_some("restore-failed"),
             show_columns: false,
             system_theme: iced::theme::Mode::default(),
@@ -1125,13 +1216,68 @@ impl App {
                 self.queue.category = category;
                 return self.filter_changed();
             }
+            #[cfg(test)]
             Message::Select(id) => {
                 self.select(id);
-                if self.preferences.details && self.selected_is_torrent() {
-                    return self.refresh_torrent_details();
+                return self.sync_details_after_selection();
+            }
+            Message::RowPress(id) => {
+                self.text_menu = None;
+                let base_selection = if self.modifiers.command() || self.modifiers.control() {
+                    self.selection.clone()
+                } else {
+                    BTreeSet::new()
+                };
+                if let Some(anchor_row) =
+                    self.queue.rows.iter().position(
+                        |row| matches!(row, queue::ListRow::Download(item) if *item == id),
+                    )
+                {
+                    self.row_drag = Some(RowDragState {
+                        anchor_row,
+                        origin: self.cursor,
+                        start_offset: self.offset,
+                        moved: false,
+                        base_selection,
+                    });
                 }
+                self.select(id);
+                return self.sync_details_after_selection();
+            }
+            Message::ToggleSelect(id) => {
+                self.menu = None;
+                self.text_menu = None;
+                self.row_drag = None;
+                if !self.selection.remove(&id) {
+                    self.selection.insert(id);
+                    self.queue.selected = Some(id);
+                } else if self.queue.selected == Some(id) {
+                    self.queue.selected = self.selection.iter().next().copied();
+                }
+                return self.sync_details_after_selection();
+            }
+            Message::ToggleSelectAll => {
+                self.menu = None;
+                self.text_menu = None;
+                self.row_drag = None;
+                if self.all_visible_selected() {
+                    self.selection.clear();
+                    self.queue.selected = None;
+                } else {
+                    self.select_all_visible();
+                }
+                return self.sync_details_after_selection();
+            }
+            Message::ClearSelection => {
+                self.menu = None;
+                self.text_menu = None;
+                self.row_drag = None;
+                self.selection.clear();
+                self.queue.selected = None;
+                return self.sync_details_after_selection();
             }
             Message::Package(id) => {
+                self.row_drag = None;
                 if !self.queue.collapsed.remove(&id) {
                     self.queue.collapsed.insert(id);
                 }
@@ -1140,13 +1286,19 @@ impl App {
             Message::Scrolled { offset, height } => {
                 self.offset = offset;
                 self.viewport_height = height;
+                if self.row_drag.is_some() {
+                    self.update_row_drag();
+                }
             }
             Message::Resize(size) => {
                 self.window_size = size;
                 self.viewport_height = size.height;
+                self.text_menu = None;
             }
             Message::HoverDivider(divider) => self.hovered_divider = divider,
             Message::StartResize(divider) => {
+                self.text_menu = None;
+                self.row_drag = None;
                 let initial = match divider {
                     Divider::Sidebar => self.sidebar_width(),
                     Divider::Details => self.expanded_details_height(),
@@ -1176,11 +1328,17 @@ impl App {
                             self.preferences.details_height = Some(height);
                         }
                     }
+                } else if self.row_drag.is_some() {
+                    self.update_row_drag();
                 }
             }
             Message::EndResize => {
+                let finished_row_drag = self.row_drag.take().is_some_and(|drag| drag.moved);
                 if self.dragging.take().is_some() {
                     return self.save_preferences();
+                }
+                if finished_row_drag {
+                    return self.sync_details_after_selection();
                 }
             }
             Message::ResetDivider(divider) => {
@@ -1217,6 +1375,8 @@ impl App {
             }
             Message::Settings(open) => {
                 self.settings = open;
+                self.text_menu = None;
+                self.row_drag = None;
                 if !open {
                     self.hoster_draft.password.0.clear();
                 }
@@ -1250,7 +1410,7 @@ impl App {
                 if let Some(raw_id) = self.raw_window_id {
                     desktop::apply_window_theme(raw_id, self.is_dark());
                 }
-                return self.save_preferences();
+                return Task::batch([self.save_preferences(), self.sync_api()]);
             }
             Message::Saved(saved) => {
                 self.saving = false;
@@ -1280,6 +1440,8 @@ impl App {
             Message::OpenAdd => {
                 self.settings = false;
                 self.menu = None;
+                self.text_menu = None;
+                self.row_drag = None;
                 self.add.get_or_insert_with(Dialog::default);
                 return Task::batch([
                     clipboard::read().map(Message::Clipboard),
@@ -1291,6 +1453,8 @@ impl App {
                     return Task::none();
                 }
                 self.add = None;
+                self.text_menu = None;
+                self.text_selected_all = None;
                 self.editor = text_editor::Content::new();
                 self.pending_probes.clear();
                 for token in self.probe_tokens.values() {
@@ -1312,11 +1476,34 @@ impl App {
                     return self.refresh_add();
                 }
             }
+            Message::PasteAddEditor => {
+                return clipboard::read().map(Message::PasteIntoAdd);
+            }
+            Message::PasteIntoAdd(Some(value)) => {
+                return self.paste_into_target(TextTarget::AddEditor, value);
+            }
+            Message::PasteIntoAdd(None) => {}
+            Message::OpenTextMenu(target) => {
+                let pos = self.clamp_text_menu_pos(self.cursor);
+                self.text_menu = Some((target, pos));
+                return operation::focus(target.widget_id());
+            }
+            Message::CloseTextMenu => {
+                self.text_menu = None;
+            }
+            Message::RunTextMenu(action) => {
+                return self.run_text_menu(action);
+            }
+            Message::TextMenuPaste(target, Some(value)) => {
+                return self.paste_into_target(target, value);
+            }
+            Message::TextMenuPaste(_, None) => {}
             Message::EditAdd(action) => {
                 if let Some(dialog) = &mut self.add {
                     let edited = action.is_edit();
                     self.editor.perform(action);
                     if edited {
+                        self.text_selected_all = None;
                         dialog.text = self.editor.text();
                         return self.refresh_add();
                     }
@@ -1740,6 +1927,8 @@ impl App {
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Shortcut(shortcut) => return self.shortcut(shortcut),
             Message::Menu(id) => {
+                self.row_drag = None;
+                self.text_menu = None;
                 if !self.selection.contains(&id) {
                     self.selection.clear();
                     self.selection.insert(id);
@@ -1748,7 +1937,12 @@ impl App {
                 self.menu = (self.menu != Some(id)).then_some(id);
             }
             Message::RowAction(action) => return self.row_action(action),
-            Message::Hover(id) => self.hovered = id,
+            Message::Hover(id) => {
+                self.hovered = id;
+                if self.row_drag.is_some() && id.is_some() {
+                    self.update_row_drag();
+                }
+            }
             Message::SingleAction(id, action) => {
                 self.selection.clear();
                 self.selection.insert(id);
@@ -2695,6 +2889,7 @@ impl App {
         let lan_auth_required = self.preferences.lan_auth;
         let alternate_bandwidth = self.preferences.alternate_bandwidth;
         let locale = self.preferences.locale.language();
+        let theme = api_theme(self.preferences.appearance);
         let allow_dlc_fallback = self.preferences.dlc_fallback;
         Task::perform(
             async move {
@@ -2711,6 +2906,7 @@ impl App {
                     lan_password_hash: password_hash.clone(),
                     alternate_bandwidth,
                     locale,
+                    theme,
                     allow_dlc_fallback,
                 };
                 match ApiServer::start(engine, config).await {
@@ -2747,6 +2943,7 @@ impl App {
             lan_password_hash: self.lan_password_hash.clone(),
             alternate_bandwidth: self.preferences.alternate_bandwidth,
             locale: self.preferences.locale.language(),
+            theme: api_theme(self.preferences.appearance),
         };
         Task::perform(
             async move {
@@ -2907,6 +3104,398 @@ impl App {
         Task::none()
     }
 
+    fn sync_details_after_selection(&mut self) -> Task<Message> {
+        if self.preferences.details && self.selected_is_torrent() {
+            self.refresh_torrent_details()
+        } else {
+            Task::none()
+        }
+    }
+
+    pub(crate) fn all_visible_selected(&self) -> bool {
+        let mut count = 0usize;
+        for row in &self.queue.rows {
+            if let queue::ListRow::Download(id) = row {
+                count += 1;
+                if !self.selection.contains(id) {
+                    return false;
+                }
+            }
+        }
+        count > 0
+    }
+
+    fn select_all_visible(&mut self) {
+        self.selection = self
+            .queue
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                queue::ListRow::Download(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        self.queue.selected = self.selection.iter().next().copied();
+        if !self.detail_tab.allowed(self.selected_is_torrent()) {
+            self.detail_tab = DetailTab::General;
+        }
+    }
+
+    fn update_row_drag(&mut self) {
+        let Some(mut drag) = self.row_drag.take() else {
+            return;
+        };
+        let rows_len = self.queue.rows.len();
+        if rows_len == 0 {
+            return;
+        }
+        let dy = (self.cursor.y - drag.origin.y) + (self.offset - drag.start_offset);
+        let hovered_row = self.hovered.and_then(|id| {
+            self.queue
+                .rows
+                .iter()
+                .position(|row| matches!(row, queue::ListRow::Download(item) if *item == id))
+        });
+        if !drag.moved && dy.abs() <= 4.0 && hovered_row.is_none_or(|row| row == drag.anchor_row) {
+            self.row_drag = Some(drag);
+            return;
+        }
+        drag.moved = true;
+        let target_row = hovered_row.unwrap_or_else(|| {
+            let step = (dy / queue::ROW_HEIGHT).round() as isize;
+            (drag.anchor_row as isize + step).clamp(0, rows_len.saturating_sub(1) as isize) as usize
+        });
+        let from = drag.anchor_row.min(target_row);
+        let to = drag.anchor_row.max(target_row);
+        self.selection = drag.base_selection.clone();
+        let mut last = None;
+        for row in &self.queue.rows[from..=to] {
+            if let queue::ListRow::Download(id) = row {
+                self.selection.insert(*id);
+                last = Some(*id);
+            }
+        }
+        if let Some(id) = last {
+            self.queue.selected = Some(id);
+        }
+        if self
+            .torrent_details
+            .as_ref()
+            .is_some_and(|(current, _)| self.queue.selected != Some(*current))
+        {
+            self.torrent_details = None;
+            self.details_in_flight = false;
+        }
+        if !self.detail_tab.allowed(self.selected_is_torrent()) {
+            self.detail_tab = DetailTab::General;
+        }
+        self.row_drag = Some(drag);
+    }
+
+    fn clamp_text_menu_pos(&self, point: Point) -> Point {
+        let max_x = (self.window_size.width - 176.0).max(8.0);
+        let max_y = (self.window_size.height - 196.0).max(8.0);
+        Point::new(point.x.clamp(8.0, max_x), point.y.clamp(8.0, max_y))
+    }
+
+    pub(crate) fn text_menu_capabilities(&self, target: TextTarget) -> (bool, bool, bool) {
+        if target == TextTarget::AddEditor {
+            let has_selection = self.editor.selection().is_some();
+            let has_text = !self.editor.text().is_empty();
+            return (
+                has_selection || has_text,
+                has_selection || has_text,
+                has_text,
+            );
+        }
+        let has_text = !self.read_text_target(target).is_empty();
+        let can_copy = has_text && !target.is_secret();
+        (can_copy, can_copy, has_text)
+    }
+
+    fn run_text_menu(&mut self, action: TextMenuAction) -> Task<Message> {
+        let Some((target, _)) = self.text_menu.take() else {
+            return Task::none();
+        };
+        let focus = operation::focus(target.widget_id());
+        match action {
+            TextMenuAction::SelectAll => {
+                self.text_selected_all = Some(target);
+                if target == TextTarget::AddEditor {
+                    self.editor.perform(text_editor::Action::SelectAll);
+                    return focus;
+                }
+                Task::batch([focus, operation::select_all(target.widget_id())])
+            }
+            TextMenuAction::Copy => {
+                self.text_selected_all = None;
+                if target.is_secret() {
+                    return focus;
+                }
+                let text = if target == TextTarget::AddEditor {
+                    self.editor
+                        .selection()
+                        .unwrap_or_else(|| self.editor.text())
+                } else {
+                    self.read_text_target(target)
+                };
+                if text.is_empty() {
+                    return focus;
+                }
+                Task::batch([clipboard::write(text), focus])
+            }
+            TextMenuAction::Cut => {
+                self.text_selected_all = None;
+                if target.is_secret() {
+                    return focus;
+                }
+                if target == TextTarget::AddEditor {
+                    let has_sel = self.editor.selection().is_some();
+                    let copied = self
+                        .editor
+                        .selection()
+                        .unwrap_or_else(|| self.editor.text());
+                    if copied.is_empty() {
+                        return focus;
+                    }
+                    if has_sel {
+                        self.editor
+                            .perform(text_editor::Action::Edit(text_editor::Edit::Delete));
+                    } else {
+                        self.editor = text_editor::Content::new();
+                    }
+                    let text_now = self.editor.text();
+                    if let Some(dialog) = &mut self.add {
+                        dialog.text = text_now;
+                    }
+                    return Task::batch([clipboard::write(copied), self.refresh_add(), focus]);
+                }
+                let copied = self.read_text_target(target);
+                if copied.is_empty() {
+                    return focus;
+                }
+                let write = self.write_text_target(target, String::new());
+                Task::batch([clipboard::write(copied), write, focus])
+            }
+            TextMenuAction::Paste => Task::batch([
+                focus,
+                clipboard::read().map(move |value| Message::TextMenuPaste(target, value)),
+            ]),
+            TextMenuAction::Clear => {
+                self.text_selected_all = None;
+                if target == TextTarget::AddEditor {
+                    self.editor = text_editor::Content::new();
+                    if let Some(dialog) = &mut self.add {
+                        dialog.text.clear();
+                    }
+                    return Task::batch([self.refresh_add(), focus]);
+                }
+                Task::batch([self.write_text_target(target, String::new()), focus])
+            }
+        }
+    }
+
+    fn paste_into_target(&mut self, target: TextTarget, value: String) -> Task<Message> {
+        let replaced_all = self.text_selected_all.take() == Some(target);
+        let focus = operation::focus(target.widget_id());
+        if target == TextTarget::AddEditor {
+            if replaced_all || self.editor.text().is_empty() {
+                self.editor = text_editor::Content::with_text(&value);
+            } else {
+                self.editor
+                    .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+                        Arc::new(value),
+                    )));
+            }
+            let text_now = self.editor.text();
+            if let Some(dialog) = &mut self.add {
+                dialog.text = text_now;
+            }
+            return Task::batch([self.refresh_add(), focus]);
+        }
+        let sanitized = value
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('\r')
+            .to_owned();
+        if sanitized.is_empty() {
+            return focus;
+        }
+        let next = if replaced_all {
+            sanitized
+        } else {
+            let mut existing = self.read_text_target(target);
+            existing.push_str(&sanitized);
+            existing
+        };
+        let write = self.write_text_target(target, next);
+        Task::batch([
+            write,
+            focus,
+            operation::move_cursor_to_end(target.widget_id()),
+        ])
+    }
+
+    fn read_text_target(&self, target: TextTarget) -> String {
+        match target {
+            TextTarget::AddEditor => self.editor.text(),
+            TextTarget::Search => self.queue.search.clone(),
+            TextTarget::GrabberSearch => self
+                .add
+                .as_ref()
+                .map(|dialog| dialog.grabber_search.clone())
+                .unwrap_or_default(),
+            TextTarget::AddConnections => self
+                .add
+                .as_ref()
+                .map(|dialog| dialog.connections.clone())
+                .unwrap_or_default(),
+            TextTarget::AddChecksum => self
+                .add
+                .as_ref()
+                .map(|dialog| dialog.checksum.clone())
+                .unwrap_or_default(),
+            TextTarget::AddBandwidth => self
+                .add
+                .as_ref()
+                .map(|dialog| dialog.bandwidth.clone())
+                .unwrap_or_default(),
+            TextTarget::CategoryName => self.category_draft.name.clone(),
+            TextTarget::CategoryRule => self.category_draft.rule.clone(),
+            TextTarget::CookieSite => self.cookie_site.clone(),
+            TextTarget::HosterUsername => self.hoster_draft.username.clone(),
+            TextTarget::HosterPassword => self.hoster_draft.password.0.clone(),
+            TextTarget::LanPassword => self.lan_password.0.clone(),
+            TextTarget::TorrentField(field) => match field {
+                settings::TorrentField::Port => self.preferences.torrent.port.clone(),
+                settings::TorrentField::DownloadLimit => {
+                    self.preferences.torrent.download_limit.clone()
+                }
+                settings::TorrentField::UploadLimit => {
+                    self.preferences.torrent.upload_limit.clone()
+                }
+                settings::TorrentField::Ratio => self.preferences.torrent.seed_ratio.clone(),
+                settings::TorrentField::Minutes => self.preferences.torrent.seed_minutes.clone(),
+                settings::TorrentField::MaxPeers => self.preferences.torrent.max_peers.clone(),
+                settings::TorrentField::Interface => self.preferences.torrent.interface.clone(),
+                settings::TorrentField::Blocklist => self.preferences.torrent.blocklist.clone(),
+            },
+            TextTarget::SettingNumber(field) => self.settings_draft.fields[field.index()].clone(),
+            TextTarget::SidecarPath(kind) => self.sidecar_draft.path_for(kind).to_owned(),
+            TextTarget::Automation(field) => {
+                let draft = &self.automation_draft;
+                match field {
+                    AutomationTextField::CompletionCountdown => {
+                        draft.completion_countdown_secs.clone()
+                    }
+                    AutomationTextField::OutsideSpeed => draft.outside_speed_bps.clone(),
+                    AutomationTextField::ScheduleName(index) => draft
+                        .schedule_rules
+                        .get(index)
+                        .map(|r| r.name.clone())
+                        .unwrap_or_default(),
+                    AutomationTextField::ScheduleStart(index) => draft
+                        .schedule_rules
+                        .get(index)
+                        .map(|r| r.start_hhmm.clone())
+                        .unwrap_or_default(),
+                    AutomationTextField::ScheduleEnd(index) => draft
+                        .schedule_rules
+                        .get(index)
+                        .map(|r| r.end_hhmm.clone())
+                        .unwrap_or_default(),
+                    AutomationTextField::ScheduleSpeed(index) => draft
+                        .schedule_rules
+                        .get(index)
+                        .map(|r| r.speed_bps.clone())
+                        .unwrap_or_default(),
+                    AutomationTextField::ArchivePassword => draft.new_archive_password.clone(),
+                    AutomationTextField::ExternalExtractor => draft.external_extractor_path.clone(),
+                    AutomationTextField::PostCommand => draft.post_download_command.clone(),
+                    AutomationTextField::PostTimeout => draft.post_download_timeout_secs.clone(),
+                    AutomationTextField::WatchPoll => draft.watch_poll_interval_secs.clone(),
+                    AutomationTextField::WatchDir(index) => draft
+                        .watch_rules
+                        .get(index)
+                        .map(|r| r.directory.clone())
+                        .unwrap_or_default(),
+                    AutomationTextField::WatchCategory(index) => draft
+                        .watch_rules
+                        .get(index)
+                        .map(|r| r.category.clone())
+                        .unwrap_or_default(),
+                }
+            }
+        }
+    }
+
+    fn write_text_target(&mut self, target: TextTarget, value: String) -> Task<Message> {
+        match target {
+            TextTarget::AddEditor => Task::none(),
+            TextTarget::Search => self.update(Message::Search(value)),
+            TextTarget::GrabberSearch => self.update(Message::GrabberSearch(value)),
+            TextTarget::AddConnections => self.update(Message::AddConnections(value)),
+            TextTarget::AddChecksum => self.update(Message::AddChecksum(value)),
+            TextTarget::AddBandwidth => self.update(Message::AddBandwidth(value)),
+            TextTarget::CategoryName => {
+                self.update(Message::CategoryEdit(settings::CategoryEdit::Name, value))
+            }
+            TextTarget::CategoryRule => {
+                self.update(Message::CategoryEdit(settings::CategoryEdit::Rule, value))
+            }
+            TextTarget::CookieSite => self.update(Message::CookieSite(value)),
+            TextTarget::HosterUsername => self.update(Message::HosterUsername(value)),
+            TextTarget::HosterPassword => {
+                self.update(Message::HosterPassword(settings::LanPassword(value)))
+            }
+            TextTarget::LanPassword => {
+                self.update(Message::LanPassword(settings::LanPassword(value)))
+            }
+            TextTarget::TorrentField(field) => self.update(Message::TorrentField(field, value)),
+            TextTarget::SettingNumber(field) => self.update(Message::SettingNumber(field, value)),
+            TextTarget::SidecarPath(kind) => self.update(Message::SidecarCustomPath(kind, value)),
+            TextTarget::Automation(field) => {
+                let msg = match field {
+                    AutomationTextField::CompletionCountdown => {
+                        AutomationMsg::CompletionCountdownChanged(value)
+                    }
+                    AutomationTextField::OutsideSpeed => {
+                        AutomationMsg::OutsideHoursSpeedChanged(value)
+                    }
+                    AutomationTextField::ScheduleName(index) => {
+                        AutomationMsg::ScheduleRuleName(index, value)
+                    }
+                    AutomationTextField::ScheduleStart(index) => {
+                        AutomationMsg::ScheduleRuleStart(index, value)
+                    }
+                    AutomationTextField::ScheduleEnd(index) => {
+                        AutomationMsg::ScheduleRuleEnd(index, value)
+                    }
+                    AutomationTextField::ScheduleSpeed(index) => {
+                        AutomationMsg::ScheduleRuleSpeedChanged(index, value)
+                    }
+                    AutomationTextField::ArchivePassword => {
+                        AutomationMsg::ArchivePasswordInput(value)
+                    }
+                    AutomationTextField::ExternalExtractor => {
+                        AutomationMsg::ExternalExtractorChanged(value)
+                    }
+                    AutomationTextField::PostCommand => AutomationMsg::PostCommandChanged(value),
+                    AutomationTextField::PostTimeout => AutomationMsg::PostTimeoutChanged(value),
+                    AutomationTextField::WatchPoll => AutomationMsg::WatchPollChanged(value),
+                    AutomationTextField::WatchDir(index) => {
+                        AutomationMsg::WatchRuleDirChanged(index, value)
+                    }
+                    AutomationTextField::WatchCategory(index) => {
+                        AutomationMsg::WatchRuleCategoryChanged(index, value)
+                    }
+                };
+                self.update(Message::Automation(msg))
+            }
+        }
+    }
+
     fn select(&mut self, id: DownloadId) {
         self.menu = None;
         if self.modifiers.shift()
@@ -2959,6 +3548,7 @@ impl App {
 
     fn shortcut(&mut self, shortcut: Shortcut) -> Task<Message> {
         match shortcut {
+            Shortcut::Escape if self.text_menu.take().is_some() => Task::none(),
             Shortcut::Escape if self.remove.is_some() => self.interaction(Message::CancelRemove),
             Shortcut::Escape if self.add.is_some() => self.interaction(Message::CloseAdd),
             Shortcut::Escape if self.menu.take().is_some() => Task::none(),
@@ -2979,16 +3569,7 @@ impl App {
                 self.row_action(action)
             }
             Shortcut::All if !self.settings && self.add.is_none() && self.remove.is_none() => {
-                self.selection = self
-                    .queue
-                    .rows
-                    .iter()
-                    .filter_map(|row| match row {
-                        queue::ListRow::Download(id) => Some(*id),
-                        _ => None,
-                    })
-                    .collect();
-                self.queue.selected = self.selection.iter().next().copied();
+                self.select_all_visible();
                 Task::none()
             }
             _ => Task::none(),
@@ -3349,4 +3930,12 @@ fn queue_events(source: &QueueSubscription) -> impl Stream<Item = Message> + use
             }
         },
     )
+}
+
+fn api_theme(appearance: Appearance) -> ApiTheme {
+    match appearance {
+        Appearance::System => ApiTheme::System,
+        Appearance::Light => ApiTheme::Light,
+        Appearance::Dark => ApiTheme::Dark,
+    }
 }

@@ -22,8 +22,8 @@ pub use server::{
 };
 pub use types::{
     AddDownloadsRequest, AddDownloadsResponse, AltSpeedRequest, AltSpeedResponse,
-    AnalyzeLinkRequest, AnalyzeLinkResponse, AnalyzedCandidateDto, ApiEvent, BulkActionResponse,
-    DownloadDto, ForwardCookiesRequest, ForwardCookiesResponse, HealthResponse, LanStatus,
-    LoginRequest, LoginResponse, PackageDto, PairingOverview, PairingRequestBody, PairingResponse,
-    PendingPairingRequest, QueueSnapshotDto, StreamEnvelope,
+    AnalyzeLinkRequest, AnalyzeLinkResponse, AnalyzedCandidateDto, ApiEvent, ApiTheme,
+    BulkActionResponse, DownloadDto, ForwardCookiesRequest, ForwardCookiesResponse, HealthResponse,
+    LanStatus, LoginRequest, LoginResponse, PackageDto, PairingOverview, PairingRequestBody,
+    PairingResponse, PendingPairingRequest, QueueSnapshotDto, StreamEnvelope,
 };

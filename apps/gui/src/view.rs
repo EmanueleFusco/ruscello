@@ -1,7 +1,7 @@
 use iced::{
     Alignment, Element, Fill, Padding, Theme, mouse,
     widget::{
-        self, button, column, container, mouse_area, progress_bar, row, rule, space, text,
+        self, button, column, container, mouse_area, progress_bar, row, rule, space, stack, text,
         text_editor, tooltip,
     },
 };
@@ -15,7 +15,7 @@ use ruscello_engine::{
 use crate::{
     actions::Action,
     add::{Input, Probe, TorrentPreview},
-    app::{App, Column, DetailTab, Divider, Message},
+    app::{App, Column, DetailTab, Divider, Message, TextMenuAction, TextTarget},
     i18n::{self, Strings},
     icons::{self, icon},
     queue::{self, FILE_TYPES, ListRow, ROW_HEIGHT, StatusFilter},
@@ -41,6 +41,15 @@ pub(crate) fn add_id() -> widget::Id {
 
 pub(crate) fn search_id() -> widget::Id {
     widget::Id::new("search-downloads")
+}
+
+pub(crate) fn context_field<'a>(
+    target: TextTarget,
+    input: iced::widget::text_input::TextInput<'a, Message>,
+) -> Element<'a, Message> {
+    mouse_area(input.id(target.widget_id()))
+        .on_right_press(Message::OpenTextMenu(target))
+        .into()
 }
 
 pub(crate) fn main(app: &App) -> Element<'_, Message> {
@@ -105,7 +114,28 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
             }),
         );
     }
-    container(body).padding(14).width(Fill).height(Fill).into()
+    let root = container(body).padding(14).width(Fill).height(Fill);
+    if let Some((target, pos)) = app.text_menu {
+        stack![
+            root,
+            mouse_area(space::horizontal().width(Fill).height(Fill))
+                .on_press(Message::CloseTextMenu)
+                .on_right_press(Message::CloseTextMenu),
+            container(text_context_menu(app, target))
+                .padding(Padding {
+                    left: pos.x,
+                    top: pos.y,
+                    ..Padding::ZERO
+                })
+                .width(Fill)
+                .height(Fill),
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
+    } else {
+        root.into()
+    }
 }
 
 fn toolbar(app: &App) -> Element<'_, Message> {
@@ -121,10 +151,12 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         .on_press(Message::OpenAdd),
         row![
             icon('\u{e151}').style(muted),
-            theme::field(&l.get("search"), &app.queue.search)
-                .on_input(Message::Search)
-                .id(search_id())
-                .width(Fill)
+            context_field(
+                TextTarget::Search,
+                theme::field(&l.get("search"), &app.queue.search)
+                    .on_input(Message::Search)
+                    .width(Fill),
+            )
         ]
         .align_y(Alignment::Center)
         .spacing(8)
@@ -435,6 +467,9 @@ fn center(app: &App) -> Element<'_, Message> {
         );
     }
     table = table.push(download_list(app));
+    if app.selection.len() >= 2 && app.menu.is_none() {
+        table = table.push(selection_bar(app));
+    }
     if app.menu.is_some() {
         table = table.push(context_menu(app));
     }
@@ -466,7 +501,23 @@ fn columns(app: &App) -> impl Iterator<Item = Column> + '_ {
 }
 
 fn header(app: &App) -> Element<'_, Message> {
+    let select_all = tooltip(
+        container(
+            theme::check(app.all_visible_selected())
+                .size(14)
+                .spacing(0)
+                .on_toggle(|_| Message::ToggleSelectAll),
+        )
+        .width(18)
+        .center_x(18),
+        container(text(app.strings.get("select-all")).size(12))
+            .padding(6)
+            .style(theme::panel),
+        tooltip::Position::Bottom,
+    )
+    .delay(std::time::Duration::from_millis(550));
     let mut cells = row![
+        select_all,
         container(
             text(app.strings.get("name"))
                 .size(12)
@@ -497,7 +548,7 @@ fn header(app: &App) -> Element<'_, Message> {
     let header = container(cells)
         .width(Fill)
         .padding(Padding {
-            left: 12.0,
+            left: 4.0,
             right: (TABLE_RIGHT_PADDING + ROW_ACTIONS_WIDTH + theme::SCROLLBAR_GUTTER) as f32,
             ..Padding::new(9.0)
         })
@@ -694,23 +745,40 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
                 .clip(true),
         );
     }
-    let row_button = button(cells)
-        .style(move |theme, state| theme::row_surface(theme, state, selected, hover_opacity))
-        .width(Fill)
-        .height(ROW_HEIGHT)
-        .padding(Padding {
-            left: if download.package.is_some() {
-                24.0
-            } else {
-                10.0
-            },
-            right: TABLE_RIGHT_PADDING as f32,
-            top: 4.0,
-            bottom: 4.0,
-        })
-        .on_press(Message::Select(id));
+    let check_cell = container(
+        theme::check(selected)
+            .size(14)
+            .spacing(0)
+            .on_toggle(move |_| Message::ToggleSelect(id)),
+    )
+    .width(22)
+    .height(ROW_HEIGHT)
+    .align_y(Alignment::Center)
+    .padding(Padding {
+        left: 4.0,
+        ..Padding::ZERO
+    });
+    let row_body = mouse_area(
+        container(cells)
+            .style(move |theme| {
+                theme::row_container_surface(theme, selected, is_hovered, hover_opacity)
+            })
+            .width(Fill)
+            .height(ROW_HEIGHT)
+            .padding(Padding {
+                left: if download.package.is_some() {
+                    14.0
+                } else {
+                    2.0
+                },
+                right: TABLE_RIGHT_PADDING as f32,
+                top: 4.0,
+                bottom: 4.0,
+            }),
+    )
+    .on_press(Message::RowPress(id));
     let row_button = tooltip(
-        row_button,
+        row_body,
         container(text(name).size(13).wrapping(text::Wrapping::WordOrGlyph))
             .max_width(450)
             .padding(7)
@@ -773,7 +841,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
         space::horizontal().width(ROW_ACTIONS_WIDTH).into()
     };
     mouse_area(
-        row![row_button, controls]
+        row![check_cell, row_button, controls]
             .align_y(Alignment::Center)
             .height(ROW_HEIGHT),
     )
@@ -1703,20 +1771,29 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
             row![
                 column![
                     text(l.get("add-connections")).size(13).style(muted),
-                    theme::field("", &dialog.connections).on_input(Message::AddConnections),
+                    context_field(
+                        TextTarget::AddConnections,
+                        theme::field("", &dialog.connections).on_input(Message::AddConnections),
+                    ),
                 ]
                 .spacing(5)
                 .width(Fill),
                 column![
                     text(l.get("checksum")).size(13).style(muted),
-                    theme::field(&l.get("checksum-format"), &dialog.checksum)
-                        .on_input(Message::AddChecksum),
+                    context_field(
+                        TextTarget::AddChecksum,
+                        theme::field(&l.get("checksum-format"), &dialog.checksum)
+                            .on_input(Message::AddChecksum),
+                    ),
                 ]
                 .spacing(5)
                 .width(Fill),
                 column![
                     text(l.get("download-bandwidth")).size(13).style(muted),
-                    theme::field("", &dialog.bandwidth).on_input(Message::AddBandwidth),
+                    context_field(
+                        TextTarget::AddBandwidth,
+                        theme::field("", &dialog.bandwidth).on_input(Message::AddBandwidth),
+                    ),
                 ]
                 .spacing(5)
                 .width(Fill),
@@ -1727,6 +1804,7 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
     let sources = column![
         row![
             text(l.get("source")).size(15).width(Fill),
+            theme::action(text(l.get("paste"))).on_press(Message::PasteAddEditor),
             theme::action(
                 row![icon('\u{e0d7}').size(15), text(l.get("choose-files"))]
                     .spacing(7)
@@ -1734,14 +1812,18 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
             )
             .on_press(Message::PickFiles),
         ]
+        .spacing(8)
         .align_y(Alignment::Center),
-        text_editor(&app.editor)
-            .id(add_id())
-            .placeholder(l.get("add-placeholder"))
-            .on_action(Message::EditAdd)
-            .style(theme::editor)
-            .height(104)
-            .padding(12),
+        mouse_area(
+            text_editor(&app.editor)
+                .id(add_id())
+                .placeholder(l.get("add-placeholder"))
+                .on_action(Message::EditAdd)
+                .style(theme::editor)
+                .height(104)
+                .padding(12),
+        )
+        .on_right_press(Message::OpenTextMenu(TextTarget::AddEditor)),
         container(preview)
             .width(Fill)
             .padding([9, 10])
@@ -1861,8 +1943,11 @@ fn grabber<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Option<Element<'
     };
     let mut list = column![
         text(l.get("linkgrabber")).size(16),
-        theme::field(&l.get("grabber-search"), &dialog.grabber_search)
-            .on_input(Message::GrabberSearch),
+        context_field(
+            TextTarget::GrabberSearch,
+            theme::field(&l.get("grabber-search"), &dialog.grabber_search)
+                .on_input(Message::GrabberSearch),
+        ),
     ]
     .spacing(8);
     if dialog.page_candidates().next().is_some() {
@@ -2111,6 +2196,137 @@ fn context_menu(app: &App) -> Element<'_, Message> {
         .style(move |theme| theme::animated_panel(theme, None, chrome_opacity))
         .padding(6)
         .into()
+}
+
+fn selection_bar(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let chrome_opacity = app.chrome_opacity();
+    let any_pausable = app.selection.iter().any(|id| {
+        app.queue
+            .downloads
+            .get(id)
+            .is_some_and(|download| crate::actions::can_pause(download.status()))
+    });
+    let any_resumable = app.selection.iter().any(|id| {
+        app.queue
+            .downloads
+            .get(id)
+            .is_some_and(crate::actions::can_resume_download)
+    });
+    let any_stoppable = app.selection.iter().any(|id| {
+        app.queue
+            .downloads
+            .get(id)
+            .is_some_and(|download| crate::actions::can_stop(download.status()))
+    });
+    let only_seeding = !app.selection.is_empty()
+        && app.selection.iter().all(|id| {
+            app.queue
+                .downloads
+                .get(id)
+                .is_some_and(|download| download.status() == Status::Seeding)
+        });
+    let mut bar = row![
+        text(l.with(
+            "selected-count",
+            [("count", app.selection.len().to_string())]
+        ))
+        .size(12)
+        .style(muted),
+        space::horizontal().width(Fill),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    if !app.all_visible_selected() {
+        bar = bar.push(
+            theme::action(text(l.get("select-all")).size(12)).on_press(Message::ToggleSelectAll),
+        );
+    }
+    if any_pausable || any_resumable {
+        let key = if any_pausable && !any_resumable {
+            "pause"
+        } else if any_resumable && !any_pausable {
+            "resume"
+        } else {
+            "pause-resume"
+        };
+        bar = bar.push(
+            theme::action(text(l.get(key)).size(12))
+                .on_press(Message::RowAction(Action::TogglePause)),
+        );
+    }
+    if any_stoppable {
+        let stop_key = if only_seeding { "stop-seeding" } else { "stop" };
+        bar = bar.push(
+            theme::action(text(l.get(stop_key)).size(12))
+                .on_press(Message::RowAction(Action::Stop)),
+        );
+    }
+    bar = bar.push(
+        theme::action(text(l.get("remove")).size(12))
+            .on_press(Message::RowAction(Action::Cancel))
+            .style(theme::danger),
+    );
+    bar =
+        bar.push(theme::action(text(l.get("deselect")).size(12)).on_press(Message::ClearSelection));
+    container(theme::horizontal(bar).width(Fill))
+        .width(Fill)
+        .style(move |theme| theme::animated_panel(theme, None, chrome_opacity))
+        .padding([6, 10])
+        .into()
+}
+
+fn text_menu_item<'a>(label: String, action: Option<Message>) -> Element<'a, Message> {
+    let mut item = button(text(label).size(13))
+        .width(Fill)
+        .padding([6, 10])
+        .style(|theme, state| {
+            let mut style = theme::selection_plain(theme, state);
+            if state == button::Status::Disabled {
+                style.text_color = theme::surfaces(theme).muted;
+            }
+            style
+        });
+    if let Some(message) = action {
+        item = item.on_press(message);
+    }
+    item.into()
+}
+
+fn text_context_menu(app: &App, target: TextTarget) -> Element<'_, Message> {
+    let l = &app.strings;
+    let chrome_opacity = app.chrome_opacity();
+    let (can_cut, can_copy, can_clear) = app.text_menu_capabilities(target);
+    container(
+        column![
+            text_menu_item(
+                l.get("cut"),
+                can_cut.then_some(Message::RunTextMenu(TextMenuAction::Cut)),
+            ),
+            text_menu_item(
+                l.get("copy"),
+                can_copy.then_some(Message::RunTextMenu(TextMenuAction::Copy)),
+            ),
+            text_menu_item(
+                l.get("paste"),
+                Some(Message::RunTextMenu(TextMenuAction::Paste)),
+            ),
+            text_menu_item(
+                l.get("select-all-text"),
+                can_clear.then_some(Message::RunTextMenu(TextMenuAction::SelectAll)),
+            ),
+            rule::horizontal(1).style(theme::separator),
+            text_menu_item(
+                l.get("clear-text"),
+                can_clear.then_some(Message::RunTextMenu(TextMenuAction::Clear)),
+            ),
+        ]
+        .spacing(2),
+    )
+    .width(172)
+    .padding(6)
+    .style(move |theme| theme::animated_panel(theme, None, chrome_opacity))
+    .into()
 }
 
 fn remove_dialog(app: &App, count: usize, delete: bool) -> Element<'_, Message> {

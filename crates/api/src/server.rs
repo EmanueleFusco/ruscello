@@ -18,7 +18,7 @@ use crate::{
     routes::{lan_router, loopback_router},
     state::{AuthState, SharedServer},
     telemetry::TelemetryHub,
-    types::{ApiEvent, LanStatus, PairingOverview},
+    types::{ApiEvent, ApiTheme, LanStatus, PairingOverview},
 };
 
 /// Default loopback port for the browser extension and CLI API.
@@ -40,6 +40,7 @@ pub struct ApiConfig {
     pub lan_password_hash: Option<String>,
     pub alternate_bandwidth: NonZeroU64,
     pub locale: Language,
+    pub theme: ApiTheme,
     pub allow_dlc_fallback: bool,
 }
 
@@ -57,6 +58,7 @@ impl Default for ApiConfig {
             lan_password_hash: None,
             alternate_bandwidth: NonZeroU64::MIN.saturating_add(512 * 1024 - 1),
             locale: Language::English,
+            theme: ApiTheme::System,
             allow_dlc_fallback: true,
         }
     }
@@ -71,6 +73,7 @@ pub struct ApiRuntimeUpdate {
     pub lan_password_hash: Option<String>,
     pub alternate_bandwidth: NonZeroU64,
     pub locale: Language,
+    pub theme: ApiTheme,
 }
 
 /// Entrypoint for launching the local and LAN API servers.
@@ -117,6 +120,7 @@ impl ApiServer {
             lan_password_hash: config.lan_password_hash.clone(),
             alternate_bandwidth: config.alternate_bandwidth,
             locale: config.locale,
+            theme: config.theme,
             allow_dlc_fallback: config.allow_dlc_fallback,
             sessions: crate::auth::SessionStore::default(),
             rate_limiter: crate::auth::RateLimiter::default(),
@@ -156,6 +160,7 @@ impl ApiServer {
                 lan_password_hash: config.lan_password_hash,
                 alternate_bandwidth: config.alternate_bandwidth,
                 locale: config.locale,
+                theme: config.theme,
             })
             .await;
 
@@ -299,6 +304,7 @@ impl ApiHandle {
             guard.lan_password_hash = update.lan_password_hash;
             guard.alternate_bandwidth = update.alternate_bandwidth;
             guard.locale = update.locale;
+            guard.theme = update.theme;
             if changed_auth {
                 guard.sessions.clear();
             }

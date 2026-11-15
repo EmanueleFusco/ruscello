@@ -6,6 +6,7 @@ use axum::{
 const INDEX_HTML: &str = include_str!("../assets/webui/index.html");
 const STYLE_CSS: &str = include_str!("../assets/webui/style.css");
 const APP_JS: &str = include_str!("../assets/webui/app.js");
+const ICON_PNG: &[u8] = include_bytes!("../assets/webui/icon.png");
 
 const CSP_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 
@@ -21,7 +22,15 @@ pub(crate) async fn app_js() -> Response {
     asset_response("application/javascript; charset=utf-8", APP_JS)
 }
 
+pub(crate) async fn icon_png() -> Response {
+    binary_response("image/png", ICON_PNG)
+}
+
 fn asset_response(content_type: &'static str, body: &'static str) -> Response {
+    binary_response(content_type, body.as_bytes())
+}
+
+fn binary_response(content_type: &'static str, body: &'static [u8]) -> Response {
     (
         StatusCode::OK,
         [

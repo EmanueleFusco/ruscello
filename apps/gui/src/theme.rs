@@ -113,19 +113,29 @@ pub(crate) fn animated_panel(
         .border(outline(border))
 }
 
-pub(crate) fn row_surface(
+pub(crate) fn row_container_surface(
     theme: &Theme,
-    state: button::Status,
     selected: bool,
+    hovered: bool,
     hovered_opacity: f32,
-) -> button::Style {
-    let mut style = selection(theme, state, selected);
-    if !selected && matches!(state, button::Status::Hovered | button::Status::Pressed) {
-        style.background = style
-            .background
-            .map(|background| background.scale_alpha(hovered_opacity));
+) -> container::Style {
+    let colors = surfaces(theme);
+    let background = match (selected, hovered) {
+        (true, true) => Some(colors.hover.into()),
+        (true, false) => Some(colors.selected.into()),
+        (false, true) => Some(colors.hover.scale_alpha(hovered_opacity).into()),
+        (false, false) => None,
+    };
+    container::Style {
+        background,
+        text_color: Some(if selected {
+            theme.palette().primary
+        } else {
+            theme.palette().text
+        }),
+        border: iced::border::rounded(CONTROL_RADIUS),
+        ..container::Style::default()
     }
-    style
 }
 
 pub(crate) fn inset(theme: &Theme) -> container::Style {

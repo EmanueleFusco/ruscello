@@ -4,12 +4,24 @@ use ruscello_core::{Download, FailureReason, FileType, Source, Status, TorrentSo
 use ruscello_engine::Candidate;
 use serde::{Deserialize, Serialize};
 
+/// Desktop UI appearance preference mirrored to the remote Web UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiTheme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Health and session status returned by `GET /api/v1/health`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub ok: bool,
     pub version: String,
     pub locale: String,
+    #[serde(default)]
+    pub theme: ApiTheme,
     pub auth_required: bool,
     pub authenticated: bool,
 }

@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f172a">
+  <meta id="theme-color-meta" name="theme-color" content="#101621">
   <title>Ruscello Remote</title>
+  <link rel="icon" type="image/png" href="/icon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -12,7 +14,7 @@
     <section id="login-view" class="login-screen hidden" aria-live="polite">
       <div class="login-card">
         <div class="brand-mark">
-          <span class="brand-badge">R</span>
+          <img class="brand-icon" src="/icon.png" alt="Ruscello">
           <div>
             <h1 id="login-title">Ruscello Remote</h1>
             <p id="login-subtitle" class="muted"></p>
@@ -37,37 +39,46 @@
 
     <section id="main-view" class="main-shell hidden">
       <header class="topbar">
-        <div class="topbar-row">
-          <div class="brand-inline">
-            <span class="brand-badge">R</span>
-            <div>
-              <div class="title-line">
-                <strong id="app-title">Ruscello</strong>
-                <span id="conn-badge" class="conn-pill offline"></span>
+        <div class="topbar-inner">
+          <div class="topbar-row">
+            <div class="brand-inline">
+              <img class="brand-icon" src="/icon.png" alt="Ruscello">
+              <div class="brand-copy">
+                <div class="title-line">
+                  <strong id="app-title">Ruscello</strong>
+                  <span id="conn-badge" class="conn-pill offline"></span>
+                </div>
+                <div class="rates-line" aria-live="off">
+                  <span id="stat-down" class="rate-down">↓ 0 B/s</span>
+                  <span id="stat-up" class="rate-up">↑ 0 B/s</span>
+                  <span id="stat-counts" class="muted">0</span>
+                </div>
               </div>
-              <div class="rates-line" aria-live="off">
-                <span id="stat-down" class="rate-down">↓ 0 B/s</span>
-                <span id="stat-up" class="rate-up">↑ 0 B/s</span>
-                <span id="stat-counts" class="muted">0</span>
-              </div>
+            </div>
+
+            <div class="toolbar-actions">
+              <button type="button" id="alt-speed-btn" class="btn btn-secondary" title="Alternate speed">
+                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5a9 9 0 0 0-9 9c0 2 .66 3.84 1.77 5.32h14.46A8.96 8.96 0 0 0 21 14a9 9 0 0 0-9-9Zm4.24 5.76-3.18 4.24a1.5 1.5 0 1 1-2.12-2.12l4.24-3.18a.75.75 0 0 1 1.06 1.06Z"/>
+                </svg>
+                <span id="alt-speed-label"></span>
+              </button>
+              <button type="button" id="pause-all-btn" class="btn btn-secondary"></button>
+              <button type="button" id="add-open-btn" class="btn btn-primary"></button>
+              <button type="button" id="lang-btn" class="btn btn-ghost"></button>
+              <button type="button" id="logout-btn" class="btn btn-ghost hidden"></button>
             </div>
           </div>
 
-          <div class="toolbar-actions">
-            <button type="button" id="alt-speed-btn" class="btn btn-secondary" title="Alternate speed">
-              <span>🐢</span>
-              <span id="alt-speed-label"></span>
-            </button>
-            <button type="button" id="pause-all-btn" class="btn btn-secondary"></button>
-            <button type="button" id="add-open-btn" class="btn btn-primary"></button>
-            <button type="button" id="lang-btn" class="btn btn-ghost"></button>
-            <button type="button" id="logout-btn" class="btn btn-ghost hidden"></button>
+          <div class="filters-row">
+            <div id="filter-tabs" class="filter-tabs" role="tablist"></div>
+            <div class="search-wrap">
+              <svg class="ui-icon search-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10.5 3.75a6.75 6.75 0 1 0 4.26 11.98l4.25 4.26a.75.75 0 1 0 1.06-1.06l-4.26-4.25A6.75 6.75 0 0 0 10.5 3.75Zm-5.25 6.75a5.25 5.25 0 1 1 10.5 0 5.25 5.25 0 0 1-10.5 0Z"/>
+              </svg>
+              <input id="search-input" class="search-input" type="search" autocomplete="off">
+            </div>
           </div>
-        </div>
-
-        <div class="filters-row">
-          <div id="filter-tabs" class="filter-tabs" role="tablist"></div>
-          <input id="search-input" class="search-input" type="search" autocomplete="off">
         </div>
       </header>
 

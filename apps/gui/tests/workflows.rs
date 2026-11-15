@@ -1,9 +1,9 @@
-use iced::{Size, Theme, futures::StreamExt, widget::text_editor, window};
+use iced::{Point, Size, Theme, futures::StreamExt, widget::text_editor, window};
 use iced_test::{
     Simulator,
     runtime::{Action, task},
 };
-use ruscello_core::{Download, DownloadId, Source, Status, TorrentSource};
+use ruscello_core::{Download, DownloadId, PackageId, Source, Status, TorrentSource};
 use ruscello_engine::{
     DlcKeyService, EngineEvent, EngineHandle, EngineOptions, PostProcessStage,
     QueueCompletionAction, ScheduleDecision, SidecarEndpoints, SidecarKind, TorrentDetailsSnapshot,
@@ -15,7 +15,10 @@ use ruscello_testkit::{FileSpec, FtpServerOptions, MockFtpServer, Reply, TestSer
 
 use crate::{
     actions::Action as RowAction,
-    app::{App, AutomationMsg, DETAILS_COLLAPSED_HEIGHT, DetailTab, Message},
+    app::{
+        App, AutomationMsg, DETAILS_COLLAPSED_HEIGHT, DetailTab, Message, TextMenuAction,
+        TextTarget,
+    },
     desktop::{Receiver, Startup},
     i18n::Strings,
     preferences::{Locale, Preferences},
@@ -2247,5 +2250,136 @@ async fn italian_labels_fit_without_clipping_and_panes_resize_and_persist() -> a
     )
     .await;
     assert_eq!(app.sidebar_width(), initial_sidebar);
+    Ok(())
+}
+
+#[tokio::test]
+async fn text_context_menu_supports_right_click_paste_select_all_and_clear() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    app.preferences.motion = false;
+
+    apply(&mut app, Message::OpenAdd).await;
+    assert!(simulator(&app).find(app.strings.get("paste")).is_ok());
+
+    apply(
+        &mut app,
+        Message::TextMenuPaste(
+            TextTarget::AddEditor,
+            Some("https://example.test/one.zip".into()),
+        ),
+    )
+    .await;
+    assert_eq!(app.editor.text().trim(), "https://example.test/one.zip");
+
+    apply(&mut app, Message::PointerMoved(Point::new(320.0, 220.0))).await;
+    apply(&mut app, Message::OpenTextMenu(TextTarget::AddEditor)).await;
+    assert!(app.text_menu.is_some());
+    {
+        let mut ui = simulator(&app);
+        for key in ["cut", "copy", "paste", "select-all-text", "clear-text"] {
+            assert!(
+                ui.find(app.strings.get(key)).is_ok(),
+                "missing text menu item {key}"
+            );
+        }
+    }
+
+    apply(&mut app, Message::RunTextMenu(TextMenuAction::SelectAll)).await;
+    assert!(app.text_menu.is_none());
+    assert_eq!(
+        app.editor.selection().as_deref().map(str::trim),
+        Some("https://example.test/one.zip")
+    );
+
+    apply(&mut app, Message::OpenTextMenu(TextTarget::AddEditor)).await;
+    apply(&mut app, Message::RunTextMenu(TextMenuAction::Clear)).await;
+    assert!(app.editor.text().trim().is_empty());
+    assert!(
+        app.add
+            .as_ref()
+            .is_some_and(|dialog| dialog.text.is_empty())
+    );
+
+    apply(&mut app, Message::CloseAdd).await;
+
+    apply(
+        &mut app,
+        Message::TextMenuPaste(TextTarget::Search, Some("cachyos".into())),
+    )
+    .await;
+    assert_eq!(app.queue.search, "cachyos");
+
+    apply(&mut app, Message::OpenTextMenu(TextTarget::Search)).await;
+    apply(&mut app, Message::RunTextMenu(TextMenuAction::Clear)).await;
+    assert!(app.queue.search.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn mouse_checkboxes_and_drag_select_multiple_downloads_across_packages() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    app.preferences.motion = false;
+
+    for (raw_id, pkg_id, name) in [
+        (1, 1, "pkg1-a.bin"),
+        (2, 1, "pkg1-b.bin"),
+        (3, 2, "pkg2-a.bin"),
+        (4, 2, "pkg2-b.bin"),
+    ] {
+        let id = DownloadId(raw_id);
+        let mut download = Download::new(
+            id,
+            Source::Http {
+                url: format!("https://example.test/{name}"),
+            },
+            temp.path().to_owned(),
+        );
+        download.package = Some(PackageId(pkg_id));
+        download.filename = Some(name.into());
+        app.queue.order.push(id);
+        app.queue.downloads.insert(id, download);
+        app.queue
+            .packages
+            .insert(PackageId(pkg_id), format!("Package {pkg_id}"));
+    }
+    app.queue.rebuild();
+
+    apply(&mut app, Message::ToggleSelect(DownloadId(1))).await;
+    apply(&mut app, Message::ToggleSelect(DownloadId(3))).await;
+    assert_eq!(
+        app.selection.iter().copied().collect::<Vec<_>>(),
+        vec![DownloadId(1), DownloadId(3)]
+    );
+    {
+        let mut ui = simulator(&app);
+        assert!(
+            ui.find(app.strings.with("selected-count", [("count", "2".into())]),)
+                .is_ok()
+        );
+        assert!(ui.find(app.strings.get("deselect")).is_ok());
+    }
+
+    apply(&mut app, Message::ToggleSelectAll).await;
+    assert_eq!(app.selection.len(), 4);
+    apply(&mut app, Message::ToggleSelectAll).await;
+    assert!(app.selection.is_empty());
+
+    apply(&mut app, Message::PointerMoved(Point::new(340.0, 180.0))).await;
+    apply(&mut app, Message::RowPress(DownloadId(1))).await;
+    apply(
+        &mut app,
+        Message::PointerMoved(Point::new(340.0, 180.0 + crate::queue::ROW_HEIGHT * 3.0)),
+    )
+    .await;
+    apply(&mut app, Message::EndResize).await;
+    assert_eq!(
+        app.selection.iter().copied().collect::<Vec<_>>(),
+        vec![DownloadId(1), DownloadId(2), DownloadId(3)]
+    );
     Ok(())
 }

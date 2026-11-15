@@ -23,6 +23,7 @@
       filterActive: "Active",
       filterQueued: "Queued",
       filterPaused: "Paused",
+      filterStopped: "Stopped",
       filterCompleted: "Completed",
       filterFailed: "Failed",
       searchPlaceholder: "Search downloads or packages…",
@@ -38,6 +39,8 @@
       addEmptyError: "Provide at least one URL or container file.",
       addDone: "Downloads added to queue.",
       pause: "Pause",
+      stop: "Stop",
+      stopSeeding: "Stop seeding",
       resume: "Resume",
       forceStart: "Force start",
       remove: "Remove",
@@ -49,6 +52,7 @@
       statusWaitingUser: "Verification needed",
       statusDownloading: "Downloading",
       statusPaused: "Paused",
+      statusStopped: "Stopped",
       statusSeeding: "Seeding",
       statusPostProcessing: "Processing",
       statusCompleted: "Completed",
@@ -80,6 +84,7 @@
       filterActive: "Attivi",
       filterQueued: "In coda",
       filterPaused: "In pausa",
+      filterStopped: "Arrestati",
       filterCompleted: "Completati",
       filterFailed: "Non riusciti",
       searchPlaceholder: "Cerca download o pacchetti…",
@@ -95,6 +100,8 @@
       addEmptyError: "Inserisci almeno un URL o un file container.",
       addDone: "Download aggiunti alla coda.",
       pause: "Pausa",
+      stop: "Arresta",
+      stopSeeding: "Interrompi condivisione",
       resume: "Riprendi",
       forceStart: "Avvio forzato",
       remove: "Rimuovi",
@@ -106,7 +113,8 @@
       statusWaitingUser: "Verifica richiesta",
       statusDownloading: "In scaricamento",
       statusPaused: "In pausa",
-      statusSeeding: "Condivisione",
+      statusStopped: "Arrestato",
+      statusSeeding: "In condivisione",
       statusPostProcessing: "Elaborazione",
       statusCompleted: "Completato",
       statusFailed: "Non riuscito",
@@ -119,7 +127,10 @@
   };
 
   const state = {
-    lang: detectInitialLang(),
+    lang: (navigator.language || "").toLowerCase().startsWith("it") ? "it" : "en",
+    serverLocale: null,
+    manualLang: false,
+    theme: "system",
     authRequired: false,
     authenticated: false,
     filter: "all",
@@ -132,10 +143,11 @@
     sse: null,
     reconnectTimer: null,
     toastTimer: null,
-    connectionMode: "offline"
+    connectionMode: "reconnecting"
   };
 
   const el = {
+    themeColorMeta: document.getElementById("theme-color-meta"),
     loginView: document.getElementById("login-view"),
     mainView: document.getElementById("main-view"),
     loginSubtitle: document.getElementById("login-subtitle"),
@@ -190,16 +202,6 @@
     removeConfirmBtn: document.getElementById("remove-confirm-btn")
   };
 
-  function detectInitialLang() {
-    try {
-      const saved = window.localStorage.getItem("ruscello_lang");
-      if (saved === "en" || saved === "it") {
-        return saved;
-      }
-    } catch (_) {}
-    return (navigator.language || "").toLowerCase().startsWith("it") ? "it" : "en";
-  }
-
   function t(key, vars) {
     const dict = STRINGS[state.lang] || STRINGS.en;
     let out = dict[key] || STRINGS.en[key] || key;
@@ -211,12 +213,30 @@
     return out;
   }
 
-  function setLang(lang) {
+  function applyTheme(theme) {
+    const normalized = theme === "light" || theme === "dark" ? theme : "system";
+    state.theme = normalized;
+    if (normalized === "system") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", normalized);
+    }
+    const prefersLight =
+      normalized === "light" ||
+      (normalized === "system" &&
+        window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: light)").matches);
+    if (el.themeColorMeta) {
+      el.themeColorMeta.setAttribute("content", prefersLight ? "#f1f4f9" : "#101621");
+    }
+  }
+
+  function setLang(lang, manual) {
     state.lang = lang === "it" ? "it" : "en";
+    if (manual) {
+      state.manualLang = true;
+    }
     document.documentElement.lang = state.lang;
-    try {
-      window.localStorage.setItem("ruscello_lang", state.lang);
-    } catch (_) {}
     applyTranslations();
     renderQueue();
   }
@@ -271,6 +291,7 @@
       ["active", t("filterActive")],
       ["queued", t("filterQueued")],
       ["paused", t("filterPaused")],
+      ["stopped", t("filterStopped")],
       ["completed", t("filterCompleted")],
       ["failed", t("filterFailed")]
     ];
@@ -341,21 +362,32 @@
     return resp;
   }
 
-  async function boot() {
-    applyTranslations();
+  async function syncHealth() {
     try {
       const resp = await fetch("/api/v1/health", { credentials: "same-origin" });
-      if (resp.ok) {
-        const health = await resp.json();
-        state.authRequired = Boolean(health.auth_required);
-        state.authenticated = Boolean(health.authenticated) || !state.authRequired;
-        try {
-          if (!window.localStorage.getItem("ruscello_lang") && (health.locale === "en" || health.locale === "it")) {
-            setLang(health.locale);
-          }
-        } catch (_) {}
+      if (!resp.ok) {
+        return;
+      }
+      const health = await resp.json();
+      state.authRequired = Boolean(health.auth_required);
+      state.authenticated = Boolean(health.authenticated) || !state.authRequired;
+      applyTheme(health.theme);
+      if (health.locale === "en" || health.locale === "it") {
+        const changed = health.locale !== state.serverLocale;
+        state.serverLocale = health.locale;
+        if (changed) {
+          state.manualLang = false;
+        }
+        if (!state.manualLang && state.lang !== health.locale) {
+          setLang(health.locale, false);
+        }
       }
     } catch (_) {}
+  }
+
+  async function boot() {
+    applyTranslations();
+    await syncHealth();
     showView();
     if (state.authenticated) {
       await refreshSnapshot();
@@ -421,6 +453,8 @@
       return;
     }
     if (payload.type === "snapshot" && payload.data) {
+      state.connectionMode = "live";
+      updateConnectionBadge();
       state.snapshot = payload.data;
       renderHeaderStats();
       renderQueue();
@@ -432,6 +466,8 @@
     if (!state.authenticated) {
       return;
     }
+    state.connectionMode = "reconnecting";
+    updateConnectionBadge();
     if ("WebSocket" in window) {
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = proto + "//" + window.location.host + "/api/v1/ws";
@@ -507,8 +543,12 @@
     return ["Queued", "Resolving", "WaitingUser", "Downloading", "Seeding"].includes(d.status);
   }
 
+  function canStopDownload(d) {
+    return ["Queued", "Resolving", "WaitingUser", "Downloading", "Seeding", "Paused"].includes(d.status);
+  }
+
   function canResumeDownload(d) {
-    return d.status === "Paused" || d.status === "Failed";
+    return d.status === "Paused" || d.status === "Stopped" || d.status === "Failed";
   }
 
   function canPauseAll() {
@@ -519,7 +559,7 @@
   function updatePauseAllButton() {
     const downloads = (state.snapshot && state.snapshot.downloads) || [];
     const pause = canPauseAll();
-    const resume = downloads.some((d) => d.status === "Paused");
+    const resume = downloads.some((d) => canResumeDownload(d));
     el.pauseAllBtn.textContent = pause ? t("pauseAll") : t("resumeAll");
     el.pauseAllBtn.disabled = !pause && !resume;
   }
@@ -532,6 +572,8 @@
         return d.status === "Queued";
       case "paused":
         return d.status === "Paused";
+      case "stopped":
+        return d.status === "Stopped";
       case "completed":
         return d.status === "Completed";
       case "failed":
@@ -581,7 +623,7 @@
     const progressTrack = document.createElement("div");
     progressTrack.className = "progress-track";
     const fill = document.createElement("div");
-    fill.className = "progress-fill";
+    fill.className = "progress-fill status-" + d.status;
     const pct = typeof d.progress_percent === "number" ? Math.max(0, Math.min(100, d.progress_percent)) : 0;
     fill.style.width = pct.toFixed(1) + "%";
     progressTrack.appendChild(fill);
@@ -620,6 +662,14 @@
       b.className = "btn btn-sm";
       b.textContent = t("pause");
       b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id + "/pause"));
+      actions.appendChild(b);
+    }
+    if (canStopDownload(d)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn btn-sm";
+      b.textContent = d.status === "Seeding" ? t("stopSeeding") : t("stop");
+      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id + "/stop"));
       actions.appendChild(b);
     }
     if (canResumeDownload(d)) {
@@ -792,8 +842,23 @@
     el.togglePasswordBtn.textContent = el.loginPassword.type === "password" ? t("show") : t("hide");
   });
 
-  el.loginLangBtn.addEventListener("click", () => setLang(state.lang === "en" ? "it" : "en"));
-  el.langBtn.addEventListener("click", () => setLang(state.lang === "en" ? "it" : "en"));
+  el.loginLangBtn.addEventListener("click", () => setLang(state.lang === "en" ? "it" : "en", true));
+  el.langBtn.addEventListener("click", () => setLang(state.lang === "en" ? "it" : "en", true));
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      syncHealth();
+    }
+  });
+  window.addEventListener("focus", () => {
+    syncHealth();
+  });
+  if (window.matchMedia) {
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    if (mq.addEventListener) {
+      mq.addEventListener("change", () => applyTheme(state.theme));
+    }
+  }
 
   el.loginForm.addEventListener("submit", async (event) => {
     event.preventDefault();

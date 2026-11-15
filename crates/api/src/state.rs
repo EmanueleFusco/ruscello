@@ -49,6 +49,7 @@ pub(crate) struct AuthState {
     pub(crate) lan_password_hash: Option<String>,
     pub(crate) alternate_bandwidth: NonZeroU64,
     pub(crate) locale: Language,
+    pub(crate) theme: crate::types::ApiTheme,
     pub(crate) allow_dlc_fallback: bool,
     pub(crate) sessions: SessionStore,
     pub(crate) rate_limiter: RateLimiter,
