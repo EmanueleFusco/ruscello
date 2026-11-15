@@ -96,6 +96,9 @@ jobs:
             if (!(Test-Path "$install\$file")) { throw "Missing installed file $file" }
           }
           $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello'
+          if ((Get-ItemPropertyValue $uninstallKey DisplayName) -ne 'Ruscello Download Manager') {
+            throw "Unexpected installed application name"
+          }
           if ((Get-ItemPropertyValue $uninstallKey DisplayIcon) -ne "$install\ruscello.exe") {
             throw "Missing installed application icon registration"
           }
@@ -188,7 +191,9 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           awk '/^## \[Unreleased\]/{notes=1;next} notes && /^## /{exit} notes{print}' CHANGELOG.md > "$notes"
           if ! grep -q '[^[:space:]]' "$notes"; then
-            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --latest
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+              --title "Ruscello Download Manager $GITHUB_REF_NAME" --generate-notes --latest
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file "$notes" --latest
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+              --title "Ruscello Download Manager $GITHUB_REF_NAME" --notes-file "$notes" --latest
           fi

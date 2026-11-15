@@ -187,7 +187,7 @@ fn register_associations(exe: PathBuf) -> anyhow::Result<()> {
         "application/x-dlc",
     ];
     let entry = format!(
-        "[Desktop Entry]\nName=Ruscello\nType=Application\nExec=\"{exe}\" %U\nIcon=ruscello\nStartupWMClass={APP_ID}\nTerminal=false\nMimeType={};\n",
+        "[Desktop Entry]\nName=Ruscello Download Manager\nType=Application\nExec=\"{exe}\" %U\nIcon=ruscello\nStartupWMClass={APP_ID}\nTerminal=false\nMimeType={};\n",
         types.join(";")
     );
     let icon_dir = dirs.data_dir().join("icons/hicolor/512x512/apps");

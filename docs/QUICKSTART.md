@@ -1,4 +1,4 @@
-# Ruscello quickstart
+# Ruscello Download Manager quickstart
 
 ## Install
 
@@ -10,7 +10,7 @@ Check that the OS and architecture in the filename match your system.
 | Windows x64 | `.exe` | Run the per-user installer. The browser helper needs the Microsoft Edge WebView2 Runtime. |
 | Ubuntu 24.04 or compatible Linux x64 | `.deb` | Run `sudo apt install ./ruscello-v1.0.0-linux-x86_64.deb` from the download directory. |
 | Ubuntu 24.04 or compatible Linux x64 | `.AppImage` | Install the dependencies below, make the file executable, and run it. Keep it in a writable folder if you want one-click updates. |
-| macOS | `.dmg` | Open the image and drag Ruscello to Applications. Choose `aarch64` for Apple Silicon or `x86_64` for Intel. |
+| macOS | `.dmg` | Open the image and drag Ruscello Download Manager to Applications. Choose `aarch64` for Apple Silicon or `x86_64` for Intel. |
 
 On Linux, Ruscello uses native Wayland when available and also supports X11 sessions.
 

@@ -88,7 +88,7 @@ def window_visible():
     tree = subprocess.run(
         ["xwininfo", "-root", "-tree"], capture_output=True, text=True, check=True
     ).stdout
-    return '"Ruscello"' in tree
+    return '"Ruscello Download Manager"' in tree
 
 
 def desktop(binary, root, url, backend):

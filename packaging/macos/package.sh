@@ -30,5 +30,5 @@ codesign --verify --deep --strict "$app"
 ln -s /Applications "$work/Applications"
 arch=$(uname -m)
 if [[ $arch == arm64 ]]; then arch=aarch64; fi
-hdiutil create -fs HFS+ -volname Ruscello -srcfolder "$work" -format UDZO \
+hdiutil create -fs HFS+ -volname "Ruscello Download Manager" -srcfolder "$work" -format UDZO \
   "$out/ruscello-$tag-macos-$arch.dmg"

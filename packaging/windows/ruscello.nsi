@@ -4,7 +4,8 @@ RequestExecutionLevel user
 !include "LogicLib.nsh"
 !include "MUI2.nsh"
 
-Name "Ruscello"
+!define PRODUCT_NAME "Ruscello Download Manager"
+Name "${PRODUCT_NAME}"
 OutFile "${OUT}"
 InstallDir "$LOCALAPPDATA\Programs\Ruscello"
 InstallDirRegKey HKCU "Software\Ruscello" "InstallDir"
@@ -51,7 +52,7 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
-Section "Ruscello"
+Section "${PRODUCT_NAME}"
   SetShellVarContext current
   SetOutPath "$INSTDIR"
 
@@ -93,11 +94,12 @@ replace:
   File "..\..\LICENSE"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Ruscello" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "DisplayName" "Ruscello"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "DisplayIcon" "$INSTDIR\ruscello.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-  CreateShortcut "$SMPROGRAMS\Ruscello.lnk" "$INSTDIR\ruscello.exe"
+  Delete "$SMPROGRAMS\Ruscello.lnk"
+  CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}.lnk" "$INSTDIR\ruscello.exe"
   ${If} $UpdateMode == "yes"
     Exec '"$INSTDIR\ruscello.exe"'
   ${EndIf}
@@ -129,7 +131,7 @@ Section "Uninstall"
   Delete "$INSTDIR\ruscello-webview.exe"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\Uninstall.exe"
-  Delete "$SMPROGRAMS\Ruscello.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}.lnk"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello"
   DeleteRegKey HKCU "Software\Ruscello"
   RMDir "$INSTDIR"

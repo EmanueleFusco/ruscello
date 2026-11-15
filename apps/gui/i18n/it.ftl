@@ -1,4 +1,4 @@
-app-name = Ruscello
+app-name = Ruscello Download Manager
 downloads = Download
 status = Stato
 file-types = Tipi di file
@@ -226,7 +226,7 @@ save = Salva
 invalid-settings = Controlla le impostazioni numeriche e riprova.
 open-logs = Apri il log corrente
 copy-diagnostics = Copia diagnostica
-version = Ruscello { $version }
+version = { app-name } { $version }
 check-on-start = Controlla gli aggiornamenti all’avvio
 check-now = Controlla adesso
 update-checking = Ricerca aggiornamenti in corso…

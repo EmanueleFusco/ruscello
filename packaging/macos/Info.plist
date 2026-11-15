@@ -6,6 +6,8 @@
   <string>org.ruscello.desktop</string>
   <key>CFBundleName</key>
   <string>Ruscello</string>
+  <key>CFBundleDisplayName</key>
+  <string>Ruscello Download Manager</string>
   <key>CFBundleExecutable</key>
   <string>ruscello</string>
   <key>CFBundleIconFile</key>
