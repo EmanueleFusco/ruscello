@@ -25,10 +25,11 @@ use crate::{
 };
 
 const TOOLBAR_BUTTON_SIZE: u32 = 36;
-const ROW_ACTION_WIDTH: u32 = 32;
-const ROW_ACTIONS_WIDTH: u32 = ROW_ACTION_WIDTH * 3;
-const TABLE_CELL_GAP: u32 = 6;
-const TABLE_RIGHT_PADDING: u32 = 12;
+const SIDEBAR_WIDTH: u32 = 176;
+const ROW_ACTION_WIDTH: u32 = 24;
+const ROW_ACTIONS_WIDTH: u32 = ROW_ACTION_WIDTH * 4;
+const TABLE_CELL_GAP: u32 = 5;
+const TABLE_RIGHT_PADDING: u32 = 8;
 
 pub(crate) fn queue_id() -> widget::Id {
     widget::Id::new("download-list")
@@ -59,6 +60,7 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
         .into()
     };
     let mut body = column![content].spacing(8);
+    let chrome_opacity = app.chrome_opacity();
     if let Some((action, remaining_secs)) = app.queue.completion_countdown {
         body = body.push(
             container(
@@ -81,7 +83,9 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
                 .spacing(8),
             )
             .padding([6, 10])
-            .style(theme::panel),
+            .style(move |theme| {
+                theme::animated_panel(theme, Some(theme.palette().warning), chrome_opacity)
+            }),
         );
     }
     if let Some(message) = app.banner {
@@ -94,7 +98,9 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
                 .align_y(Alignment::Center),
             )
             .padding([6, 10])
-            .style(theme::panel),
+            .style(move |theme| {
+                theme::animated_panel(theme, Some(theme.palette().danger), chrome_opacity)
+            }),
         );
     }
     container(body).padding(14).width(Fill).height(Fill).into()
@@ -121,6 +127,7 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         .align_y(Alignment::Center)
         .spacing(8)
         .width(Fill),
+        container(rule::vertical(1).style(theme::separator)).height(24),
         toolbar_icon(
             '\u{e42c}',
             l.get(if app.preferences.details {
@@ -204,8 +211,28 @@ pub(crate) fn icon_button(
     label: String,
     message: Message,
 ) -> Element<'static, Message> {
+    icon_control(icon(glyph).into(), label, message)
+}
+
+fn stop_icon(size: f32) -> Element<'static, Message> {
+    container(space::horizontal())
+        .width(size)
+        .height(size)
+        .style(|theme: &Theme| container::Style {
+            background: Some(theme.palette().text.into()),
+            border: iced::border::rounded(2),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn icon_control(
+    content: Element<'static, Message>,
+    label: String,
+    message: Message,
+) -> Element<'static, Message> {
     tooltip(
-        button(container(icon(glyph)).center(Fill))
+        button(container(content).center(Fill))
             .padding(0)
             .width(ROW_ACTION_WIDTH)
             .height(30)
@@ -244,21 +271,25 @@ fn sidebar_heading(label: String) -> Element<'static, Message> {
 fn sidebar(app: &App) -> Element<'_, Message> {
     let l = &app.strings;
     let q = &app.queue;
+    let opacity = app.filter_opacity();
     let mut body = column![sidebar_heading(l.get("status"))].spacing(1);
     for status in StatusFilter::ALL {
+        let icon_el: Element<'static, Message> = match status {
+            StatusFilter::All => icon('\u{e106}').size(14).into(),
+            StatusFilter::Active => icon('\u{e0b2}').size(14).into(),
+            StatusFilter::Queued => icon('\u{e129}').size(14).into(),
+            StatusFilter::Paused => icon('\u{e12e}').size(14).into(),
+            StatusFilter::Stopped => container(stop_icon(9.0)).center(14).into(),
+            StatusFilter::Completed => icon('\u{e06c}').size(14).into(),
+            StatusFilter::Failed => icon('\u{e077}').size(14).into(),
+            StatusFilter::Seeding => icon('\u{e04a}').size(14).into(),
+        };
         body = body.push(filter(
             l.get(status.key()),
-            match status {
-                StatusFilter::All => '\u{e106}',
-                StatusFilter::Active => '\u{e0b2}',
-                StatusFilter::Queued => '\u{e129}',
-                StatusFilter::Paused => '\u{e12e}',
-                StatusFilter::Completed => '\u{e06c}',
-                StatusFilter::Failed => '\u{e077}',
-                StatusFilter::Seeding => '\u{e04a}',
-            },
+            icon_el,
             q.status_count(status),
             q.status == status,
+            opacity,
             Message::Status(status),
         ));
     }
@@ -269,9 +300,10 @@ fn sidebar(app: &App) -> Element<'_, Message> {
         let selected = q.file_type == Some(kind);
         body = body.push(filter(
             l.get(i18n::file_type(kind)),
-            icons::file_type(Some(kind)),
+            icon(icons::file_type(Some(kind))).size(14).into(),
             q.type_count(kind),
             selected,
+            opacity,
             Message::FileType((!selected).then_some(kind)),
         ));
     }
@@ -283,9 +315,10 @@ fn sidebar(app: &App) -> Element<'_, Message> {
         let selected = q.category == Some(id);
         body = body.push(filter(
             l.category(&item.category),
-            '\u{e0d7}',
+            icon('\u{e0d7}').size(14).into(),
             q.category_count(id),
             selected,
+            opacity,
             Message::Category((!selected).then_some(id)),
         ));
     }
@@ -295,7 +328,7 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             .width(Fill)
             .height(Fill),
     )
-    .width(208)
+    .width(SIDEBAR_WIDTH)
     .height(Fill)
     .padding(10)
     .style(theme::panel)
@@ -304,16 +337,22 @@ fn sidebar(app: &App) -> Element<'_, Message> {
 
 fn filter(
     label: String,
-    glyph: char,
+    glyph: Element<'static, Message>,
     count: usize,
     selected: bool,
+    opacity: f32,
     message: Message,
 ) -> Element<'static, Message> {
     button(
         row![
-            icon(glyph).size(14),
-            text(label).size(13).width(Fill),
-            text(count.to_string()).size(12).style(muted)
+            glyph,
+            container(text(label).size(13).wrapping(text::Wrapping::None))
+                .width(Fill)
+                .clip(true),
+            text(count.to_string())
+                .size(12)
+                .wrapping(text::Wrapping::None)
+                .style(muted)
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -321,7 +360,7 @@ fn filter(
     .width(Fill)
     .padding([4, 8])
     .height(27)
-    .style(move |theme, state| theme::selection(theme, state, selected))
+    .style(move |theme, state| theme::animated_selection(theme, state, selected, opacity))
     .on_press(message)
     .into()
 }
@@ -329,18 +368,27 @@ fn filter(
 fn center(app: &App) -> Element<'_, Message> {
     let mut table = column![header(app)].width(Fill).height(Fill);
     if app.show_columns {
+        let chrome_opacity = app.chrome_opacity();
         let controls = Column::ALL.into_iter().fold(
-            row![text(app.strings.get("columns"))].spacing(4),
+            row![text(app.strings.get("columns")).size(12).style(muted)].spacing(4),
             |row, item| {
                 let selected = app.preferences.columns & item.mask() != 0;
                 row.push(
-                    button(text(app.strings.get(item.key())))
+                    button(text(app.strings.get(item.key())).size(12))
+                        .padding([4, 8])
                         .on_press(Message::ToggleColumn(item))
-                        .style(move |theme, state| theme::selection(theme, state, selected)),
+                        .style(move |theme, state| {
+                            theme::animated_selection(theme, state, selected, chrome_opacity)
+                        }),
                 )
             },
         );
-        table = table.push(controls);
+        table = table.push(
+            container(controls.align_y(Alignment::Center))
+                .padding([4, 10])
+                .width(Fill)
+                .style(theme::inset),
+        );
     }
     table = table.push(download_list(app));
     if app.menu.is_some() {
@@ -369,18 +417,31 @@ fn columns(app: &App) -> impl Iterator<Item = Column> + '_ {
 
 fn header(app: &App) -> Element<'_, Message> {
     let mut cells = row![
-        text(app.strings.get("name"))
-            .size(12)
-            .style(muted)
-            .width(Fill)
+        container(
+            text(app.strings.get("name"))
+                .size(12)
+                .wrapping(text::Wrapping::None)
+                .style(muted)
+        )
+        .padding(Padding {
+            right: 6.0,
+            ..Padding::ZERO
+        })
+        .clip(true)
+        .width(Fill)
     ]
-    .spacing(TABLE_CELL_GAP);
+    .spacing(TABLE_CELL_GAP)
+    .align_y(Alignment::Center);
     for column in columns(app) {
         cells = cells.push(
-            text(app.strings.get(column.key()))
-                .size(12)
-                .style(muted)
-                .width(column.width()),
+            container(
+                text(app.strings.get(column.key()))
+                    .size(12)
+                    .wrapping(text::Wrapping::None)
+                    .style(muted),
+            )
+            .clip(true)
+            .width(column.width()),
         );
     }
     let header = container(cells)
@@ -428,26 +489,31 @@ fn download_list(app: &App) -> Element<'_, Message> {
         rows = rows.push(match *item {
             ListRow::Download(id) => download_row(app, &q.downloads[&id]),
             ListRow::Package(id, count) => button(
-                row![
-                    icon(if q.collapsed.contains(&id) {
-                        '\u{e06f}'
-                    } else {
-                        '\u{e06d}'
-                    }),
-                    icon('\u{e129}'),
-                    text(q.packages.get(&id).map_or_else(
-                        || l.with(
-                            "package",
-                            [("id", id.0.to_string()), ("count", count.to_string())]
-                        ),
-                        |name| l.with(
-                            "package-named",
-                            [("name", name.clone()), ("count", count.to_string())]
-                        )
-                    )),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
+                container(
+                    row![
+                        icon(if q.collapsed.contains(&id) {
+                            '\u{e06f}'
+                        } else {
+                            '\u{e06d}'
+                        }),
+                        icon('\u{e129}'),
+                        text(q.packages.get(&id).map_or_else(
+                            || l.with(
+                                "package",
+                                [("id", id.0.to_string()), ("count", count.to_string())]
+                            ),
+                            |name| l.with(
+                                "package-named",
+                                [("name", name.clone()), ("count", count.to_string())]
+                            )
+                        ))
+                        .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .clip(true)
+                .width(Fill),
             )
             .on_press(Message::Package(id))
             .style(theme::selection_plain)
@@ -480,6 +546,8 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
     let upload = q.upload_speed(id);
     let name = queue::display_name(download);
     let selected = app.selection.contains(&id);
+    let is_hovered = app.hovered == Some(id);
+    let hover_opacity = if is_hovered { app.hover_opacity() } else { 1.0 };
     let mut cells = row![
         container(
             row![
@@ -487,8 +555,14 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
                 text(name.clone()).wrapping(text::Wrapping::None),
             ]
             .align_y(Alignment::Center)
-            .spacing(7)
+            .spacing(6)
         )
+        .padding(Padding {
+            right: 6.0,
+            ..Padding::ZERO
+        })
+        .height(Fill)
+        .align_y(Alignment::Center)
         .clip(true)
         .width(Fill)
     ]
@@ -501,6 +575,8 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
                     .total_bytes
                     .map_or_else(|| l.get("unknown"), |bytes| size(l, bytes)),
             )
+            .size(12)
+            .wrapping(text::Wrapping::None)
             .into(),
             Column::Progress => {
                 let value = if status == Status::Completed {
@@ -523,38 +599,53 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
                         .length(Fill)
                         .girth(5)
                         .style(move |theme| theme::progress(theme, status)),
-                    text(label).size(12)
+                    text(label).size(12).wrapping(text::Wrapping::None)
                 ]
                 .align_y(Alignment::Center)
-                .spacing(7)
+                .spacing(6)
                 .into()
             }
-            Column::Speed => text(if speed > 0 && upload > 0 {
-                format!("↓ {} · ↑ {}", rate(l, speed), rate(l, upload))
-            } else if upload > 0 {
-                format!("↑ {}", rate(l, upload))
-            } else if speed > 0 {
-                rate(l, speed)
-            } else {
-                l.get("unknown")
-            })
-            .into(),
+            Column::Speed => {
+                let both = speed > 0 && upload > 0;
+                let label = if both {
+                    format!("↓ {} ↑ {}", rate(l, speed), rate(l, upload))
+                } else if upload > 0 {
+                    format!("↑ {}", rate(l, upload))
+                } else if speed > 0 {
+                    rate(l, speed)
+                } else {
+                    l.get("unknown")
+                };
+                text(label)
+                    .size(if both { 11 } else { 12 })
+                    .wrapping(text::Wrapping::None)
+                    .into()
+            }
             Column::Eta => text(
                 q.eta_secs(id)
                     .map_or_else(|| l.get("unknown"), |secs| duration(l, secs)),
             )
+            .size(12)
+            .wrapping(text::Wrapping::None)
             .into(),
             Column::Status => text(l.get(status_key(q, download)))
                 .size(12)
+                .wrapping(text::Wrapping::None)
                 .style(move |theme| text::Style {
                     color: Some(theme::status_color(theme, status)),
                 })
                 .into(),
         };
-        cells = cells.push(container(content).width(column.width()).clip(true));
+        cells = cells.push(
+            container(content)
+                .width(column.width())
+                .height(Fill)
+                .align_y(Alignment::Center)
+                .clip(true),
+        );
     }
     let row_button = button(cells)
-        .style(move |theme, state| theme::selection(theme, state, selected))
+        .style(move |theme, state| theme::row_surface(theme, state, selected, hover_opacity))
         .width(Fill)
         .height(ROW_HEIGHT)
         .padding(Padding {
@@ -577,7 +668,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
         tooltip::Position::FollowCursor,
     )
     .delay(std::time::Duration::from_millis(550));
-    let pause = if status == Status::WaitingUser {
+    let primary = if status == Status::WaitingUser {
         icon_button(
             '\u{e102}',
             l.get("open-verification"),
@@ -589,18 +680,36 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             l.get("pause"),
             Message::SingleAction(id, Action::TogglePause),
         )
-    } else if crate::actions::can_resume(status) {
+    } else if crate::actions::can_resume_download(download) {
         icon_button(
             '\u{e13c}',
-            l.get("resume"),
+            l.get(if status == Status::Completed {
+                "resume-seeding"
+            } else {
+                "resume"
+            }),
             Message::SingleAction(id, Action::TogglePause),
         )
     } else {
         space::horizontal().width(ROW_ACTION_WIDTH).into()
     };
-    let controls: Element<'_, Message> = if selected || app.hovered == Some(id) {
+    let stop = if crate::actions::can_stop(status) {
+        icon_control(
+            stop_icon(10.0),
+            l.get(if status == Status::Seeding {
+                "stop-seeding"
+            } else {
+                "stop"
+            }),
+            Message::SingleAction(id, Action::Stop),
+        )
+    } else {
+        space::horizontal().width(ROW_ACTION_WIDTH).into()
+    };
+    let controls: Element<'_, Message> = if selected || is_hovered {
         row![
-            pause,
+            primary,
+            stop,
             icon_button(
                 '\u{e247}',
                 l.get("open-folder"),
@@ -898,7 +1007,8 @@ fn torrent_files_view(
                     size(l, file.downloaded_bytes),
                     size(l, file.length)
                 ))
-                .size(12),
+                .size(12)
+                .wrapping(text::Wrapping::None),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
@@ -926,16 +1036,31 @@ fn torrent_peers_view(l: &Strings, details: &TorrentDetailsSnapshot) -> Element<
         };
         rows = rows.push(
             row![
-                text(peer.address.clone()).width(180).size(12),
-                text(client).width(Fill).size(12),
-                text(transport).width(54).size(12),
-                text(l.get(state_key)).width(100).size(12),
+                container(
+                    text(peer.address.clone())
+                        .size(12)
+                        .wrapping(text::Wrapping::None)
+                )
+                .width(170)
+                .clip(true),
+                container(text(client).size(12).wrapping(text::Wrapping::None))
+                    .width(Fill)
+                    .clip(true),
+                text(transport)
+                    .width(50)
+                    .size(12)
+                    .wrapping(text::Wrapping::None),
+                text(l.get(state_key))
+                    .width(100)
+                    .size(12)
+                    .wrapping(text::Wrapping::None),
                 text(format!(
-                    "↓ {} · ↑ {}",
+                    "↓ {} ↑ {}",
                     rate(l, peer.download_speed_bps),
                     rate(l, peer.upload_speed_bps)
                 ))
-                .size(12),
+                .size(12)
+                .wrapping(text::Wrapping::None),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
@@ -957,9 +1082,21 @@ fn torrent_trackers_view(
         };
         rows = rows.push(
             row![
-                text(tracker.url.clone()).width(Fill).size(12),
-                text(tracker.protocol.clone()).width(70).size(12),
-                text(l.get(status_key)).width(130).size(12),
+                container(
+                    text(tracker.url.clone())
+                        .size(12)
+                        .wrapping(text::Wrapping::None)
+                )
+                .width(Fill)
+                .clip(true),
+                text(tracker.protocol.clone())
+                    .width(64)
+                    .size(12)
+                    .wrapping(text::Wrapping::None),
+                text(l.get(status_key))
+                    .width(126)
+                    .size(12)
+                    .wrapping(text::Wrapping::None),
             ]
             .align_y(Alignment::Center)
             .spacing(8),
@@ -1024,11 +1161,18 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     );
     let mut status = row![
         icon('\u{e042}').size(14).style(muted),
-        text(l.with("download-rate", [("speed", rate(l, q.total_speed()))])).size(12),
+        text(l.with("download-rate", [("speed", rate(l, q.total_speed()))]))
+            .size(12)
+            .wrapping(text::Wrapping::None),
         icon('\u{e04a}').size(14).style(muted),
-        text(l.with("upload-rate", [("speed", rate(l, q.total_upload_speed()))])).size(12),
+        text(l.with("upload-rate", [("speed", rate(l, q.total_upload_speed()))]))
+            .size(12)
+            .wrapping(text::Wrapping::None),
         rule::vertical(1).style(theme::separator),
-        text(speed).size(12).style(muted),
+        text(speed)
+            .size(12)
+            .wrapping(text::Wrapping::None)
+            .style(muted),
         text(l.with(
             "active-limit",
             [
@@ -1037,6 +1181,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             ]
         ))
         .size(12)
+        .wrapping(text::Wrapping::None)
         .style(muted),
     ]
     .align_y(Alignment::Center)
@@ -1046,6 +1191,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         status = status.push(
             text(l.with("dht-nodes", [("count", nodes.to_string())]))
                 .size(12)
+                .wrapping(text::Wrapping::None)
                 .style(muted),
         );
     }
@@ -1053,6 +1199,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         status = status.push(
             text(l.get("schedule-paused-indicator"))
                 .size(12)
+                .wrapping(text::Wrapping::None)
                 .style(muted),
         );
     } else if let Some(sched_bps) = q.schedule.speed_limit_bytes_per_sec {
@@ -1061,14 +1208,20 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         } else {
             l.with("schedule-limit-indicator", [("speed", rate(l, sched_bps))])
         };
-        status = status.push(text(label).size(12).style(muted));
+        status = status.push(
+            text(label)
+                .size(12)
+                .wrapping(text::Wrapping::None)
+                .style(muted),
+        );
     }
     status = status
         .push(space::horizontal().width(Fill))
         .push(icon('\u{e0ed}').size(14).style(muted))
-        .push(text(disk).size(12));
+        .push(text(disk).size(12).wrapping(text::Wrapping::None));
     container(status)
         .width(Fill)
+        .clip(true)
         .padding([8, 12])
         .style(theme::panel)
         .into()
@@ -1800,12 +1953,26 @@ fn score_reason(reason: ScoreReason) -> &'static str {
 fn context_menu(app: &App) -> Element<'_, Message> {
     use ruscello_core::Priority;
     let l = &app.strings;
+    let chrome_opacity = app.chrome_opacity();
     let selected_torrent = app.selection.iter().any(|id| {
         app.queue
             .downloads
             .get(id)
             .is_some_and(crate::actions::can_recheck)
     });
+    let selected_stoppable = app.selection.iter().any(|id| {
+        app.queue
+            .downloads
+            .get(id)
+            .is_some_and(|download| crate::actions::can_stop(download.status()))
+    });
+    let selected_only_seeding = !app.selection.is_empty()
+        && app.selection.iter().all(|id| {
+            app.queue
+                .downloads
+                .get(id)
+                .is_some_and(|download| download.status() == Status::Seeding)
+        });
     let mut actions = row![].spacing(4);
     if app.selection.iter().any(|id| {
         app.queue
@@ -1818,8 +1985,52 @@ fn context_menu(app: &App) -> Element<'_, Message> {
                 .on_press(Message::RowAction(Action::Verify)),
         );
     }
+    let selected_only_completed_torrent = !app.selection.is_empty()
+        && app.selection.iter().all(|id| {
+            app.queue.downloads.get(id).is_some_and(|download| {
+                download.status() == Status::Completed
+                    && matches!(download.source, Source::Torrent(_))
+            })
+        });
+    let selected_only_resumable = !app.selection.is_empty()
+        && app.selection.iter().all(|id| {
+            app.queue
+                .downloads
+                .get(id)
+                .is_some_and(crate::actions::can_resume_download)
+        });
+    let selected_only_pausable = !app.selection.is_empty()
+        && app.selection.iter().all(|id| {
+            app.queue
+                .downloads
+                .get(id)
+                .is_some_and(|download| crate::actions::can_pause(download.status()))
+        });
+    let pause_resume_key = if selected_only_completed_torrent {
+        "resume-seeding"
+    } else if selected_only_resumable {
+        "resume"
+    } else if selected_only_pausable {
+        "pause"
+    } else {
+        "pause-resume"
+    };
+    actions = actions.push(
+        theme::action(text(l.get(pause_resume_key)).size(12))
+            .on_press(Message::RowAction(Action::TogglePause)),
+    );
+    if selected_stoppable {
+        let stop_key = if selected_only_seeding {
+            "stop-seeding"
+        } else {
+            "stop"
+        };
+        actions = actions.push(
+            theme::action(text(l.get(stop_key)).size(12))
+                .on_press(Message::RowAction(Action::Stop)),
+        );
+    }
     for (key, action) in [
-        ("pause-resume", Action::TogglePause),
         ("open-file", Action::OpenFile),
         ("open-folder", Action::OpenFolder),
         ("copy-link", Action::CopyLink),
@@ -1847,21 +2058,32 @@ fn context_menu(app: &App) -> Element<'_, Message> {
     }
     container(theme::horizontal(actions).width(Fill))
         .width(Fill)
-        .style(theme::panel)
+        .style(move |theme| theme::animated_panel(theme, None, chrome_opacity))
         .padding(6)
         .into()
 }
 
 fn remove_dialog(app: &App, count: usize, delete: bool) -> Element<'_, Message> {
     let l = &app.strings;
+    let chrome_opacity = app.chrome_opacity();
     container(
         container(
             column![
-                text(l.with("confirm-remove", [("count", count.to_string())])).size(20),
+                row![
+                    icon('\u{e077}')
+                        .size(22)
+                        .style(|theme: &Theme| text::Style {
+                            color: Some(theme.palette().danger),
+                        }),
+                    text(l.with("confirm-remove", [("count", count.to_string())])).size(20),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
                 theme::check(delete)
                     .label(l.get("delete-files"))
                     .on_toggle(Message::DeleteFiles),
                 row![
+                    space::horizontal().width(Fill),
                     theme::action(text(l.get("back"))).on_press(Message::CancelRemove),
                     theme::action(text(l.get("remove")))
                         .on_press(Message::ConfirmRemove)
@@ -1869,10 +2091,13 @@ fn remove_dialog(app: &App, count: usize, delete: bool) -> Element<'_, Message> 
                 ]
                 .spacing(8),
             ]
-            .spacing(12),
+            .spacing(14),
         )
-        .style(theme::panel)
-        .padding(20),
+        .max_width(440)
+        .style(move |theme| {
+            theme::animated_panel(theme, Some(theme.palette().danger), chrome_opacity)
+        })
+        .padding(24),
     )
     .center(Fill)
     .into()

@@ -188,11 +188,70 @@ fn reconcile(
         }
         changes.push(Change::FinishCheckpointRecovery);
     }
+    prune_dead_recovery_dirs(&roots, &snapshot);
     tracing::debug!(
         updates = changes.len(),
         "Reconciled the queue with download checkpoints"
     );
     Ok((snapshot, changes))
+}
+
+fn prune_dead_recovery_dirs(roots: &BTreeSet<PathBuf>, snapshot: &Snapshot) {
+    let retain_work: BTreeSet<u64> = snapshot
+        .queue
+        .iter()
+        .filter(|entry| !matches!(entry.download.status(), Status::Completed | Status::Stopped))
+        .map(|entry| entry.download.id.0)
+        .collect();
+    for root in roots {
+        let recovery_root = root.join(RECOVERY_FOLDER);
+        let Ok(children) = fs::read_dir(&recovery_root) else {
+            continue;
+        };
+        for child in children.flatten() {
+            if !child.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let path = child.path();
+            if let Ok(entries) = fs::read_dir(&path) {
+                for sub in entries.flatten() {
+                    if sub.file_type().is_ok_and(|kind| kind.is_dir())
+                        && sub.file_name().to_string_lossy().starts_with(".ready-")
+                    {
+                        let _ = fs::remove_dir(sub.path());
+                    }
+                }
+            }
+            let has_recovery_artifacts = fs::read_dir(&path).ok().is_some_and(|mut iter| {
+                iter.any(|entry| {
+                    let Ok(entry) = entry else {
+                        return true;
+                    };
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    name.starts_with(".ready-")
+                        || name.starts_with(".publish-")
+                        || name.ends_with(".rscpart")
+                        || name.ends_with(".rscpart.ctl")
+                })
+            });
+            if has_recovery_artifacts {
+                continue;
+            }
+            let is_empty = fs::read_dir(&path)
+                .ok()
+                .is_some_and(|mut iter| iter.next().is_none());
+            let dead_job = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<u64>().ok())
+                .is_some_and(|id| !retain_work.contains(&id));
+            if is_empty || dead_job {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
+        let _ = fs::remove_dir(&recovery_root);
+    }
 }
 
 fn in_recovery_root(directory: &Path, roots: &BTreeSet<PathBuf>) -> bool {

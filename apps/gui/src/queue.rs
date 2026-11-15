@@ -34,17 +34,19 @@ pub(crate) enum StatusFilter {
     Active,
     Queued,
     Paused,
+    Stopped,
     Completed,
     Failed,
     Seeding,
 }
 
 impl StatusFilter {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::All,
         Self::Active,
         Self::Queued,
         Self::Paused,
+        Self::Stopped,
         Self::Completed,
         Self::Failed,
         Self::Seeding,
@@ -56,6 +58,7 @@ impl StatusFilter {
             Self::Active => "active",
             Self::Queued => "queued",
             Self::Paused => "paused",
+            Self::Stopped => "stopped",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Seeding => "seeding",
@@ -68,6 +71,7 @@ impl StatusFilter {
             Self::Active => status.is_active() || status == Status::WaitingUser,
             Self::Queued => status == Status::Queued,
             Self::Paused => status == Status::Paused,
+            Self::Stopped => status == Status::Stopped,
             Self::Completed => status == Status::Completed,
             Self::Failed => matches!(status, Status::Failed { .. }),
             Self::Seeding => status == Status::Seeding,

@@ -104,6 +104,7 @@ pub(crate) fn status(status: Status) -> &'static str {
         Status::WaitingUser => "waiting-user",
         Status::Downloading => "downloading",
         Status::Paused => "paused",
+        Status::Stopped => "stopped",
         Status::Seeding => "seeding",
         Status::PostProcessing => "post-processing",
         Status::Completed => "completed",

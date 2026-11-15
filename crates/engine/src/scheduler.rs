@@ -140,12 +140,14 @@ struct ActiveTorrent {
 #[derive(Clone, Copy)]
 enum Stop {
     Pause,
+    Halt,
     Cancel { delete_files: bool },
 }
 
 #[derive(Clone, Copy)]
 enum TorrentStopKind {
     Pause,
+    Halt,
     Cancel { delete_files: bool },
     CompleteSeeding,
 }
@@ -479,6 +481,7 @@ impl Scheduler {
                 let _ = reply.send(self.add(groups).await);
             }
             Command::Update(Update::Pause(id), reply) => self.stop(id, Stop::Pause, reply).await,
+            Command::Update(Update::Stop(id), reply) => self.stop(id, Stop::Halt, reply).await,
             Command::Update(Update::Cancel(id, delete_files), reply) => {
                 self.stop(id, Stop::Cancel { delete_files }, reply).await;
             }
@@ -972,7 +975,7 @@ impl Scheduler {
                 self.maybe_spawn_watch_scan(true);
                 Ok(())
             }
-            Update::Pause(_) | Update::Cancel(_, _) => Err(EngineError::Stopped),
+            Update::Pause(_) | Update::Stop(_) | Update::Cancel(_, _) => Err(EngineError::Stopped),
         }
     }
 
@@ -1030,6 +1033,16 @@ impl Scheduler {
             self.triggered_archive_groups.remove(&info.group_key);
         }
         self.cancel_completion_countdown();
+        if entry.download.status() == Status::Completed
+            && let Source::Torrent(torrent_source) = entry.download.source.clone()
+        {
+            let manager = self.ensure_torrent_manager().await?;
+            entry.download.transition(Status::Resolving)?;
+            self.save(entry.clone()).await?;
+            self.spawn_torrent_task(manager, entry, torrent_source, false)
+                .await;
+            return Ok(());
+        }
         entry.download.transition(Status::Queued)?;
         self.save(entry).await
     }
@@ -1474,8 +1487,15 @@ impl Scheduler {
             return;
         }
         if let Some(active) = self.active_torrents.get_mut(&id) {
+            let is_seeding = active.is_seeding
+                || self
+                    .queue
+                    .get(&id)
+                    .is_some_and(|e| e.download.status() == Status::Seeding);
             let kind = match stop {
                 Stop::Pause => TorrentStopKind::Pause,
+                Stop::Halt if is_seeding => TorrentStopKind::CompleteSeeding,
+                Stop::Halt => TorrentStopKind::Halt,
                 Stop::Cancel { delete_files } => TorrentStopKind::Cancel { delete_files },
             };
             active.cancellation.cancel();
@@ -1501,6 +1521,39 @@ impl Scheduler {
         match stop {
             Stop::Pause => {
                 entry.download.transition(Status::Paused)?;
+                self.save(entry).await
+            }
+            Stop::Halt => {
+                self.ftp_credentials.remove(&id);
+                self.active_torrents.remove(&id);
+                if entry.download.status() == Status::Completed {
+                    return Ok(());
+                }
+                if entry.download.status() == Status::Seeding {
+                    if is_torrent && let Some(manager) = &self.torrent_manager {
+                        match manager.remove(id, false).await {
+                            Ok(()) | Err(TorrentError::NotFound) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    entry.download.transition(Status::Completed)?;
+                    self.save(entry).await?;
+                    self.completed_since_reset = true;
+                    return Ok(());
+                }
+                if is_torrent {
+                    if let Some(manager) = &self.torrent_manager {
+                        match manager.remove(id, false).await {
+                            Ok(()) | Err(TorrentError::NotFound) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                } else {
+                    let work = entry.clone();
+                    tokio::task::spawn_blocking(move || transfer::discard_work(&work)).await??;
+                    entry.download.downloaded_bytes = 0;
+                }
+                entry.download.transition(Status::Stopped)?;
                 self.save(entry).await
             }
             Stop::Cancel { delete_files } => {
@@ -1563,7 +1616,7 @@ impl Scheduler {
                     Ok(published) => {
                         complete_entry(&mut entry, published);
                         match stop {
-                            Stop::Pause => self.complete(entry).await,
+                            Stop::Pause | Stop::Halt => self.complete(entry).await,
                             Stop::Cancel { .. } => self.apply_stop(entry, stop).await,
                         }
                     }
@@ -1681,6 +1734,12 @@ impl Scheduler {
     ) -> Result<(), EngineError> {
         let id = entry.download.id;
         entry.download.transition(Status::Failed { reason })?;
+        if !matches!(entry.download.source, Source::Torrent(_)) {
+            let cleanup_entry = entry.clone();
+            let _ =
+                tokio::task::spawn_blocking(move || transfer::cleanup_empty_work(&cleanup_entry))
+                    .await;
+        }
         self.save(entry).await?;
         self.emit(EngineEvent::Log {
             id: Some(id),
@@ -1733,7 +1792,7 @@ impl Scheduler {
             .values()
             .filter(|e| {
                 matches!(e.download.source, Source::Torrent(_))
-                    && e.download.status() != Status::Completed
+                    && !matches!(e.download.status(), Status::Completed | Status::Stopped)
             })
             .map(|e| {
                 (
@@ -1779,7 +1838,7 @@ impl Scheduler {
                 .values()
                 .filter(|e| {
                     matches!(e.download.source, Source::Torrent(_))
-                        && e.download.status() != Status::Completed
+                        && !matches!(e.download.status(), Status::Completed | Status::Stopped)
                 })
                 .map(|e| {
                     (
@@ -1958,6 +2017,7 @@ impl Scheduler {
                 if let Some((kind, reply)) = pending_stop {
                     let res = match kind {
                         TorrentStopKind::Pause => self.apply_stop(entry, Stop::Pause).await,
+                        TorrentStopKind::Halt => self.apply_stop(entry, Stop::Halt).await,
                         TorrentStopKind::Cancel { delete_files } => {
                             self.apply_stop(entry, Stop::Cancel { delete_files }).await
                         }
@@ -1995,8 +2055,10 @@ impl Scheduler {
             let snap = manager.poll_progress(id).ok();
             let result = match kind {
                 TorrentStopKind::Pause => manager.pause(id).await,
+                TorrentStopKind::Halt | TorrentStopKind::CompleteSeeding => {
+                    manager.remove(id, false).await
+                }
                 TorrentStopKind::Cancel { delete_files } => manager.remove(id, delete_files).await,
-                TorrentStopKind::CompleteSeeding => manager.remove(id, false).await,
             };
             (id, snap, result)
         });
@@ -2057,6 +2119,7 @@ impl Scheduler {
         match result {
             Ok(()) | Err(TorrentError::NotFound) => match kind {
                 TorrentStopKind::Pause => self.apply_stop(entry, Stop::Pause).await,
+                TorrentStopKind::Halt => self.apply_stop(entry, Stop::Halt).await,
                 TorrentStopKind::Cancel { delete_files } => {
                     torrent_bridge::remove_cached_torrent(&self.torrent_data_dir, id.0).await;
                     if delete_files && let Some(path) = entry.download.completed_path.take() {

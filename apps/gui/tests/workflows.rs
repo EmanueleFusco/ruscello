@@ -1988,3 +1988,176 @@ fn render_quickstart_screenshots() -> anyhow::Result<()> {
         .matches_image(output.join("about.png"))?;
     Ok(())
 }
+
+#[tokio::test]
+async fn prevents_long_filename_and_simultaneous_speed_overlap_in_queue_rows() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    app.preferences.motion = false;
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+
+    let id = DownloadId(77);
+    let long_name = "cachyos-desktop-linux-260809.iso";
+    let mut torrent = Download::new(
+        id,
+        Source::Torrent(TorrentSource::Magnet(
+            "magnet:?xt=urn:btih:ca3dfd05c8d0012216581ded3a9c916c8a47c94e&dn=cachyos-desktop-linux-260809.iso&xl=3188850688&tr=udp%3A%2F%2Ffosstorrents.com%3A6969%2Fannounce".into(),
+        )),
+        temp.path().to_owned(),
+    );
+    torrent.filename = Some(long_name.into());
+    torrent.total_bytes = Some(3_188_850_688);
+    torrent.transition(Status::Downloading)?;
+    torrent.downloaded_bytes = 286_996_562;
+    app.queue.order.push(id);
+    app.queue.downloads.insert(id, torrent);
+    app.queue.rebuild();
+
+    apply(
+        &mut app,
+        Message::Event(EngineEvent::TorrentProgress(vec![TorrentRuntimeProgress {
+            id,
+            download_rate_bps: 26_424_115,
+            upload_rate_bps: 1_258_291,
+            uploaded_bytes: 4_194_304,
+            seed_ratio: 0.02,
+            seed_elapsed_secs: 10,
+            peers_connected: 12,
+            peers_total: 24,
+            seeders_connected: 9,
+            eta_secs: Some(120),
+            piece_count: 100,
+        }])),
+    )
+    .await;
+    apply(&mut app, Message::Select(id)).await;
+
+    for viewport in [Size::new(950.0, 490.0), Size::new(1120.0, 720.0)] {
+        let mut ui = simulator_at(&app, viewport);
+        let name_bounds = ui
+            .find(long_name)
+            .ok()
+            .and_then(|element| element.visible_bounds())
+            .ok_or_else(|| anyhow::anyhow!("missing visible filename bounds"))?;
+        let size_bounds = ui
+            .find("3.0 GiB")
+            .ok()
+            .and_then(|element| element.visible_bounds())
+            .ok_or_else(|| anyhow::anyhow!("missing visible size bounds"))?;
+        let speed_bounds = ui
+            .find("↓ 25.2 MiB/s ↑ 1.2 MiB/s")
+            .ok()
+            .and_then(|element| element.visible_bounds())
+            .ok_or_else(|| anyhow::anyhow!("missing visible simultaneous speed bounds"))?;
+        let eta_bounds = ui
+            .find("2 min")
+            .ok()
+            .and_then(|element| element.visible_bounds())
+            .ok_or_else(|| anyhow::anyhow!("missing visible eta bounds"))?;
+
+        assert!(
+            name_bounds.x + name_bounds.width <= size_bounds.x,
+            "filename overlaps Size column at {viewport:?}: {name_bounds:?} vs {size_bounds:?}"
+        );
+        assert!(
+            speed_bounds.height <= 22.0,
+            "simultaneous speed wrapped vertically at {viewport:?}: {speed_bounds:?}"
+        );
+        assert!(
+            speed_bounds.x + speed_bounds.width <= eta_bounds.x,
+            "speed overlaps ETA column at {viewport:?}: {speed_bounds:?} vs {eta_bounds:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stops_download_without_removing_it_and_exposes_seeding_stop_controls() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    app.preferences.check_updates = false;
+    app.preferences.motion = false;
+
+    let server = TestServer::start().await?;
+    let file = server.file(
+        FileSpec::random(21, 512 * 1024)
+            .filename("stoppable.bin")
+            .throttle_per_conn(64 * 1024),
+    );
+    let engine = EngineHandle::start(EngineOptions::new(
+        temp.path().join("queue.db"),
+        temp.path().join("downloads"),
+    ))
+    .await?;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
+
+    let mut req = ruscello_engine::AddDownload::new(Source::Http {
+        url: file.url().into(),
+    });
+    req.start_immediately = false;
+    let id = engine.add(req).await?;
+    apply(
+        &mut app,
+        Message::Snapshot(Some(Box::new(engine.snapshot().await?))),
+    )
+    .await;
+    apply(&mut app, Message::Select(id)).await;
+    apply(
+        &mut app,
+        Message::SingleAction(id, crate::actions::Action::Stop),
+    )
+    .await;
+
+    let snapshot = engine.snapshot().await?;
+    assert_eq!(snapshot.downloads.len(), 1);
+    assert_eq!(snapshot.downloads[0].status(), Status::Stopped);
+    apply(&mut app, Message::Snapshot(Some(Box::new(snapshot)))).await;
+
+    assert!(simulator(&app).find("Stopped").is_ok());
+    let _ = app.update(Message::Status(crate::queue::StatusFilter::Stopped));
+    assert!(simulator(&app).find("stoppable.bin").is_ok());
+    let _ = app.update(Message::Status(crate::queue::StatusFilter::All));
+    let _ = app.update(Message::Menu(id));
+    assert!(simulator(&app).find("Resume").is_ok());
+    assert!(simulator(&app).find("Stop").is_err());
+
+    engine.shutdown().await?;
+
+    // Verify seeding torrent Stop / Resume seeding labels in context menu.
+    let torrent_id = DownloadId(88);
+    let mut seeding = Download::new(
+        torrent_id,
+        Source::Torrent(TorrentSource::Magnet(
+            "magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567&dn=SeededISO".into(),
+        )),
+        temp.path().to_owned(),
+    );
+    seeding.filename = Some("SeededISO".into());
+    seeding.transition(Status::Resolving)?;
+    seeding.transition(Status::Downloading)?;
+    seeding.transition(Status::Seeding)?;
+    app.queue.order.push(torrent_id);
+    app.queue.downloads.insert(torrent_id, seeding);
+    app.queue.rebuild();
+
+    let _ = app.update(Message::Select(torrent_id));
+    let _ = app.update(Message::Menu(torrent_id));
+    assert!(simulator(&app).find("Stop seeding").is_ok());
+    if let Some(entry) = app.queue.downloads.get_mut(&torrent_id) {
+        entry.transition(Status::Completed)?;
+    }
+    app.queue.rebuild();
+    let _ = app.update(Message::Select(torrent_id));
+    let _ = app.update(Message::Menu(torrent_id));
+    assert!(simulator(&app).find("Resume seeding").is_ok());
+    Ok(())
+}

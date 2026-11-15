@@ -96,11 +96,11 @@ impl Column {
 
     pub(crate) fn width(self) -> u32 {
         match self {
-            Self::Size => 70,
-            Self::Progress => 102,
-            Self::Speed => 78,
-            Self::Eta => 85,
-            Self::Status => 110,
+            Self::Size => 60,
+            Self::Progress => 86,
+            Self::Speed => 114,
+            Self::Eta => 60,
+            Self::Status => 106,
         }
     }
 
@@ -350,6 +350,9 @@ pub(crate) enum AutomationMsg {
 pub(crate) struct App {
     selection_motion: Animation<bool>,
     details_motion: Animation<bool>,
+    filter_motion: Animation<bool>,
+    hover_motion: Animation<bool>,
+    chrome_motion: Animation<bool>,
     frame: Instant,
     window: window::Id,
     engine: Option<EngineHandle>,
@@ -475,6 +478,9 @@ impl App {
         let app = Self {
             selection_motion: view_animation(true),
             details_motion: view_animation(preferences.details),
+            filter_motion: view_animation(true),
+            hover_motion: view_animation(false),
+            chrome_motion: view_animation(true),
             frame: Instant::now(),
             window,
             engine: None,
@@ -620,7 +626,10 @@ impl App {
             },
             if self.preferences.motion
                 && (self.selection_motion.is_animating(self.frame)
-                    || self.details_motion.is_animating(self.frame))
+                    || self.details_motion.is_animating(self.frame)
+                    || self.filter_motion.is_animating(self.frame)
+                    || self.hover_motion.is_animating(self.frame)
+                    || self.chrome_motion.is_animating(self.frame))
             {
                 iced::time::every(Duration::from_millis(16)).map(Message::AnimationFrame)
             } else {
@@ -643,14 +652,59 @@ impl App {
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         let selection = (self.detail_tab, self.page);
+        let filters = (self.queue.status, self.queue.file_type, self.queue.category);
+        let chrome = (
+            self.show_columns,
+            self.menu,
+            self.banner,
+            self.settings,
+            self.add.is_some(),
+            self.add.as_ref().is_some_and(|dialog| dialog.advanced),
+            self.remove.is_some(),
+        );
+        let hovered = self.hovered;
         let details = self.preferences.details;
         let task = self.handle(message);
+        let mut advance = false;
         if selection != (self.detail_tab, self.page) {
+            advance = true;
             self.frame = self.frame.max(Instant::now());
             self.selection_motion = view_animation(false).go(true, self.frame);
         }
+        if filters != (self.queue.status, self.queue.file_type, self.queue.category) {
+            if !advance {
+                self.frame = self.frame.max(Instant::now());
+                advance = true;
+            }
+            self.filter_motion = view_animation(false).go(true, self.frame);
+        }
+        let next_chrome = (
+            self.show_columns,
+            self.menu,
+            self.banner,
+            self.settings,
+            self.add.is_some(),
+            self.add.as_ref().is_some_and(|dialog| dialog.advanced),
+            self.remove.is_some(),
+        );
+        if chrome != next_chrome {
+            if !advance {
+                self.frame = self.frame.max(Instant::now());
+                advance = true;
+            }
+            self.chrome_motion = view_animation(false).go(true, self.frame);
+        }
+        if hovered != self.hovered {
+            if !advance {
+                self.frame = self.frame.max(Instant::now());
+                advance = true;
+            }
+            self.hover_motion.go_mut(self.hovered.is_some(), self.frame);
+        }
         if details != self.preferences.details {
-            self.frame = self.frame.max(Instant::now());
+            if !advance {
+                self.frame = self.frame.max(Instant::now());
+            }
             self.details_motion
                 .go_mut(self.preferences.details, self.frame);
         }
@@ -662,6 +716,32 @@ impl App {
             self.selection_motion.interpolate(0.65, 1.0, self.frame)
         } else {
             1.0
+        }
+    }
+
+    pub(crate) fn filter_opacity(&self) -> f32 {
+        if self.preferences.motion {
+            self.filter_motion.interpolate(0.65, 1.0, self.frame)
+        } else {
+            1.0
+        }
+    }
+
+    pub(crate) fn chrome_opacity(&self) -> f32 {
+        if self.preferences.motion {
+            self.chrome_motion.interpolate(0.35, 1.0, self.frame)
+        } else {
+            1.0
+        }
+    }
+
+    pub(crate) fn hover_opacity(&self) -> f32 {
+        if self.preferences.motion {
+            self.hover_motion.interpolate(0.45, 1.0, self.frame)
+        } else if self.hovered.is_some() {
+            1.0
+        } else {
+            0.0
         }
     }
 
@@ -693,6 +773,9 @@ impl App {
                 self.preferences.motion = enabled;
                 self.selection_motion = view_animation(true);
                 self.details_motion = view_animation(self.preferences.details);
+                self.filter_motion = view_animation(true);
+                self.hover_motion = view_animation(self.hovered.is_some());
+                self.chrome_motion = view_animation(true);
                 return self.save_preferences();
             }
             Message::Started(engine) => {
@@ -1570,7 +1653,9 @@ impl App {
                         .filter_map(|download| {
                             if pause && actions::can_pause(download.status()) {
                                 Some(Command::Pause(download.id))
-                            } else if !pause && download.status() == Status::Paused {
+                            } else if !pause
+                                && matches!(download.status(), Status::Paused | Status::Stopped)
+                            {
                                 Some(Command::Resume(download.id))
                             } else {
                                 None
@@ -2830,12 +2915,20 @@ impl App {
                         .filter_map(|download| {
                             if actions::can_pause(download.status()) {
                                 Some(Command::Pause(download.id))
-                            } else if actions::can_resume(download.status()) {
+                            } else if actions::can_resume_download(download) {
                                 Some(Command::Resume(download.id))
                             } else {
                                 None
                             }
                         })
+                        .collect(),
+                );
+            }
+            Action::Stop => {
+                return self.command(
+                    selected
+                        .filter(|download| actions::can_stop(download.status()))
+                        .map(|download| Command::Stop(download.id))
                         .collect(),
                 );
             }
@@ -2917,7 +3010,7 @@ impl App {
         self.queue
             .downloads
             .values()
-            .any(|download| download.status() == Status::Paused)
+            .any(|download| matches!(download.status(), Status::Paused | Status::Stopped))
     }
 
     pub(crate) fn can_install_update(&self) -> bool {

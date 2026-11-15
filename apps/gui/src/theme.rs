@@ -100,6 +100,34 @@ pub(crate) fn panel(theme: &Theme) -> container::Style {
         .border(outline(colors.line))
 }
 
+pub(crate) fn animated_panel(
+    theme: &Theme,
+    accent: Option<Color>,
+    opacity: f32,
+) -> container::Style {
+    let colors = surfaces(theme);
+    let border = accent.unwrap_or(colors.line).scale_alpha(opacity);
+    container::Style::default()
+        .background(colors.panel.scale_alpha(opacity.max(0.85)))
+        .color(theme.palette().text)
+        .border(outline(border))
+}
+
+pub(crate) fn row_surface(
+    theme: &Theme,
+    state: button::Status,
+    selected: bool,
+    hovered_opacity: f32,
+) -> button::Style {
+    let mut style = selection(theme, state, selected);
+    if !selected && matches!(state, button::Status::Hovered | button::Status::Pressed) {
+        style.background = style
+            .background
+            .map(|background| background.scale_alpha(hovered_opacity));
+    }
+    style
+}
+
 pub(crate) fn inset(theme: &Theme) -> container::Style {
     container::Style::default()
         .background(surfaces(theme).inset)
@@ -337,7 +365,7 @@ pub(crate) fn status_color(theme: &Theme, status: ruscello_core::Status) -> Colo
         Status::Completed => palette.success,
         Status::WaitingUser => palette.warning,
         Status::Failed { .. } => palette.danger,
-        Status::Paused | Status::Queued => surfaces(theme).muted,
+        Status::Paused | Status::Stopped | Status::Queued => surfaces(theme).muted,
         _ => palette.primary,
     }
 }

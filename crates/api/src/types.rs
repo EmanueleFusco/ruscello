@@ -236,6 +236,7 @@ pub(crate) fn status_name(status: Status) -> &'static str {
         Status::WaitingUser => "WaitingUser",
         Status::Downloading => "Downloading",
         Status::Paused => "Paused",
+        Status::Stopped => "Stopped",
         Status::Seeding => "Seeding",
         Status::PostProcessing => "PostProcessing",
         Status::Completed => "Completed",
@@ -323,7 +324,10 @@ pub(crate) fn can_pause(status: Status) -> bool {
 }
 
 pub(crate) fn can_resume(status: Status) -> bool {
-    matches!(status, Status::Paused | Status::Failed { .. })
+    matches!(
+        status,
+        Status::Paused | Status::Stopped | Status::Failed { .. }
+    )
 }
 
 pub(crate) fn map_candidate(candidate: Candidate) -> AnalyzedCandidateDto {

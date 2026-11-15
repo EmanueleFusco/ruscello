@@ -424,3 +424,129 @@ async fn stops_retrying_an_interrupted_transfer_after_the_configured_budget() ->
     engine.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn stopping_a_download_halts_it_in_queue_cleans_recovery_and_allows_resume() -> TestResult {
+    timeout(Duration::from_secs(20), run_stop_and_resume_test()).await?
+}
+
+async fn run_stop_and_resume_test() -> TestResult {
+    let server = TestServer::start().await?;
+    let slow = server.file(
+        FileSpec::random(8, SIZE)
+            .filename("stopped.bin")
+            .throttle_per_conn(64 * 1024),
+    );
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("downloads");
+    let options = EngineOptions::new(temp.path().join("ruscello.db"), output.clone());
+    let engine = EngineHandle::start(options).await?;
+    let mut events = engine.subscribe();
+    let id = engine.add(add(slow.url())).await?;
+
+    loop {
+        if matches!(events.recv().await?, EngineEvent::Progress(updates)
+            if updates.iter().any(|update| update.id == id && update.progress.completed > 0))
+        {
+            break;
+        }
+    }
+
+    assert!(output.join(RECOVERY_FOLDER).join(id.0.to_string()).exists());
+    engine.stop(id).await?;
+
+    loop {
+        if matches!(
+            events.recv().await?,
+            EngineEvent::StatusChanged {
+                id: changed,
+                status: Status::Stopped,
+            } if changed == id
+        ) {
+            break;
+        }
+    }
+
+    let snapshot = engine.snapshot().await?;
+    let stopped = snapshot
+        .downloads
+        .iter()
+        .find(|entry| entry.id == id)
+        .ok_or("stopped download missing from queue")?;
+    assert_eq!(stopped.status(), Status::Stopped);
+    assert_eq!(stopped.downloaded_bytes, 0);
+    assert!(
+        !output.join(RECOVERY_FOLDER).exists(),
+        "stopping a non-torrent download should prune its empty recovery folder"
+    );
+
+    engine.resume(id).await?;
+    loop {
+        if matches!(
+            events.recv().await?,
+            EngineEvent::StatusChanged {
+                id: changed,
+                status: Status::Completed,
+            } if changed == id
+        ) {
+            break;
+        }
+    }
+
+    let snapshot = engine.snapshot().await?;
+    let completed = snapshot
+        .downloads
+        .iter()
+        .find(|entry| entry.id == id)
+        .ok_or("completed download missing from queue")?;
+    let completed_path = completed
+        .completed_path
+        .as_ref()
+        .ok_or("missing completed file path")?;
+    assert_eq!(fs::read(completed_path)?, slow.payload().bytes(0..SIZE));
+    engine.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_downloads_and_startup_reconcile_prune_empty_incoming_folders() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("downloads");
+    let stale_dir = output
+        .join(RECOVERY_FOLDER)
+        .join("9999")
+        .join(".ready-9999");
+    fs::create_dir_all(&stale_dir)?;
+
+    let mut options = EngineOptions::new(temp.path().join("ruscello.db"), output.clone());
+    options.limits.retries = 0;
+    let engine = EngineHandle::start(options).await?;
+    assert!(
+        !output.join(RECOVERY_FOLDER).exists(),
+        "startup reconcile should prune orphan empty recovery directories"
+    );
+
+    let mut events = engine.subscribe();
+    let id = engine.add(add("http://127.0.0.1:1/missing.bin")).await?;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if matches!(
+                events.recv().await?,
+                EngineEvent::StatusChanged {
+                    id: changed,
+                    status: Status::Failed { .. },
+                } if changed == id
+            ) {
+                return Ok::<_, broadcast::error::RecvError>(());
+            }
+        }
+    })
+    .await??;
+
+    assert!(
+        !output.join(RECOVERY_FOLDER).exists(),
+        "failing before writing checkpoints should not leave empty .ruscello-incoming directories"
+    );
+    engine.shutdown().await?;
+    Ok(())
+}

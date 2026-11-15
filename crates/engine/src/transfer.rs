@@ -661,7 +661,9 @@ pub(super) fn discard_work(entry: &QueueEntry) -> io::Result<()> {
             .parent()
             .is_some_and(|parent| parent.ends_with(RECOVERY_FOLDER))
     {
-        return ignore_missing(fs::remove_dir_all(directory));
+        let result = ignore_missing(fs::remove_dir_all(directory));
+        prune_empty_recovery_root(directory);
+        return result;
     }
     ignore_missing(fs::remove_dir_all(ready_directory(entry)))?;
     ignore_missing(fs::remove_file(intent_path(entry)))?;
@@ -688,6 +690,47 @@ pub(super) fn discard_work(entry: &QueueEntry) -> io::Result<()> {
 
 pub(super) fn discard_output(path: &Path) -> io::Result<()> {
     ignore_missing(fs::remove_file(path))
+}
+
+/// Removes empty staging/working directories created for a failed attempt without touching
+/// any existing partial checkpoints (`.rscpart`/`.rscpart.ctl`) or completed staged files.
+pub(super) fn cleanup_empty_work(entry: &QueueEntry) -> io::Result<()> {
+    let ready = ready_directory(entry);
+    let _ = fs::remove_dir(&ready);
+    let directory = &entry.working_directory;
+    let id = entry.download.id.0.to_string();
+    if directory.file_name() != Some(OsStr::new(&id))
+        || !directory
+            .parent()
+            .is_some_and(|parent| parent.ends_with(RECOVERY_FOLDER))
+    {
+        return Ok(());
+    }
+    if !directory.try_exists()? {
+        prune_empty_recovery_root(directory);
+        return Ok(());
+    }
+    let has_data = ready.try_exists()?
+        || intent_path(entry).try_exists()?
+        || copy_path(&entry.download.destination, entry.download.id).try_exists()?
+        || fs::read_dir(directory)?.flatten().any(|item| {
+            let name = item.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".rscpart") || name.ends_with(".rscpart.ctl")
+        });
+    if !has_data {
+        ignore_missing(fs::remove_dir_all(directory))?;
+        prune_empty_recovery_root(directory);
+    }
+    Ok(())
+}
+
+fn prune_empty_recovery_root(working_dir: &Path) {
+    if let Some(parent) = working_dir.parent()
+        && parent.ends_with(RECOVERY_FOLDER)
+    {
+        let _ = fs::remove_dir(parent);
+    }
 }
 
 fn ignore_missing(result: io::Result<()>) -> io::Result<()> {

@@ -14,6 +14,7 @@ use crate::app::Message;
 pub(crate) enum Action {
     Verify,
     TogglePause,
+    Stop,
     ForceRecheck,
     Cancel,
     OpenFile,
@@ -83,7 +84,24 @@ pub(crate) fn can_pause(status: Status) -> bool {
 }
 
 pub(crate) fn can_resume(status: Status) -> bool {
-    matches!(status, Status::Paused | Status::Failed { .. })
+    matches!(
+        status,
+        Status::Paused | Status::Stopped | Status::Failed { .. }
+    )
+}
+
+pub(crate) fn can_resume_download(download: &ruscello_core::Download) -> bool {
+    can_resume(download.status())
+        || (download.status() == Status::Completed
+            && matches!(download.source, ruscello_core::Source::Torrent(_)))
+}
+
+pub(crate) fn can_stop(status: Status) -> bool {
+    status.is_active()
+        || matches!(
+            status,
+            Status::Queued | Status::WaitingUser | Status::Paused
+        )
 }
 
 pub(crate) fn can_recheck(download: &ruscello_core::Download) -> bool {
@@ -94,6 +112,7 @@ pub(crate) fn can_recheck(download: &ruscello_core::Download) -> bool {
 #[derive(Debug)]
 pub(crate) enum Command {
     Pause(DownloadId),
+    Stop(DownloadId),
     Resume(DownloadId),
     ForceRecheck(DownloadId),
     Remove(DownloadId, bool),
@@ -106,6 +125,7 @@ pub(crate) async fn run(engine: EngineHandle, commands: Vec<Command>) -> bool {
     for command in commands {
         let result = match command {
             Command::Pause(id) => engine.pause(id).await,
+            Command::Stop(id) => engine.stop(id).await,
             Command::Resume(id) => engine.resume(id).await,
             Command::ForceRecheck(id) => engine.force_recheck(id).await,
             Command::Remove(id, delete) => engine.cancel(id, delete).await,

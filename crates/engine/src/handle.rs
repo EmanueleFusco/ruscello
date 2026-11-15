@@ -354,6 +354,7 @@ pub(super) enum Command {
 
 pub(super) enum Update {
     Pause(DownloadId),
+    Stop(DownloadId),
     Resume(DownloadId),
     ForceStart(DownloadId),
     ForceRecheck(DownloadId),
@@ -602,6 +603,11 @@ impl EngineHandle {
 
     pub async fn pause(&self, id: DownloadId) -> Result<(), EngineError> {
         self.update(Update::Pause(id)).await
+    }
+
+    /// Halts an active, queued, paused, or seeding download without removing it from the queue.
+    pub async fn stop(&self, id: DownloadId) -> Result<(), EngineError> {
+        self.update(Update::Stop(id)).await
     }
 
     pub async fn resume(&self, id: DownloadId) -> Result<(), EngineError> {

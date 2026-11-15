@@ -478,6 +478,30 @@ async fn magnet_category_rule_restart_fastresume_force_recheck_and_cancel_delete
         .await?;
         assert_eq!(std::fs::read(&out_file)?, payload);
 
+        engine.stop(id).await?;
+        wait_for_status(
+            &engine,
+            &mut events,
+            id,
+            Status::Completed,
+            Duration::from_secs(10),
+        )
+        .await?;
+        let snap = engine.snapshot().await?;
+        let stopped_dl = find_download(&snap.downloads, id)?;
+        assert_eq!(stopped_dl.status(), Status::Completed);
+        assert_eq!(std::fs::read(&out_file)?, payload);
+
+        engine.resume(id).await?;
+        wait_for_status(
+            &engine,
+            &mut events,
+            id,
+            Status::Seeding,
+            Duration::from_secs(20),
+        )
+        .await?;
+
         engine.cancel(id, true).await?;
         timeout(Duration::from_secs(10), async {
             loop {

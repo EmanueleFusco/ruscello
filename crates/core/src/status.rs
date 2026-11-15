@@ -19,6 +19,7 @@ pub enum Status {
     WaitingUser,
     Downloading,
     Paused,
+    Stopped,
     Seeding,
     PostProcessing,
     Completed,
@@ -45,38 +46,56 @@ impl Status {
     pub fn validate_transition(self, to: Self) -> Result<(), InvalidTransition> {
         use Status::{
             Completed, Downloading, Failed, Paused, PostProcessing, Queued, Resolving, Seeding,
-            WaitingUser,
+            Stopped, WaitingUser,
         };
         let allowed = match self {
-            Queued => matches!(to, Resolving | Downloading | Paused | Failed { .. }),
+            Queued => matches!(
+                to,
+                Resolving | Downloading | Paused | Stopped | Failed { .. }
+            ),
             Resolving => matches!(
                 to,
-                Queued | WaitingUser | Downloading | Paused | Seeding | Completed | Failed { .. }
+                Queued
+                    | WaitingUser
+                    | Downloading
+                    | Paused
+                    | Stopped
+                    | Seeding
+                    | Completed
+                    | Failed { .. }
             ),
-            WaitingUser => matches!(to, Queued | Resolving | Paused | Failed { .. }),
+            WaitingUser => matches!(to, Queued | Resolving | Paused | Stopped | Failed { .. }),
             Downloading => matches!(
                 to,
                 Queued
                     | Resolving
                     | WaitingUser
                     | Paused
+                    | Stopped
                     | Seeding
                     | PostProcessing
                     | Completed
                     | Failed { .. }
             ),
-            Paused | Failed { .. } => matches!(to, Queued),
+            Paused | Failed { .. } => matches!(to, Queued | Stopped),
+            Stopped => matches!(to, Queued),
             Seeding => matches!(
                 to,
                 Queued
                     | Resolving
                     | Downloading
                     | Paused
+                    | Stopped
                     | PostProcessing
                     | Completed
                     | Failed { .. }
             ),
-            PostProcessing => matches!(to, Queued | Paused | Seeding | Completed | Failed { .. }),
+            PostProcessing => {
+                matches!(
+                    to,
+                    Queued | Paused | Stopped | Seeding | Completed | Failed { .. }
+                )
+            }
             Completed => matches!(to, Resolving),
         };
         if self == to || allowed {
@@ -105,6 +124,7 @@ mod tests {
             WaitingUser,
             Downloading,
             Paused,
+            Stopped,
             Seeding,
             PostProcessing,
             Completed,
@@ -112,15 +132,30 @@ mod tests {
         ];
         // Each row uses the column order above, including idempotent requests.
         let expected = [
-            [true, true, false, true, true, false, false, false, true],
-            [true, true, true, true, true, true, false, true, true],
-            [true, true, true, false, true, false, false, false, true],
-            [true, true, true, true, true, true, true, true, true],
-            [true, false, false, false, true, false, false, false, false],
-            [true, true, false, true, true, true, true, true, true],
-            [true, false, false, false, true, true, true, true, true],
-            [false, true, false, false, false, false, false, true, false],
-            [true, false, false, false, false, false, false, false, true],
+            [
+                true, true, false, true, true, true, false, false, false, true,
+            ],
+            [true, true, true, true, true, true, true, false, true, true],
+            [
+                true, true, true, false, true, true, false, false, false, true,
+            ],
+            [true, true, true, true, true, true, true, true, true, true],
+            [
+                true, false, false, false, true, true, false, false, false, false,
+            ],
+            [
+                true, false, false, false, false, true, false, false, false, false,
+            ],
+            [true, true, false, true, true, true, true, true, true, true],
+            [
+                true, false, false, false, true, true, true, true, true, true,
+            ],
+            [
+                false, true, false, false, false, false, false, false, true, false,
+            ],
+            [
+                true, false, false, false, false, true, false, false, false, true,
+            ],
         ];
         for (row, from) in states.into_iter().enumerate() {
             for (column, to) in states.into_iter().enumerate() {
@@ -160,7 +195,7 @@ mod tests {
         for status in [Resolving, Downloading, Seeding, PostProcessing] {
             assert!(status.is_active());
         }
-        for status in [Queued, WaitingUser, Paused, Completed, FAILED] {
+        for status in [Queued, WaitingUser, Paused, Stopped, Completed, FAILED] {
             assert!(!status.is_active());
         }
     }
