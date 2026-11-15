@@ -644,7 +644,7 @@ async fn sidecar_manager_consent_sha256_verification_custom_path_and_auto_update
             let zero = "0".repeat(64);
             return Reply::bytes(
                 "text/plain",
-                format!("{zero}  yt-dlp\n{zero}  yt-dlp_linux\n{zero}  yt-dlp.exe\n{zero}  yt-dlp_macos\n")
+                format!("{zero}  yt-dlp\n{zero}  yt-dlp_linux\n{zero}  yt-dlp_linux_aarch64\n{zero}  yt-dlp.exe\n{zero}  yt-dlp_macos\n")
                     .into_bytes(),
             );
         }
@@ -652,7 +652,7 @@ async fn sidecar_manager_consent_sha256_verification_custom_path_and_auto_update
         let digest = if is_v2 { &sha_v2 } else { &sha_v1 };
         Reply::bytes(
             "text/plain",
-            format!("{digest}  yt-dlp\n{digest}  yt-dlp_linux\n{digest}  yt-dlp.exe\n{digest}  yt-dlp_macos\n")
+            format!("{digest}  yt-dlp\n{digest}  yt-dlp_linux\n{digest}  yt-dlp_linux_aarch64\n{digest}  yt-dlp.exe\n{digest}  yt-dlp_macos\n")
                 .into_bytes(),
         )
     });
@@ -672,6 +672,7 @@ async fn sidecar_manager_consent_sha256_verification_custom_path_and_auto_update
             "tag_name": tag,
             "assets": [
                 { "name": "yt-dlp_linux", "browser_download_url": dl_url },
+                { "name": "yt-dlp_linux_aarch64", "browser_download_url": dl_url },
                 { "name": "yt-dlp_macos", "browser_download_url": dl_url },
                 { "name": "yt-dlp.exe", "browser_download_url": dl_url },
                 { "name": "SHA2-256SUMS", "browser_download_url": ytdlp_sums_url }
@@ -694,6 +695,11 @@ async fn sidecar_manager_consent_sha256_verification_custom_path_and_auto_update
         )
     } else if cfg!(target_os = "macos") {
         ("ffmpeg", ff_payload.to_vec())
+    } else if cfg!(target_arch = "aarch64") {
+        (
+            "ffmpeg-n7.1-linuxarm64-mock.tar.gz",
+            make_tar_gz(ff_bin_name, ff_payload)?,
+        )
     } else {
         (
             "ffmpeg-n7.1-linux64-mock.tar.gz",
