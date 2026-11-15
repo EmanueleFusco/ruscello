@@ -15,8 +15,9 @@
 
 ## Current Status
 
-The feature implementation through M9 is on `main`. [M10](https://github.com/EmanueleFusco/ruscello/issues/23)
-tracks the 1.0 release. The [M10 release checks](TESTING.md#m10-release-checks) document how to reproduce the
+The feature implementation through M10 is on `main`, and the `v1.0.0` draft release bundle has been built across
+Linux (`x86_64`/`aarch64` `.AppImage`, `.deb`, `.rpm`), Windows (`x86_64`/`aarch64` `.exe`), and macOS
+(`aarch64`/`x86_64` `.dmg`). The [M10 release checks](TESTING.md#m10-release-checks) document how to reproduce the
 soak, resource measurements, and package verification.
 
 | Milestone | Implementation |
@@ -25,10 +26,10 @@ soak, resource measurements, and package verification.
 | M7 Native Media & Sidecars | [PR #55](https://github.com/EmanueleFusco/ruscello/pull/55), `2f3c4b3` |
 | M8 Local API, LAN Web UI & Browser Extension | [PR #56](https://github.com/EmanueleFusco/ruscello/pull/56), `90565e9` |
 | M9 Automation & Post-Processing | [PR #57](https://github.com/EmanueleFusco/ruscello/pull/57), `5f47596` |
+| M10 Hardening, Packaging & 1.0 Release | [PR #59](https://github.com/EmanueleFusco/ruscello/pull/59), [PR #60](https://github.com/EmanueleFusco/ruscello/pull/60) |
 
-M9.1–M9.8 are complete. The PR passed formatting, dependency audit, Clippy, workspace tests, and native
-browser tests. Platform checks ran on Windows, Linux, and macOS. The [M9 epic](https://github.com/EmanueleFusco/ruscello/issues/22)
-and [GitHub milestone](https://github.com/EmanueleFusco/ruscello/milestone/10) are closed. The `v0.9.0` tag remains pending.
+M0–M10 are complete. Every milestone passed formatting, dependency audit, Clippy, workspace tests, native browser
+tests, and multi-platform package verification.
 
 ## 0. Requirements (from Project Owner)
 

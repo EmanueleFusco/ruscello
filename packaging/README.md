@@ -7,7 +7,7 @@ prerelease suffix. Build on the target OS and architecture.
 - Linux (`x86_64` and `aarch64`) uses Ubuntu 24.04 system dependencies from `scripts/ci-linux-deps.sh`.
   Install `dpkg-dev` and the pinned `appimagetool` for the target architecture from the release workflow,
   then run `APPIMAGETOOL=/path/to/appimagetool bash packaging/linux/package.sh v1.0.0`.
-- Fedora (`x86_64` and `aarch64`) builds inside Fedora 42 with `rpm-build`, `desktop-file-utils`, and the
+- Fedora (`x86_64` and `aarch64`) builds inside Fedora 44 with `rpm-build`, `desktop-file-utils`, and the
   Fedora `-devel` packages, then runs `bash packaging/linux/package-rpm.sh v1.0.0`.
 - Arch Linux (`x86_64` and `aarch64`) provides `packaging/arch/PKGBUILD` (kept in sync with the workspace
   version) for building from the tagged source archive with `makepkg -si`.
