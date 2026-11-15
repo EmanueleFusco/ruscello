@@ -426,7 +426,20 @@ impl Resolver {
         let recipes = recipes::load(self.recipes.as_deref()).await?;
         let recipe = recipes.iter().find(|recipe| recipe.matches(url));
         let fallback = allow_generic_xfs.then_some(&Builtin::XFileSharing as &dyn HostPlugin);
-        let Some(plugin) = find_plugin(&recipes, self, url).or(fallback) else {
+        let plugin = find_plugin(&recipes, self, url).or(fallback);
+        if let Some(mut resolution) = self
+            .native_browser
+            .as_ref()
+            .and_then(|browser| browser.take_verified_download(url))
+        {
+            if let Some(plugin) = plugin {
+                resolution.limits = plugin.limits();
+            }
+            http::validate(&resolution.url)?;
+            tracing::debug!("Using download URL captured during browser verification");
+            return Ok(Some(resolution));
+        }
+        let Some(plugin) = plugin else {
             let headers = self.sessions.headers(url);
             return Ok((!headers.is_empty())
                 .then(|| http::direct(url.clone(), url, HosterLimits::default(), headers)));

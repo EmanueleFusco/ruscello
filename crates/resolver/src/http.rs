@@ -164,15 +164,21 @@ pub(crate) async fn page(response: Response) -> Result<String, ResolveError> {
     let status_code = response.status();
     let contents = read_body(response, PAGE_LIMIT).await?;
     let document = Html::parse_document(&contents);
-    let challenge = contents.contains("/cdn-cgi/challenge-platform/")
-        || first(&document, CHALLENGE_SELECTOR).is_some();
-    if challenge {
+    if is_challenge_page(status_code, &contents, &document) {
         return Err(ResolveError::VerificationRequired);
     }
     if !status_code.is_success() {
         return Err(ResolveError::Status(status_code));
     }
     Ok(contents)
+}
+
+fn is_challenge_page(status_code: reqwest::StatusCode, contents: &str, document: &Html) -> bool {
+    first(document, CHALLENGE_SELECTOR).is_some()
+        || contents.contains("window._cf_chl_opt")
+        || contents.contains("/cdn-cgi/challenge-platform/h/")
+        || contents.contains("/cdn-cgi/challenge-platform/orchestrate/")
+        || (!status_code.is_success() && contents.contains("/cdn-cgi/challenge-platform/"))
 }
 
 pub(crate) fn first<'a>(document: &'a Html, query: &str) -> Option<ElementRef<'a>> {

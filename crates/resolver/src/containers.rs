@@ -175,6 +175,21 @@ struct FallbackLinks {
     links: Vec<String>,
 }
 
+fn strip_pkcs7(bytes: &[u8]) -> &[u8] {
+    let Some(&pad) = bytes.last() else {
+        return bytes;
+    };
+    let len = usize::from(pad);
+    if (1..=16).contains(&len)
+        && bytes.len() >= len
+        && bytes[bytes.len() - len..].iter().all(|&byte| byte == pad)
+    {
+        &bytes[..bytes.len() - len]
+    } else {
+        bytes
+    }
+}
+
 fn decrypt_payload(mut encrypted: Vec<u8>, rc: &str) -> Result<Vec<ImportedPackage>, ResolveError> {
     type Decryptor = cbc::Decryptor<aes::Aes128>;
     let mut wrapped = STANDARD
@@ -190,7 +205,8 @@ fn decrypt_payload(mut encrypted: Vec<u8>, rc: &str) -> Result<Vec<ImportedPacka
     let plaintext = Decryptor::new(key.into(), key.into())
         .decrypt_padded::<NoPadding>(&mut encrypted)
         .map_err(|_| ResolveError::InvalidContainer)?;
-    let plaintext = std::str::from_utf8(plaintext).map_err(|_| ResolveError::InvalidContainer)?;
+    let plaintext =
+        std::str::from_utf8(strip_pkcs7(plaintext)).map_err(|_| ResolveError::InvalidContainer)?;
     let xml = decode(plaintext.trim_matches(|ch: char| ch == '\0' || ch.is_ascii_whitespace()))?;
     let root: Dlc = quick_xml::de::from_str(&xml).map_err(|_| ResolveError::InvalidContainer)?;
     let mut packages = Vec::new();
@@ -454,6 +470,38 @@ mod tests {
             SERVICE_IV,
         )?;
         Ok((format!("{encrypted}{tail}"), tail, rc))
+    }
+
+    #[test]
+    fn decrypts_pkcs7_and_zero_padded_dlc_payload() -> TestResult {
+        let key = b"test key 16 byte";
+        let plaintext = STANDARD.encode(include_str!("../tests/fixtures/dlc-2026-11-14.xml"));
+        for pkcs7_over_zero in [false, true] {
+            let mut bytes = plaintext.as_bytes().to_vec();
+            if pkcs7_over_zero {
+                bytes.resize(bytes.len().next_multiple_of(16), 0);
+                bytes.extend_from_slice(&[16_u8; 16]);
+            } else {
+                let pad = 16 - (bytes.len() % 16);
+                bytes.extend(std::iter::repeat_n(pad as u8, pad));
+            }
+            let length = bytes.len();
+            let output = cbc::Encryptor::<aes::Aes128>::new(key.into(), key.into())
+                .encrypt_padded::<NoPadding>(&mut bytes, length)
+                .map_err(|_| ResolveError::InvalidContainer)?;
+            let mut key_bytes = key.to_vec();
+            let rc_len = key_bytes.len();
+            let rc_out = cbc::Encryptor::<aes::Aes128>::new(SERVICE_KEY.into(), SERVICE_IV.into())
+                .encrypt_padded::<NoPadding>(&mut key_bytes, rc_len)
+                .map_err(|_| ResolveError::InvalidContainer)?;
+            let packages = decrypt_payload(output.to_vec(), &STANDARD.encode(rc_out))?;
+            assert_eq!(packages[0].name, "Test package");
+            assert_eq!(
+                packages[0].links[0].url.as_str(),
+                "https://example.test/Sample.zip"
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

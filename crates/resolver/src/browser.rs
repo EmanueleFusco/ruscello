@@ -20,14 +20,15 @@ use ruscello_browser::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Browser, BrowserPage, HostPlugin as _, Recipe, RecipeStep, Resolution, ResolveError,
-    ResolveFuture, http,
+    Browser, BrowserPage, HostPlugin as _, HosterLimits, Recipe, RecipeStep, Resolution,
+    ResolveError, ResolveFuture, http,
 };
 
 #[derive(Debug, Clone)]
 pub(crate) struct NativeBrowser {
     client: BrowserClient,
     enabled: Arc<AtomicBool>,
+    verified_downloads: Arc<RwLock<HashMap<Url, Resolution>>>,
 }
 
 impl NativeBrowser {
@@ -35,11 +36,22 @@ impl NativeBrowser {
         Self {
             client: BrowserClient::new(options),
             enabled: Arc::new(AtomicBool::new(enabled)),
+            verified_downloads: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub(crate) fn enable(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
+        if !enabled && let Ok(mut pending) = self.verified_downloads.write() {
+            pending.clear();
+        }
+    }
+
+    pub(crate) fn take_verified_download(&self, url: &Url) -> Option<Resolution> {
+        self.verified_downloads
+            .write()
+            .ok()
+            .and_then(|mut pending| pending.remove(url))
     }
 
     pub(crate) async fn stop(&self) {
@@ -203,7 +215,38 @@ impl Browser for NativeBrowser {
         locale: Locale,
         cancellation: &'a CancellationToken,
     ) -> ResolveFuture<'a, Session> {
-        Box::pin(self.session(url, View::Verify(locale), cancellation))
+        Box::pin(async move {
+            match self
+                .open(url, View::Verify(locale), Vec::new(), cancellation)
+                .await?
+            {
+                Response::Session { session } => Ok(session),
+                Response::Download {
+                    url: download_url,
+                    referer,
+                    session,
+                } => {
+                    let resolution = http::direct(
+                        download_url.clone(),
+                        &referer,
+                        HosterLimits::default(),
+                        session_headers(&session),
+                    );
+                    if let Ok(mut pending) = self.verified_downloads.write() {
+                        pending.insert(url.clone(), resolution);
+                    }
+                    if download_url.origin() == url.origin() {
+                        Ok(session)
+                    } else {
+                        Ok(self
+                            .session(url, View::Session, cancellation)
+                            .await
+                            .unwrap_or(session))
+                    }
+                }
+                _ => Err(Failure::Unavailable.into()),
+            }
+        })
     }
 }
 

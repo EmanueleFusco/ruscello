@@ -28,6 +28,7 @@ pub(super) struct Job {
     loading: bool,
     navigating: bool,
     evaluating: bool,
+    saw_challenge: bool,
     deadline: Instant,
     step_deadline: Instant,
     extracted: Option<Url>,
@@ -85,6 +86,7 @@ impl Job {
             loading: false,
             navigating: false,
             evaluating: false,
+            saw_challenge: false,
             deadline: now + timeout,
             step_deadline: now
                 + if matches!(view, View::Verify(_)) {
@@ -193,7 +195,9 @@ impl Job {
         if !snapshot.ready || !web_url(&snapshot.url) {
             return None;
         }
+        self.page = snapshot.url.clone();
         if snapshot.challenge || challenge_url(&snapshot.url) {
+            self.saw_challenge = true;
             return if matches!(self.view, View::Verify(_)) {
                 None
             } else {
@@ -202,7 +206,10 @@ impl Job {
         }
         if matches!(self.view, View::Verify(_)) {
             // A login or challenge redirect can visit other sites before returning.
-            if snapshot.url.origin() != self.source.origin() || self.loading {
+            // If no challenge appeared on the landing page (e.g., step 2 Turnstile),
+            // keep the window open until a challenge is solved or a download starts.
+            if !self.saw_challenge || snapshot.url.origin() != self.source.origin() || self.loading
+            {
                 return None;
             }
             return Some(
@@ -210,7 +217,6 @@ impl Job {
                     .map_or_else(error, |session| Response::Session { session }),
             );
         }
-        self.page = snapshot.url.clone();
         if self.loading && snapshot.value.is_none() {
             return None;
         }
@@ -318,25 +324,13 @@ impl Job {
         if !self.navigating || matches!(self.view, View::Session) || !web_url(&url) {
             return None;
         }
-        let scope = if matches!(self.view, View::Verify(_)) {
-            &self.source
-        } else {
-            &url
-        };
-        if matches!(self.view, View::Verify(_)) && url.origin() != self.source.origin() {
-            return None;
-        }
-        let response = self.session(webview, scope).map_or_else(error, |session| {
-            if matches!(self.view, View::Verify(_)) {
-                Response::Session { session }
-            } else {
-                Response::Download {
+        let response =
+            self.session(webview, &url)
+                .map_or_else(error, |session| Response::Download {
                     url,
                     referer: self.page.clone(),
                     session,
-                }
-            }
-        });
+                });
         Some(response)
     }
 

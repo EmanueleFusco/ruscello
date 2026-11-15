@@ -122,6 +122,9 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
   same benchmark and is available in Settings.
 
 ### Fixed
+- Fixed `.dlc` container decryption when AES-CBC plaintext contains zero padding followed by PKCS#7 padding.
+- Fixed `fuckingfast.co` resolution to handle `hx-post` endpoints returning `Hx-Redirect` URLs on `dl.fuckingfast.co` and avoid treating passive Cloudflare `jsd/main.js` scripts on `200 OK` pages as interactive challenges.
+- Handled XFileSharing `<download-countdown>` pages requiring verification by keeping the verification browser open through redirects until the challenge appears and handing captured downloads directly to the resolver.
 - Preserve download staging until SQLite commits completion so a restart reuses the published
   file without downloading it again or creating a numbered duplicate.
 - Browser cookie import sends multiple bounded requests when cookies from several profiles exceed a single

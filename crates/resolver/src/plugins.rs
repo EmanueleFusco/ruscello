@@ -134,7 +134,9 @@ impl HostPlugin for Builtin {
             .trim_start_matches("www.");
         let path = url.path();
         match self {
-            Self::FuckingFast => host == "fuckingfast.co" && path != "/",
+            Self::FuckingFast => {
+                matches!(host, "fuckingfast.co" | "dl.fuckingfast.co") && path != "/"
+            }
             Self::XFileSharing => host == "datanodes.to" && path != "/",
             Self::Pixeldrain => {
                 matches!(host, "pixeldrain.com" | "pixeldrain.net") && path.starts_with("/u/")
@@ -189,38 +191,83 @@ fn selected_link(base: &Url, body: &str, selector: &str) -> Option<Url> {
 static OPEN: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r#"window\s*\.\s*open\s*\(\s*["']([^"']+)["']"#).ok());
 
-async fn fuckingfast(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
-    let response = ctx.get(source.clone()).send().await?;
+fn is_fuckingfast_host(url: &Url) -> bool {
+    url.host_str()
+        .map(|host| host.trim_start_matches("www."))
+        .is_some_and(|host| matches!(host, "fuckingfast.co" | "dl.fuckingfast.co"))
+}
+
+fn is_fuckingfast_dl(source: &Url, url: &Url) -> bool {
+    url.path().starts_with("/dl/")
+        && (url.origin() == source.origin()
+            || (url.scheme() == source.scheme()
+                && is_fuckingfast_host(source)
+                && is_fuckingfast_host(url)))
+}
+
+fn fuckingfast_redirect(source: &Url, base: &Url, response: &reqwest::Response) -> Option<Url> {
+    ["hx-redirect", "location"].into_iter().find_map(|name| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| http::join(base, value))
+            .filter(|url| is_fuckingfast_dl(source, url))
+    })
+}
+
+fn fuckingfast_hx_post(base: &Url, body: &str) -> Option<Url> {
+    let document = Html::parse_document(body);
+    let element = http::first(&document, "a[hx-post], button[hx-post], [hx-post]")?;
+    http::join(base, element.attr("hx-post")?).filter(|url| url.origin() == base.origin())
+}
+
+async fn check_fuckingfast_response(
+    source: &Url,
+    response: reqwest::Response,
+) -> Result<Result<Url, (Url, String)>, ResolveError> {
     let base = response.url().clone();
-    let direct = |value: &str| {
-        http::join(&base, value)
-            .filter(|url| url.origin() == source.origin() && url.path().starts_with("/dl/"))
-    };
     if let Err(error) = http::status(&response) {
         if http::is_html(&response) {
             http::page(response).await?;
         }
         return Err(error);
     }
-    if base.origin() == source.origin() && base.path().starts_with("/dl/") {
-        return Ok(base);
+    if is_fuckingfast_dl(source, &base) {
+        return Ok(Ok(base));
     }
-    if let Some(url) = response
-        .headers()
-        .get("hx-redirect")
-        .and_then(|value| value.to_str().ok())
-        .and_then(direct)
-    {
-        return Ok(url);
+    if let Some(url) = fuckingfast_redirect(source, &base, &response) {
+        return Ok(Ok(url));
     }
     let body = http::page(response).await?;
-    fuckingfast_link(source, &base, &body).ok_or(ResolveError::NoDownload)
+    if let Some(url) = fuckingfast_link(source, &base, &body) {
+        return Ok(Ok(url));
+    }
+    Ok(Err((base, body)))
+}
+
+async fn fuckingfast(ctx: &Context, source: &Url) -> Result<Url, ResolveError> {
+    let response = ctx.get(source.clone()).send().await?;
+    let (base, body) = match check_fuckingfast_response(source, response).await? {
+        Ok(url) => return Ok(url),
+        Err(page) => page,
+    };
+    let endpoint = fuckingfast_hx_post(&base, &body).ok_or(ResolveError::NoDownload)?;
+    let post_response = ctx
+        .post(endpoint)
+        .header("hx-request", "true")
+        .header(header::REFERER, base.as_str())
+        .send()
+        .await?;
+    match check_fuckingfast_response(source, post_response).await? {
+        Ok(url) => Ok(url),
+        Err(_) => Err(ResolveError::NoDownload),
+    }
 }
 
 pub(crate) fn fuckingfast_link(source: &Url, base: &Url, body: &str) -> Option<Url> {
     OPEN.as_ref()?.captures_iter(body).find_map(|capture| {
-        http::join(base, capture.get(1)?.as_str())
-            .filter(|url| url.origin() == source.origin() && url.path().starts_with("/dl/"))
+        http::join(base, capture.get(1)?.as_str()).filter(|url| is_fuckingfast_dl(source, url))
     })
 }
 
@@ -304,6 +351,9 @@ fn xfs_step(base: &Url, body: &str) -> Result<(XfsStep, Duration), ResolveError>
                 delay,
             ));
         }
+    }
+    if http::first(&document, "download-countdown").is_some() {
+        return Err(ResolveError::VerificationRequired);
     }
     Err(ResolveError::NoDownload)
 }
@@ -584,6 +634,83 @@ mod tests {
         assert_eq!(result.limits, HosterLimits::SERIAL);
         assert!(matches!(
             Builtin::FuckingFast.resolve(&ctx, &blocked).await,
+            Err(ResolveError::VerificationRequired)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resolves_fuckingfast_hx_post_and_ignores_passive_cf_beacon() -> TestResult {
+        let server = TestServer::start().await?;
+        let go_url = server.route("/f/item/go", |req| {
+            assert_eq!(req.method, ruscello_testkit::Method::POST);
+            assert_eq!(
+                req.headers
+                    .get("hx-request")
+                    .and_then(|value| value.to_str().ok()),
+                Some("true")
+            );
+            let mut headers = ruscello_testkit::HeaderMap::new();
+            headers.insert(
+                "hx-redirect",
+                ruscello_testkit::HeaderValue::from_static("/dl/hx-token"),
+            );
+            Reply::Response(ruscello_testkit::StatusCode::OK, headers, String::new())
+        });
+        assert!(go_url.ends_with("/f/item/go"));
+        let share_url = Url::parse(&server.route("/item", |_| {
+            Reply::html(
+                r#"<html><body>
+                <a class="link-button" hx-post="/f/item/go" hx-swap="none">DOWNLOAD</a>
+                <script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>
+                </body></html>"#,
+            )
+        }))?;
+        let active_cf = Url::parse(&server.route("/cf-active", |_| {
+            Reply::html(
+                r#"<html><script>window._cf_chl_opt = {};</script>
+                <script src="/cdn-cgi/challenge-platform/orchestrate/chl_page/v1"></script>
+                </html>"#,
+            )
+        }))?;
+
+        let resolver = Resolver::new(None)?;
+        let ctx = resolver.context(&CancellationToken::new());
+        let resolved = Builtin::FuckingFast.resolve(&ctx, &share_url).await?;
+        assert_eq!(resolved.url.path(), "/dl/hx-token");
+        assert_eq!(resolved.limits, HosterLimits::SERIAL);
+        assert!(matches!(
+            Builtin::FuckingFast.resolve(&ctx, &active_cf).await,
+            Err(ResolveError::VerificationRequired)
+        ));
+        let dl_url = Url::parse("https://dl.fuckingfast.co/dl/abc")?;
+        let page_url = Url::parse("https://fuckingfast.co/item")?;
+        assert!(Builtin::FuckingFast.matches(&dl_url));
+        assert!(is_fuckingfast_dl(&page_url, &dl_url));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn xfs_download_countdown_with_captcha_requests_verification() -> TestResult {
+        let server = TestServer::start().await?;
+        let url = Url::parse(&server.route("/xfs-turnstile", |req| match req.method {
+            ruscello_testkit::Method::GET => Reply::html(
+                r#"<form method="post" action="/xfs-turnstile">
+                    <input type="hidden" name="op" value="download1">
+                    <input type="hidden" name="id" value="abc123">
+                </form>"#,
+            ),
+            ruscello_testkit::Method::POST => Reply::html(
+                r#"<download-countdown :countdown="5" :has-captcha="true"
+                    captcha-html="<div class='cf-turnstile'></div>"></download-countdown>"#,
+            ),
+            _ => Reply::status(ruscello_testkit::StatusCode::METHOD_NOT_ALLOWED),
+        }))?;
+
+        let resolver = Resolver::new(None)?;
+        let ctx = resolver.context(&CancellationToken::new());
+        assert!(matches!(
+            Builtin::XFileSharing.resolve(&ctx, &url).await,
             Err(ResolveError::VerificationRequired)
         ));
         Ok(())
