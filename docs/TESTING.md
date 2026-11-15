@@ -147,8 +147,13 @@ The software run used Xvfb.
 | Cold start to usable window | 0.112 s | 0.174 s |
 | Per-row progress updates | 2.96 Hz | 2.96 Hz |
 
-The hardware renderer exceeded the idle RAM target on this machine. A minimal Iced window using
-the same default GPU backend used 93.9 MB RSS before loading any Ruscello components.
+The 1.0 release has an owner-approved exception to the 80 MB idle RAM target for the default Linux GPU
+renderer on this machine. The target remains open for future optimization. A minimal Iced window using
+the same default GPU backend used 93.9 MB RSS before loading any Ruscello components. The packaged build
+also exceeded the target with alternate GPU settings. Vulkan used 110.9 MB on X11 and 111.6 MB on
+Wayland. Restricting it to the AMD RADV driver reduced those results to 105.8 MB and 107.6 MB,
+respectively. OpenGL used 135.4 MB on Wayland. The default renderer and driver selection are unchanged.
+
 The process-kill benchmark
 observed a 2.001-second checkpoint gap and an upper bound of 3,538,944 bytes to refetch
 at a configured 2 MiB/s. The resumed file matched its fixture's SHA-256.

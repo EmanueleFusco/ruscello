@@ -114,6 +114,11 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.
 - Isolated rotating CLI logs from the GUI and browser helper log retention.
 
+### Known limitations
+- On the tested AMD Lucienne Linux desktop, the default GPU renderer used 127 MB of RAM at idle.
+  The 1.0 release accepts this result while retaining the 80 MB target. Software 2D used 46 MB in the
+  same benchmark and is available in Settings.
+
 ### Fixed
 - Preserve download staging until SQLite commits completion so a restart reuses the published
   file without downloading it again or creating a numbered duplicate.

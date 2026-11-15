@@ -411,9 +411,10 @@ optional live tests behind feature flag.
 - [x] **M10.2** Add a repeatable soak with 200 mixed downloads per batch, seeded network drops, and process
       kills. The release validation used an owner-approved shorter run. The test passed after 242 seconds
       with 1,200 SHA-256 comparisons, 22 forced process exits, and worker memory within the test limits.
-- [ ] **M10.3** Verify the full resource budget (§2). The Linux desktop, throughput, and crash-resume
-      benchmark commands and results are in the testing guide. The default Linux GPU renderer exceeded the
-      80 MB idle RAM target on the reference desktop.
+- [x] **M10.3** Verify the full resource budget (§2). The testing guide records the benchmark commands and
+      results. The owner approved an exception for the 1.0 release after the default Linux GPU renderer
+      measured 127.0 MB idle RSS on the AMD Lucienne reference desktop. GPU rendering remains the default,
+      and the 80 MB idle RAM target remains open for future optimization.
 - [x] **M10.4** Packaging: Windows (per-user NSIS installer, optional code signing),
       Linux (AppImage + `.deb` + optional Flatpak), macOS (`.dmg`). Automated GitHub Releases on `v*` tags.
 - [x] **M10.5** **In-app GitHub Release auto-updater** (modeled after `EmanueleFusco/Scaricatore-di-Porto-rust`, requirement R18):
