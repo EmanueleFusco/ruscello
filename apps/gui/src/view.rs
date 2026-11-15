@@ -19,8 +19,9 @@ use crate::{
     i18n::{self, Strings},
     icons::{self, icon},
     queue::{self, FILE_TYPES, ListRow, ROW_HEIGHT, StatusFilter},
-    settings::{self, Page, UpdateStatus},
+    settings::{self, Page},
     settings_view, theme,
+    updater::UpdateStatus,
 };
 
 const TOOLBAR_BUTTON_SIZE: u32 = 36;
@@ -1080,7 +1081,7 @@ pub(crate) fn option(label: String, selected: bool, message: Message) -> Element
         .into()
 }
 
-fn size(l: &Strings, bytes: u64) -> String {
+pub(crate) fn size(l: &Strings, bytes: u64) -> String {
     let mut scaled = bytes as f64;
     for unit in ["bytes", "kib", "mib", "gib", "tib"] {
         if scaled < 1024.0 || unit == "tib" {

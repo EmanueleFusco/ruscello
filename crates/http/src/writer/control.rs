@@ -148,6 +148,10 @@ pub(super) fn read(path: &Path) -> io::Result<Control> {
     File::open(path)?
         .take((MAX_CONTROL_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
+    decode(&bytes)
+}
+
+pub(super) fn decode(bytes: &[u8]) -> io::Result<Control> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid download checkpoint");
     if bytes.len() > MAX_CONTROL_BYTES || bytes.len() < LEGACY_HEADER.len() + 4 {
         return Err(invalid());

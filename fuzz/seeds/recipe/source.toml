@@ -1,0 +1,5 @@
+[recipe]
+name = "Example"
+match = ['^https://example\.test/']
+[[step]]
+extract = { css = "a#download", attribute = "href" }

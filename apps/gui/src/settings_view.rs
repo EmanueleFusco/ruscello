@@ -10,10 +10,11 @@ use crate::{
     preferences::{Appearance, Locale, Renderer},
     settings::{
         COMPLETION_ACTIONS, Folder, Number, OutsideHoursMode, Page, ScheduleRuleDraft,
-        ScheduleRuleMode, TorrentField, TorrentOption, UpdateStatus, WATCH_BEHAVIORS,
-        WatchFolderDraft, completion_action_key, watch_behavior_key,
+        ScheduleRuleMode, TorrentField, TorrentOption, WATCH_BEHAVIORS, WatchFolderDraft,
+        completion_action_key, watch_behavior_key,
     },
     theme,
+    updater::UpdateStatus,
     view::{heading, muted, option},
 };
 
@@ -1077,7 +1078,10 @@ fn about(app: &App) -> Element<'_, Message> {
             .label(l.get("check-on-start"))
             .on_toggle(Message::CheckAutomatically),
         theme::action(text(l.get("check-now"))).on_press_maybe(
-            (!matches!(app.update_status, UpdateStatus::Checking)).then_some(Message::CheckUpdates)
+            (app.update_progress.is_none()
+                && !app.stopping_for_update
+                && !matches!(app.update_status, UpdateStatus::Checking))
+            .then_some(Message::CheckUpdates)
         ),
     ]
     .spacing(10);
@@ -1090,13 +1094,39 @@ fn about(app: &App) -> Element<'_, Message> {
             content = content.push(
                 text(l.with("update-available", [("version", release.tag_name.clone())])).size(18),
             );
+            if let Some(date) = release
+                .date
+                .as_deref()
+                .and_then(|date| date.split('T').next())
+            {
+                content = content.push(text(l.with("update-date", [("date", date.to_owned())])));
+            }
             if let Some(notes) = &release.body {
                 content = content.push(text(l.get("release-notes"))).push(text(notes));
             }
             content = content
-                .push(theme::action(text(l.get("open-release"))).on_press(Message::OpenRelease))
-                .push(theme::action(text(l.get("install-update"))).style(theme::primary))
-                .push(text(l.get("install-pending")));
+                .push(theme::action(text(l.get("open-release"))).on_press(Message::OpenRelease));
+            if app.stopping_for_update {
+                content = content.push(text(l.get("update-saving")));
+            } else if let Some(progress) = app.update_progress {
+                content = content
+                    .push(text(l.with(
+                        "update-downloading",
+                        [
+                            ("downloaded", crate::view::size(l, progress.downloaded)),
+                            ("total", crate::view::size(l, progress.total)),
+                        ],
+                    )))
+                    .push(iced::widget::progress_bar(0.0..=100.0, progress.percent()));
+            } else if release.asset.is_some() {
+                content = content.push(
+                    theme::action(text(l.get("install-update")))
+                        .style(theme::primary)
+                        .on_press_maybe(app.can_install_update().then_some(Message::InstallUpdate)),
+                );
+            } else {
+                content = content.push(text(l.get("update-manual")));
+            }
             None
         }
     };

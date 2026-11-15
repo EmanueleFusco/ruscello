@@ -8,6 +8,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ruscello/pull/57).
 
 ### Added
+- GitHub Releases updater with automatic and manual checks, localized in-app release notes and progress,
+  SHA-256 verification, checkpoint-safe shutdown, and restart on NSIS, AppImage, and macOS app bundles.
+- Tagged Windows, Linux, and macOS desktop packages with the native browser helper, plus SHA-256 sums.
+- Nightly parser fuzzing, an offline mixed-transfer soak, resource-budget tooling, and a personal-path audit.
+- Installation quickstart, FAQ, and coordinated vulnerability reporting policy.
+- Ruscello application icon for Windows, macOS, and Linux, including the launcher and system tray.
+- Ruscello Download Manager is the public name shown in the app, desktop launchers, and installers.
 - M9.1–M9.8: Automation & Post-Processing (`ruscello-platform`, `ruscello-http`, `ruscello-engine`,
   `ruscello-api`, `ruscello-cli`, `ruscello-gui`):
   - Time-of-day scheduler (`ScheduleSettings`, `ScheduleRule`, `WeekdayMask`, injectable `Clock`) with
@@ -109,7 +116,14 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
 - Improved segmented throughput with bounded queued writes, faster connection ramp-up, and fewer redundant syncs.
 - Isolated rotating CLI logs from the GUI and browser helper log retention.
 
+### Known limitations
+- On the tested AMD Lucienne Linux desktop, the default GPU renderer used 127 MB of RAM at idle.
+  The 1.0 release accepts this result while retaining the 80 MB target. Software 2D used 46 MB in the
+  same benchmark and is available in Settings.
+
 ### Fixed
+- Preserve download staging until SQLite commits completion so a restart reuses the published
+  file without downloading it again or creating a numbered duplicate.
 - Browser cookie import sends multiple bounded requests when cookies from several profiles exceed a single
   helper request. Added regression coverage for idle exit, crash recovery, and a ten-link XFileSharing batch.
 - Prevented the scheduler from treating a removed BitTorrent handle as a failed download while force recheck

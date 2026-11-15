@@ -27,6 +27,7 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+      - run: ./scripts/check-personal-paths.sh
 
   clippy:
     name: clippy (${{ matrix.os }})

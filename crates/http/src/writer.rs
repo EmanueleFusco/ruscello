@@ -23,7 +23,9 @@ pub(crate) use control::{Recovery, TransferKey};
 pub use names::candidate as filename_candidate;
 pub use names::sanitize_filename;
 
-const BATCH_BYTES: usize = 1024 * 1024;
+// Write full network-sized chunks directly. Coalesce smaller fragments while
+// keeping the memory and copy overhead bounded across active ranges.
+const BATCH_BYTES: usize = 64 * 1024;
 const BUFFER_BYTES: usize = 4 * BATCH_BYTES;
 const MAX_BUFFERS: usize = 256;
 const CANDIDATES: u32 = 10_000;
@@ -742,4 +744,9 @@ impl Coverage {
         }
         end == 0 || self.0.len() == 1 && self.0.get(&0) == Some(&end)
     }
+}
+
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_checkpoint(input: &[u8]) {
+    let _ = control::decode(input);
 }

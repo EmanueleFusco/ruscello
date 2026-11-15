@@ -318,6 +318,7 @@ impl Scheduler {
         automation_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut shutdown = None;
         let mut closing = false;
+        let mut shutdown_error = None;
         let mut schedule = true;
         loop {
             if closing
@@ -374,6 +375,14 @@ impl Scheduler {
                             Ok((task, result)) => (task, result),
                             Err(error) => (error.id(), Err(error.into())),
                         };
+                        if closing && shutdown_error.is_none() {
+                            shutdown_error = match &result {
+                                Err(TransferError::Http(HttpError::Storage(_))
+                                    | TransferError::File(_) | TransferError::Worker(_)) =>
+                                    Some(EngineError::ShutdownCheckpoint),
+                                _ => None,
+                            };
+                        }
                         self.finish(task, result, closing).await;
                         schedule = true;
                     }
@@ -452,14 +461,15 @@ impl Scheduler {
             let _ = self.sleep_inhibitor.set_inhibited(false, "Shutdown").await;
             self.sleep_inhibited = false;
         }
-        self.persist_torrents_on_shutdown().await;
+        let flushed = self.persist_torrents_on_shutdown().await;
         if let Some(manager) = self.torrent_manager.take() {
             manager.shutdown().await;
         }
         self.resolver.stop_browser_helper().await;
         let closed = self.storage.close().await.map_err(EngineError::from);
         if let Some(reply) = shutdown {
-            let _ = reply.send(closed);
+            let result = closed.and(flushed).and(shutdown_error.map_or(Ok(()), Err));
+            let _ = reply.send(result);
         }
     }
 
@@ -1632,18 +1642,7 @@ impl Scheduler {
     }
 
     async fn complete(&mut self, mut entry: QueueEntry) -> Result<(), EngineError> {
-        let id = entry.download.id;
-        self.ftp_credentials.remove(&id);
-        let cleanup_entry = entry.clone();
-        if let Err(error) =
-            tokio::task::spawn_blocking(move || transfer::discard_work(&cleanup_entry)).await?
-        {
-            tracing::debug!(id = id.0, kind = ?error.kind(), "Could not clean completed staging files");
-            self.emit(EngineEvent::Log {
-                id: Some(id),
-                message: EngineLog::CleanupFailed,
-            });
-        }
+        self.ftp_credentials.remove(&entry.download.id);
         let target_path = download_target_path(&entry.download);
         if should_post_process(&target_path, &self.automation.post_processing).await {
             entry.download.transition(Status::PostProcessing)?;
@@ -1652,9 +1651,27 @@ impl Scheduler {
             return Ok(());
         }
         entry.download.transition(Status::Completed)?;
-        self.save(entry).await?;
+        self.save(entry.clone()).await?;
+        self.cleanup_completed_work(entry).await;
         self.completed_since_reset = true;
         Ok(())
+    }
+
+    async fn cleanup_completed_work(&self, entry: QueueEntry) {
+        let id = entry.download.id;
+        // Keep the staging file and publication marker until completion is
+        // committed. Recovery uses both to recognize an already published file.
+        let result = tokio::task::spawn_blocking(move || transfer::discard_work(&entry)).await;
+        let error = match result {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => EngineError::from(error),
+            Err(error) => EngineError::from(error),
+        };
+        tracing::debug!(id = id.0, %error, "Could not clean completed staging files");
+        self.emit(EngineEvent::Log {
+            id: Some(id),
+            message: EngineLog::CleanupFailed,
+        });
     }
 
     async fn fail(
@@ -2314,9 +2331,9 @@ impl Scheduler {
         Ok(())
     }
 
-    async fn persist_torrents_on_shutdown(&mut self) {
+    async fn persist_torrents_on_shutdown(&mut self) -> Result<(), EngineError> {
         let Some(manager) = &self.torrent_manager else {
-            return;
+            return Ok(());
         };
         let ids: Vec<DownloadId> = self.active_torrents.keys().copied().collect();
         let mut changes = Vec::new();
@@ -2335,11 +2352,10 @@ impl Scheduler {
                 self.queue.insert(id, entry);
             }
         }
-        if !changes.is_empty()
-            && let Err(error) = self.storage.apply(changes).await
-        {
-            tracing::warn!(%error, "Could not flush torrent metrics during shutdown");
+        if !changes.is_empty() {
+            self.storage.apply(changes).await?;
         }
+        Ok(())
     }
 
     fn emit(&self, event: EngineEvent) {
@@ -2853,9 +2869,12 @@ impl Scheduler {
                     tracing::warn!(id = id.0, %error, "Failed transitioning after post-processing");
                     return;
                 }
-                if let Err(error) = self.save(entry).await {
+                if let Err(error) = self.save(entry.clone()).await {
                     self.storage_error(Some(id), &error);
                 } else {
+                    if !matches!(entry.download.source, Source::Torrent(_)) {
+                        self.cleanup_completed_work(entry).await;
+                    }
                     self.completed_since_reset = true;
                 }
             }
@@ -2865,8 +2884,11 @@ impl Scheduler {
                 } else {
                     Status::Completed
                 };
-                if entry.download.transition(fallback).is_ok() {
-                    let _ = self.save(entry).await;
+                if entry.download.transition(fallback).is_ok()
+                    && self.save(entry.clone()).await.is_ok()
+                    && !matches!(entry.download.source, Source::Torrent(_))
+                {
+                    self.cleanup_completed_work(entry).await;
                 }
             }
             Err(error) => {

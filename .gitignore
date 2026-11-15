@@ -33,3 +33,6 @@ Thumbs.db
 # Local env / secrets
 .env
 *.local.toml
+
+# Release artifacts
+/dist/

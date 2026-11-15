@@ -229,6 +229,53 @@ async fn force_kill_and_resume_from_the_persisted_range() -> TestResult {
 }
 
 #[tokio::test]
+#[ignore = "measures checkpoint timing under a controlled loopback workload"]
+async fn crash_recovery_refetches_at_most_two_seconds_of_data() -> TestResult {
+    const RATE: u64 = 2 * MIB;
+    let server = TestServer::start().await?;
+    let file = server.file(FileSpec::random(113, SIZE).throttle_per_conn(RATE));
+    let directory = tempfile::tempdir()?;
+    let partial = directory.path().join("payload.bin.rscpart");
+    let mut child = cli(&file, directory.path()).spawn()?;
+
+    // Ignore the initial empty checkpoint and confirm two consecutive timed writes.
+    let (first, gap) = time::timeout(Duration::from_secs(12), async {
+        let mut poll = time::interval(Duration::from_millis(20));
+        let mut first = None;
+        loop {
+            poll.tick().await;
+            if let Ok(bytes) = persisted_bytes(&partial)
+                && bytes != 0
+            {
+                let (previous, observed_at) = *first.get_or_insert((bytes, time::Instant::now()));
+                if bytes > previous {
+                    return (bytes, observed_at.elapsed());
+                }
+            }
+        }
+    })
+    .await?;
+    assert!(
+        gap <= Duration::from_millis(2250),
+        "checkpoint gap: {gap:?}"
+    );
+
+    // Kill near the end of the next checkpoint interval. Produced bytes are an
+    // upper bound on bytes received, since the server counts its probe too.
+    time::sleep(Duration::from_millis(1750)).await;
+    child.kill().await?;
+    let durable = persisted_bytes(&partial)?;
+    let refetched_upper_bound = file.emitted_bytes().saturating_sub(durable);
+    assert!(durable >= first, "persisted coverage moved backwards");
+    assert!(
+        refetched_upper_bound <= RATE * 2 + 128 * 1024,
+        "refetch upper bound is {refetched_upper_bound} bytes at {RATE} bytes/s"
+    );
+    eprintln!("Checkpoint gap {gap:?}, refetch upper bound {refetched_upper_bound} bytes");
+    finish_and_verify(&file, directory.path()).await
+}
+
+#[tokio::test]
 async fn force_kill_then_restart_if_the_remote_etag_changed() -> TestResult {
     let server = TestServer::start().await?;
     let file = server.file(FileSpec::random(93, SIZE).throttle_per_conn(4 * MIB));

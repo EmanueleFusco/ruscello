@@ -16,7 +16,8 @@
 ## Current Status
 
 The feature implementation through M9 is on `main`. [M10](https://github.com/EmanueleFusco/ruscello/issues/23)
-is the next milestone on the roadmap.
+tracks the 1.0 release. The [M10 release checks](TESTING.md#m10-release-checks) document how to reproduce the
+soak, resource measurements, and package verification.
 
 | Milestone | Implementation |
 |-----------|----------------|
@@ -406,19 +407,23 @@ optional live tests behind feature flag.
 
 ## M10 — Hardening, Performance, Packaging & 1.0 Release
 
-- [ ] **M10.1** Fuzzing (`cargo-fuzz`) for untrusted inputs: `Content-Disposition`, `m3u8`/MPD, TOML recipes, control files.
-- [ ] **M10.2** 24-hour soak test: 200 mixed downloads, random network drops, random process kills → zero file
-      corruption, zero unbounded memory growth.
-- [ ] **M10.3** Verify resource budget (§2) with repeatable benchmark scripts; profile with `tracy`/`perf`/`samply`.
-- [ ] **M10.4** Packaging: Windows (MSI or NSIS via `cargo-packager`/`cargo-dist`, optional code signing),
+- [x] **M10.1** Fuzzing (`cargo-fuzz`) for untrusted inputs: `Content-Disposition`, `m3u8`/MPD, TOML recipes, control files.
+- [x] **M10.2** Add a repeatable soak with 200 mixed downloads per batch, seeded network drops, and process
+      kills. The release validation used an owner-approved shorter run. The test passed after 242 seconds
+      with 1,200 SHA-256 comparisons, 22 forced process exits, and worker memory within the test limits.
+- [x] **M10.3** Verify the full resource budget (§2). The testing guide records the benchmark commands and
+      results. The owner approved an exception for the 1.0 release after the default Linux GPU renderer
+      measured 127.0 MB idle RSS on the AMD Lucienne reference desktop. GPU rendering remains the default,
+      and the 80 MB idle RAM target remains open for future optimization.
+- [x] **M10.4** Packaging: Windows (per-user NSIS installer, optional code signing),
       Linux (AppImage + `.deb` + optional Flatpak), macOS (`.dmg`). Automated GitHub Releases on `v*` tags.
-- [ ] **M10.5** **In-app GitHub Release auto-updater** (modeled after `EmanueleFusco/Scaricatore-di-Porto-rust`, requirement R18):
+- [x] **M10.5** **In-app GitHub Release auto-updater** (modeled after `EmanueleFusco/Scaricatore-di-Porto-rust`, requirement R18):
   - Check GitHub Releases (`api.github.com/repos/EmanueleFusco/ruscello/releases/latest` or release manifest JSON) automatically on startup (configurable toggle, enabled by default) and on demand via *Settings → About / Updates*;
   - Compare `semver` against current build version and return `UpdateCheck { available, current_version, version, notes, date }`;
   - Display a non-intrusive in-app update pill/banner in the main window when a newer build is available, showing version & release notes;
-  - **One-click in-app update (`download_and_install`)**: if downloads are active, cleanly pause and flush all checkpoints (`.rscpart.ctl`) first (or prompt to pause queue before updating, just like `Scaricatore-di-Porto-rust`); download the platform release asset with a live progress bar (`UpdateProgress { downloaded, total, percent }`), verify SHA-256 checksum / Ed25519 signature, apply the update in-place (`self-replace` crate for standalone binaries / silent installer handoff for packaged installs), and relaunch the app.
-- [ ] **M10.6** User documentation (`README.md`, quickstart guide, FAQ) and screenshots.
-- [ ] **M10.7** Public repository readiness: scrub any personal path references, audit dependency licenses
+  - **One-click in-app update (`download_and_install`)**: if downloads are active, cleanly pause and flush all checkpoints (`.rscpart.ctl`) first (or prompt to pause queue before updating, just like `Scaricatore-di-Porto-rust`); download the platform release asset with a live progress bar (`UpdateProgress { downloaded, total, percent }`), verify SHA-256 checksum / Ed25519 signature, apply the update in-place (`self-replace` crate for standalone binaries / silent installer handoff for packaged installs), and relaunch the app. [ADR-0011](adr/0011-desktop-release-updates.md) records the package replacement and trust design.
+- [x] **M10.6** User documentation (`README.md`, quickstart guide, FAQ) and screenshots.
+- [x] **M10.7** Public repository readiness: scrub any personal path references, audit dependency licenses
       (`cargo-deny`), add `SECURITY.md`.
 
 ---

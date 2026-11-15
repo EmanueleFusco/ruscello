@@ -2,7 +2,6 @@ use std::{
     net::IpAddr,
     num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use ruscello_engine::{
@@ -10,7 +9,6 @@ use ruscello_engine::{
     ScheduleAction, ScheduleRule, ScheduleSettings, WatchFolderRule, WatchFolderSettings,
     WatchProcessedBehavior, WeekdayMask, format_minutes, parse_hhmm,
 };
-use serde::Deserialize;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
@@ -688,59 +686,6 @@ fn write_lan_hash_file(dir: &Path, hash: &str) -> std::io::Result<()> {
     file.as_file().sync_all()?;
     file.persist(target)?;
     Ok(())
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct Release {
-    pub(crate) tag_name: String,
-    pub(crate) body: Option<String>,
-    pub(crate) html_url: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) enum UpdateStatus {
-    #[default]
-    Idle,
-    Checking,
-    Current,
-    Available(Release),
-    Failed,
-}
-
-pub(crate) async fn check_updates() -> UpdateStatus {
-    match latest_release().await {
-        Ok(Some(release)) => UpdateStatus::Available(release),
-        Ok(None) => UpdateStatus::Current,
-        Err(error) => {
-            tracing::debug!(%error, "Could not check for a release");
-            UpdateStatus::Failed
-        }
-    }
-}
-
-async fn latest_release() -> anyhow::Result<Option<Release>> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("Ruscello/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(12))
-        .build()?;
-    let response = client
-        .get("https://api.github.com/repos/EmanueleFusco/ruscello/releases/latest")
-        .send()
-        .await?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    let release = response.error_for_status()?.json::<Release>().await?;
-    let available = semver::Version::parse(release.tag_name.trim_start_matches('v'))?;
-    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
-    let url = ruscello_engine::Url::parse(&release.html_url)?;
-    anyhow::ensure!(
-        url.scheme() == "https"
-            && url.host_str() == Some("github.com")
-            && url.path().starts_with("/EmanueleFusco/ruscello/releases/"),
-        "Unexpected release URL"
-    );
-    Ok((available > current).then_some(release))
 }
 
 pub(crate) fn diagnostics(renderer: crate::preferences::Renderer) -> String {

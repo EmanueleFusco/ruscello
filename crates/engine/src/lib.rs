@@ -30,6 +30,7 @@ pub use handle::{
     Limits, ProgressUpdate, TorrentRuntimeProgress,
 };
 pub use post_process::PostProcessStage;
+pub use ruscello_storage::DatabaseRecovery;
 pub use startup::{RECOVERY_FOLDER, StartupError, recover_queue};
 
 pub use categories::{

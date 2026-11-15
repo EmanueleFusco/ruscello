@@ -1,6 +1,9 @@
 use std::{
     num::NonZeroU64,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -18,6 +21,7 @@ pub struct BandwidthLimit(Arc<Limit>);
 #[derive(Debug)]
 struct Limit {
     bucket: Mutex<Bucket>,
+    limited: AtomicBool,
     changed: watch::Sender<()>,
 }
 
@@ -37,6 +41,7 @@ impl Default for BandwidthLimit {
 impl BandwidthLimit {
     pub fn new(rate: Option<NonZeroU64>) -> Self {
         Self(Arc::new(Limit {
+            limited: AtomicBool::new(rate.is_some()),
             bucket: Mutex::new(Bucket {
                 rate,
                 tokens: capacity(rate) as f64,
@@ -58,6 +63,7 @@ impl BandwidthLimit {
                 bucket.tokens.min(cap)
             };
             bucket.rate = rate;
+            self.0.limited.store(rate.is_some(), Ordering::Release);
             self.0.changed.send_replace(());
         }
     }
@@ -69,8 +75,13 @@ impl BandwidthLimit {
         individual: Option<&Self>,
         requested: usize,
     ) -> usize {
-        if requested == 0 {
-            return 0;
+        if requested == 0
+            || [Some(self), Some(local), individual]
+                .into_iter()
+                .flatten()
+                .all(|limit| !limit.0.limited.load(Ordering::Acquire))
+        {
+            return requested;
         }
         let mut limits = [Some(self), Some(local), individual];
         // A consistent address order avoids deadlocks when callers share a bucket.
@@ -223,6 +234,22 @@ mod tests {
         assert_eq!(shared.acquire(&shared, Some(&individual), 100).await, 10);
         assert!(shared.lock().tokens >= 90.0);
         assert!(individual.lock().tokens < 1.0);
+    }
+
+    #[tokio::test]
+    async fn applies_new_limits_after_unrestricted_transfers() {
+        let global = BandwidthLimit::default();
+        let local = BandwidthLimit::default();
+        let individual = BandwidthLimit::default();
+
+        assert_eq!(global.acquire(&local, Some(&individual), 500).await, 500);
+        local.set_rate(NonZeroU64::new(30));
+        assert_eq!(global.acquire(&local, Some(&individual), 500).await, 3);
+        local.set_rate(None);
+        individual.set_rate(NonZeroU64::new(20));
+        assert_eq!(global.acquire(&local, Some(&individual), 500).await, 2);
+        individual.set_rate(None);
+        assert_eq!(global.acquire(&local, Some(&individual), 500).await, 500);
     }
 
     #[tokio::test]

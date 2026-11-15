@@ -1,0 +1,199 @@
+name: Desktop packages
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packaging/**'
+      - 'apps/gui/src/updater.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  package:
+    name: Package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve and validate release version
+        shell: bash
+        run: |
+          version=$(awk '/^\[workspace.package\]/{workspace=1;next} workspace && /^version = /{split($0,a,"\"");print a[2];exit}' Cargo.toml)
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+      - name: Linux build and packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          ./scripts/ci-linux-deps.sh
+          sudo apt-get install -y --no-install-recommends dpkg-dev libfuse2t64 desktop-file-utils
+          desktop-file-validate packaging/linux/org.ruscello.Ruscello.desktop
+          curl -fsSL -o /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          echo "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1  /tmp/appimagetool" | sha256sum -c -
+          chmod +x /tmp/appimagetool
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        run: choco install nsis --yes --no-progress
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-release
+      - name: Build desktop and browser helper
+        run: cargo build --release --locked -p ruscello-gui -p ruscello-webview
+      - name: AppImage and Debian
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          APPIMAGETOOL: /tmp/appimagetool
+        run: |
+          bash packaging/linux/package.sh "$TAG"
+          dpkg-deb --contents dist/*.deb
+          dpkg-deb --fsys-tarfile dist/*.deb | tar -tf - | grep -Fx './usr/share/applications/org.ruscello.Ruscello.desktop'
+          dpkg-deb --fsys-tarfile dist/*.deb | tar -xOf - './usr/share/icons/hicolor/512x512/apps/ruscello.png' | cmp apps/gui/assets/ruscello.png -
+          mkdir -p "$RUNNER_TEMP/appimage"
+          image="$(realpath dist/*.AppImage)"
+          (cd "$RUNNER_TEMP/appimage"; "$image" --appimage-extract >/dev/null)
+          test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/ruscello"
+          test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/ruscello-webview"
+          test -f "$RUNNER_TEMP/appimage/squashfs-root/org.ruscello.Ruscello.desktop"
+          cmp apps/gui/assets/ruscello.png "$RUNNER_TEMP/appimage/squashfs-root/.DirIcon"
+      - name: Windows NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $bin = (Resolve-Path target/release).Path
+          $output = "$(Resolve-Path dist)\ruscello-$env:TAG-windows-x86_64.exe"
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          & $nsis "/DBIN=$bin" "/DOUT=$output" "/DVERSION=$env:VERSION" packaging/windows/ruscello.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $install = "$env:RUNNER_TEMP\Ruscello Package Test"
+          $process = Start-Process -FilePath $output -ArgumentList "/S /D=$install" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+          foreach ($file in 'ruscello.exe','ruscello-webview.exe','Uninstall.exe') {
+            if (!(Test-Path "$install\$file")) { throw "Missing installed file $file" }
+          }
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello'
+          if ((Get-ItemPropertyValue $uninstallKey DisplayName) -ne 'Ruscello Download Manager') {
+            throw "Unexpected installed application name"
+          }
+          if ((Get-ItemPropertyValue $uninstallKey DisplayIcon) -ne "$install\ruscello.exe") {
+            throw "Missing installed application icon registration"
+          }
+          $binaries = 'ruscello.exe','ruscello-webview.exe'
+          foreach ($file in $binaries) {
+            Set-Content -NoNewline "$install\$file" 'Previous installation fixture'
+          }
+          $quitting = Start-Process -FilePath "$env:SystemRoot\System32\ping.exe" -ArgumentList "-n 8 127.0.0.1" -WindowStyle Hidden -PassThru
+          $update = Start-Process -FilePath $output -ArgumentList "/S /UPDATE /WAITPID=$($quitting.Id) /D=$install" -PassThru
+          try {
+            if (!$update.WaitForExit(60000)) {
+              $update.Kill()
+              throw "Silent upgrade did not exit"
+            }
+            if ($update.ExitCode -ne 0) { exit $update.ExitCode }
+            if (!$quitting.HasExited) { throw "Upgrade did not wait for the exiting process" }
+            foreach ($file in $binaries) {
+              if ((Get-FileHash "$install\$file").Hash -ne (Get-FileHash "$bin\$file").Hash) {
+                throw "Upgrade did not replace $file"
+              }
+              if (Test-Path "$install\$file.old") { throw "Unexpected backup for $file" }
+            }
+          } finally {
+            if (!$quitting.HasExited) { $quitting.Kill() }
+            Get-Process -Name ruscello -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -eq "$install\ruscello.exe" } |
+              Stop-Process -ErrorAction SilentlyContinue
+          }
+      - name: macOS disk image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash packaging/macos/package.sh "$TAG"
+          hdiutil verify dist/*.dmg
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  assemble:
+    name: Verify release bundle
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: dist
+      - name: Verify asset set and generate checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          shopt -s nullglob
+          assets=(*)
+          test "${#assets[@]}" -eq 5
+          for suffix in linux-x86_64.AppImage linux-x86_64.deb windows-x86_64.exe macos-aarch64.dmg macos-x86_64.dmg; do
+            matches=(ruscello-v*-"$suffix")
+            test "${#matches[@]}" -eq 1
+            test -s "${matches[0]}"
+          done
+          sha256sum "${assets[@]}" > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-bundle
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: assemble
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-bundle
+          path: dist
+      - name: Publish all assets together
+        shell: bash
+        run: |
+          (cd dist; sha256sum --check SHA256SUMS)
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk '/^## \[Unreleased\]/{notes=1;next} notes && /^## /{exit} notes{print}' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+              --title "Ruscello Download Manager $GITHUB_REF_NAME" --generate-notes --latest
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+              --title "Ruscello Download Manager $GITHUB_REF_NAME" --notes-file "$notes" --latest
+          fi

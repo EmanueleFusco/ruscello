@@ -9,7 +9,10 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
 };
 
-use crate::{app::Message, i18n::Strings};
+use crate::{app::Message, i18n::Strings, icons};
+
+#[cfg(target_os = "linux")]
+pub(crate) const APP_ID: &str = "org.ruscello.Ruscello";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Event {
@@ -61,19 +64,6 @@ pub(crate) fn event_bridge() -> Receiver<Event> {
 }
 
 pub(crate) fn tray(strings: &Strings) -> anyhow::Result<TrayIcon> {
-    let mut pixels = Vec::with_capacity(24 * 24 * 4);
-    for y in 0..24_i32 {
-        for x in 0..24_i32 {
-            let arrow = ((10..=13).contains(&x) && (5..=13).contains(&y))
-                || ((10..=15).contains(&y) && (x - 11).abs() + y - 10 <= 5)
-                || ((5..=18).contains(&x) && (17..=19).contains(&y));
-            pixels.extend(if arrow {
-                [255, 255, 255, 255]
-            } else {
-                [0, 105, 100, 255]
-            });
-        }
-    }
     let menu = Menu::new();
     for (id, label) in [
         ("ruscello-show", "tray-show"),
@@ -83,7 +73,11 @@ pub(crate) fn tray(strings: &Strings) -> anyhow::Result<TrayIcon> {
         menu.append(&MenuItem::with_id(id, strings.get(label), true, None))?;
     }
     Ok(TrayIconBuilder::new()
-        .with_icon(Icon::from_rgba(pixels, 24, 24)?)
+        .with_icon(Icon::from_rgba(
+            icons::APP_ICON_RGBA.to_vec(),
+            icons::APP_ICON_SIZE,
+            icons::APP_ICON_SIZE,
+        )?)
         .with_tooltip(strings.get("app-name"))
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
@@ -193,10 +187,17 @@ fn register_associations(exe: PathBuf) -> anyhow::Result<()> {
         "application/x-dlc",
     ];
     let entry = format!(
-        "[Desktop Entry]\nName=Ruscello\nType=Application\nExec=\"{exe}\" %U\nTerminal=false\nMimeType={};\n",
+        "[Desktop Entry]\nName=Ruscello Download Manager\nType=Application\nExec=\"{exe}\" %U\nIcon=ruscello\nStartupWMClass={APP_ID}\nTerminal=false\nMimeType={};\n",
         types.join(";")
     );
-    fs::write(applications.join("org.ruscello.Ruscello.desktop"), entry)?;
+    let icon_dir = dirs.data_dir().join("icons/hicolor/512x512/apps");
+    fs::create_dir_all(&icon_dir)?;
+    fs::write(
+        icon_dir.join("ruscello.png"),
+        include_bytes!("../assets/ruscello.png"),
+    )?;
+    let desktop_file = format!("{APP_ID}.desktop");
+    fs::write(applications.join(&desktop_file), entry)?;
     let mime = dirs.data_dir().join("mime");
     let packages = mime.join("packages");
     fs::create_dir_all(&packages)?;
@@ -208,7 +209,7 @@ fn register_associations(exe: PathBuf) -> anyhow::Result<()> {
     anyhow::ensure!(status.success(), "Could not update the MIME database");
     for mime in types {
         let status = Command::new("xdg-mime")
-            .args(["default", "org.ruscello.Ruscello.desktop", mime])
+            .args(["default", &desktop_file, mime])
             .status()?;
         anyhow::ensure!(status.success(), "xdg-mime could not set the association");
     }

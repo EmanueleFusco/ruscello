@@ -34,7 +34,7 @@ pub(crate) fn suggest_filename(headers: &HeaderMap, url: &Url) -> String {
     filename
 }
 
-fn disposition_filename(value: &str) -> Option<String> {
+pub(crate) fn disposition_filename(value: &str) -> Option<String> {
     let (_, mut rest) = value.split_once(';')?;
     let mut basic = None;
     let mut extended = None;

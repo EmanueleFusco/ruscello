@@ -6068,7 +6068,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "ruscello-api"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -6095,7 +6095,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-browser"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "cookie",
  "rusqlite",
@@ -6110,15 +6110,17 @@ dependencies = [
 
 [[package]]
 name = "ruscello-cli"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "reqwest",
  "ruscello-api",
+ "ruscello-core",
  "ruscello-engine",
  "ruscello-http",
  "ruscello-platform",
  "ruscello-testkit",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
@@ -6128,7 +6130,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-core"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -6136,7 +6138,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-engine"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -6163,6 +6165,7 @@ dependencies = [
  "ruscello-storage",
  "ruscello-testkit",
  "ruscello-torrent",
+ "rusqlite",
  "serde",
  "serde_json",
  "sevenz-rust2",
@@ -6178,7 +6181,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-gui"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -6186,6 +6189,7 @@ dependencies = [
  "fluent-bundle",
  "fs4",
  "getrandom 0.4.3",
+ "hex",
  "iced",
  "iced_test",
  "keyring",
@@ -6202,6 +6206,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -6209,11 +6214,12 @@ dependencies = [
  "tray-icon",
  "windows-sys 0.61.2",
  "winreg",
+ "winresource",
 ]
 
 [[package]]
 name = "ruscello-http"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -6245,7 +6251,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-media"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "aes",
  "bytes",
@@ -6274,7 +6280,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-platform"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "directories",
  "ruscello-core",
@@ -6291,7 +6297,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-resolver"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -6317,7 +6323,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-storage"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "ruscello-core",
  "rusqlite",
@@ -6331,7 +6337,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-testkit"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -6346,7 +6352,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-torrent"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "bytes",
  "librqbit",
@@ -6364,7 +6370,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-webview"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "cookie",
@@ -9153,6 +9159,15 @@ checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "version_check",
 ]
 
 [[package]]

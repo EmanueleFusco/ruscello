@@ -290,6 +290,8 @@ pub enum EngineEvent {
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
+    #[error("a transfer could not save its checkpoint during shutdown")]
+    ShutdownCheckpoint,
     #[error("the download engine has stopped")]
     Stopped,
     #[error("download ID does not exist")]

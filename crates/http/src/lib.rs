@@ -35,3 +35,17 @@ pub use writer::{
     Checkpoint, CheckpointJob, FileWriter, WriterError, filename_candidate, persisted_bytes,
     sanitize_filename, scan_checkpoints,
 };
+
+/// Parser entry points for cargo-fuzz.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing {
+    /// Exercises the Content-Disposition filename parser.
+    pub fn content_disposition(input: &str) {
+        let _ = crate::filename::disposition_filename(input);
+    }
+
+    /// Exercises the on-disk download checkpoint decoder.
+    pub fn checkpoint(input: &[u8]) {
+        crate::writer::fuzz_checkpoint(input);
+    }
+}

@@ -631,3 +631,8 @@ fn join_url(base: &Url, relative: &str) -> Result<Url, MediaError> {
     }
     Ok(joined)
 }
+
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_parse(input: &[u8]) {
+    let _ = parse_playlist(input);
+}
