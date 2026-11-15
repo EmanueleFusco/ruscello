@@ -3,24 +3,63 @@
 ## Install
 
 Get your platform package from [GitHub Releases](https://github.com/EmanueleFusco/ruscello/releases).
-Check that the OS and architecture in the filename match your system.
+Check that the OS and architecture (`x86_64` or `aarch64`) in the filename match your system.
 
 | Platform | Package | Installation |
 |---|---|---|
-| Windows x64 | `.exe` | Run the per-user installer. The browser helper needs the Microsoft Edge WebView2 Runtime. |
-| Ubuntu 24.04 or compatible Linux x64 | `.deb` | Run `sudo apt install ./ruscello-v1.0.0-linux-x86_64.deb` from the download directory. |
-| Ubuntu 24.04 or compatible Linux x64 | `.AppImage` | Install the dependencies below, make the file executable, and run it. Keep it in a writable folder if you want one-click updates. |
-| macOS | `.dmg` | Open the image and drag Ruscello Download Manager to Applications. Choose `aarch64` for Apple Silicon or `x86_64` for Intel. |
+| Windows (`x86_64`, `aarch64`) | `.exe` | Run the per-user installer. The browser helper needs the Microsoft Edge WebView2 Runtime. |
+| Ubuntu 24.04 / Debian (`x86_64`, `aarch64`) | `.deb` | Run `sudo apt install ./ruscello-v1.0.0-linux-<arch>.deb` from the download directory. |
+| Fedora (`x86_64`, `aarch64`) | `.rpm` | Run `sudo dnf install ./ruscello-v1.0.0-linux-<arch>.rpm` from the download directory. |
+| Linux (`x86_64`, `aarch64`) | `.AppImage` | Install the system libraries below, make the file executable, and run it. Keep it in a writable folder if you want one-click updates. |
+| Arch Linux (`x86_64`, `aarch64`) | `PKGBUILD` / `.AppImage` | Build from source with `packaging/arch/PKGBUILD` (`makepkg -si`) or run the `.AppImage` below. |
+| macOS (`aarch64`, `x86_64`) | `.dmg` | Open the image and drag Ruscello Download Manager to Applications. Choose `aarch64` for Apple Silicon or `x86_64` for Intel. |
 
 On Linux, Ruscello uses native Wayland when available and also supports X11 sessions.
 
-The AppImage uses the system's GTK, WebKitGTK, and desktop integration libraries. On Ubuntu 24.04:
+### Linux AppImage dependencies
+
+The AppImage uses the system's GTK, WebKitGTK, and desktop integration libraries.
+
+On Ubuntu 24.04 / Debian:
 
 ```sh
 sudo apt install libfuse2t64 libgtk-3-0t64 libwebkit2gtk-4.1-0 libxkbcommon0 libxdo3 libayatana-appindicator3-1
 chmod +x ruscello-v1.0.0-linux-x86_64.AppImage
 ./ruscello-v1.0.0-linux-x86_64.AppImage
 ```
+
+On Fedora:
+
+```sh
+sudo dnf install fuse fuse-libs gtk3 webkit2gtk4.1 libxkbcommon
+chmod +x ruscello-v1.0.0-linux-x86_64.AppImage
+./ruscello-v1.0.0-linux-x86_64.AppImage
+```
+
+On Arch Linux:
+
+```sh
+sudo pacman -S --needed fuse2 gtk3 webkit2gtk-4.1 libsoup3 libxkbcommon dbus hicolor-icon-theme
+chmod +x ruscello-v1.0.0-linux-x86_64.AppImage
+./ruscello-v1.0.0-linux-x86_64.AppImage
+```
+
+*(Replace `x86_64` with `aarch64` on ARM64 systems.)*
+
+### Building on Arch Linux (`PKGBUILD`)
+
+To compile and install Ruscello natively as a `pacman` package using [packaging/arch/PKGBUILD](../packaging/arch/PKGBUILD):
+
+```sh
+git clone https://github.com/EmanueleFusco/ruscello.git
+cd ruscello/packaging/arch
+makepkg -si
+```
+
+If you want `makepkg` to build from a tagged source tarball without cloning the full repository, download
+`packaging/arch/PKGBUILD` into an empty directory and run `makepkg -si`.
+
+### Checksum verification
 
 The release includes `SHA256SUMS`. Compare the entry for your file with `Get-FileHash <file>` on Windows,
 `sha256sum <file>` on Linux, or `shasum -a 256 <file>` on macOS. Current Windows and macOS packages can
@@ -48,5 +87,5 @@ resume when the application comes back. The startup check can be disabled from t
 
 ![The About settings with the startup update preference and manual check](images/about.png)
 
-For Debian packages and source builds, use your package manager or install the new build yourself.
+For Debian, RPM, Arch `PKGBUILD`, and source builds, use your package manager or install the new build yourself.
 See the [FAQ](FAQ.md) for resume, verification, sidecars, and local network control.

@@ -5,6 +5,21 @@ tag=${1:?Pass the release tag}
 bin=${2:-target/release}
 out=${3:-dist}
 appimagetool=${APPIMAGETOOL:?Set APPIMAGETOOL to the AppImage packaging tool}
+host_arch=${TARGET_ARCH:-$(uname -m)}
+case "$host_arch" in
+  x86_64|amd64)
+    arch=x86_64
+    deb_arch=amd64
+    ;;
+  aarch64|arm64)
+    arch=aarch64
+    deb_arch=arm64
+    ;;
+  *)
+    echo "Unsupported Linux packaging architecture: $host_arch" >&2
+    exit 1
+    ;;
+esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$out"
@@ -21,8 +36,8 @@ install -Dm755 packaging/linux/AppRun "$app/AppRun"
 ln -s "usr/share/applications/$desktop_file" "$app/$desktop_file"
 ln -s "$icon" "$app/ruscello.png"
 ln -s ruscello.png "$app/.DirIcon"
-stem="ruscello-$tag-linux-x86_64"
-ARCH=x86_64 VERSION="${tag#v}" APPIMAGE_EXTRACT_AND_RUN=1 \
+stem="ruscello-$tag-linux-$arch"
+ARCH="$arch" VERSION="${tag#v}" APPIMAGE_EXTRACT_AND_RUN=1 \
   "$appimagetool" --no-appstream "$app" "$out/$stem.AppImage"
 rm "$app/AppRun" "$app/$desktop_file" "$app/ruscello.png" "$app/.DirIcon"
 mkdir "$app/DEBIAN"
@@ -34,7 +49,7 @@ test -n "$depends"
 cat > "$app/DEBIAN/control" <<CONTROL
 Package: ruscello
 Version: ${tag#v}
-Architecture: amd64
+Architecture: $deb_arch
 Maintainer: Ruscello maintainers
 Section: net
 Priority: optional
