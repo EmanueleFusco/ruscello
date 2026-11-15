@@ -173,13 +173,17 @@ jobs:
           if-no-files-found: error
 
   package_rpm:
-    name: Package Fedora RPM (${{ matrix.os }})
+    name: Package Fedora 44 RPM (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Resolve and validate release version
@@ -201,7 +205,7 @@ jobs:
             -e TAG="$TAG" \
             -e CARGO_TERM_COLOR="$CARGO_TERM_COLOR" \
             -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
-            fedora:42 bash -euo pipefail -c '
+            fedora:44 bash -euo pipefail -c '
               dnf install -y --setopt=install_weak_deps=False \
                 gcc gcc-c++ cmake make pkgconf-pkg-config rpm-build desktop-file-utils \
                 curl ca-certificates libxkbcommon-devel wayland-devel webkit2gtk4.1-devel \
@@ -216,7 +220,7 @@ jobs:
       - name: Verify Fedora RPM installation
         shell: bash
         run: |
-          docker run --rm -v "$PWD:/work:ro" -w /work fedora:42 bash -euo pipefail -c '
+          docker run --rm -v "$PWD:/work:ro" -w /work fedora:44 bash -euo pipefail -c '
             rpm -qlp dist/*.rpm
             dnf install -y dist/*.rpm
             test -x /usr/bin/ruscello
