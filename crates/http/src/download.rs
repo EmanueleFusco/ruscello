@@ -598,38 +598,51 @@ impl RangeSource {
     }
 
     async fn stream(&self, work: &Work, events: &mpsc::Sender<Event>) -> Result<(), HttpError> {
-        let mut response = self.response(work.range.start, work.range.end).await?;
-        let mut remaining = work.range.end - work.range.start;
-        while let Some(bytes) = response.chunk().await? {
-            if bytes.len() as u64 > remaining {
-                return Err(HttpError::InvalidResponse(
-                    "body exceeds the requested range",
-                ));
-            }
-            remaining -= bytes.len() as u64;
-            if remaining == 0 && response.chunk().await?.is_some() {
-                return Err(HttpError::InvalidResponse(
-                    "body exceeds the requested range",
-                ));
-            }
-            let mut offset = 0;
-            while offset < bytes.len() {
-                let chunk = self.limits.next_chunk(&bytes, offset).await;
-                offset += chunk.len();
-                events
-                    .send(Event::Data(work.id, chunk))
-                    .await
-                    .map_err(|_| HttpError::WorkerStopped)?;
-            }
-            if remaining == 0 {
-                return Ok(());
-            }
-        }
-        if remaining > 0 {
-            return Err(HttpError::Truncated);
-        }
-        Ok(())
+        let response = self.response(work.range.start, work.range.end).await?;
+        let remaining = work.range.end - work.range.start;
+        let chunks = futures_util::stream::try_unfold(response, |mut response| async move {
+            let chunk = response.chunk().await.map_err(HttpError::from)?;
+            Ok::<_, HttpError>(chunk.map(|bytes| (bytes, response)))
+        });
+        stream_chunks(chunks, remaining, &self.limits, work.id, events).await
     }
+}
+
+async fn stream_chunks<S>(
+    chunks: S,
+    mut remaining: u64,
+    limits: &TransferLimits,
+    work_id: WorkId,
+    events: &mpsc::Sender<Event>,
+) -> Result<(), HttpError>
+where
+    S: futures_util::Stream<Item = Result<Bytes, HttpError>>,
+{
+    tokio::pin!(chunks);
+    while let Some(bytes) = futures_util::TryStreamExt::try_next(&mut chunks).await? {
+        if bytes.is_empty() {
+            continue;
+        }
+        if bytes.len() as u64 > remaining {
+            return Err(HttpError::InvalidResponse(
+                "body exceeds the requested range",
+            ));
+        }
+        remaining -= bytes.len() as u64;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let chunk = limits.next_chunk(&bytes, offset).await;
+            offset += chunk.len();
+            events
+                .send(Event::Data(work_id, chunk))
+                .await
+                .map_err(|_| HttpError::WorkerStopped)?;
+        }
+    }
+    if remaining > 0 {
+        return Err(HttpError::Truncated);
+    }
+    Ok(())
 }
 
 enum Event {
@@ -832,6 +845,57 @@ impl Segmented {
             active.task.abort();
             self.allocator.release(id)?;
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unlimited() -> TransferLimits {
+        TransferLimits {
+            global: BandwidthLimit::default(),
+            local: BandwidthLimit::default(),
+            individual: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ignores_trailing_empty_chunks_and_rejects_extra_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let limits = unlimited();
+        let (events, mut rx) = mpsc::channel(8);
+        let work_id = SegmentAllocator::new(3, NonZeroUsize::MIN, NonZeroU64::MIN)
+            .assign()
+            .ok_or("missing segment allocation")?
+            .id;
+        let ok_stream =
+            futures_util::stream::iter([Ok(Bytes::from_static(b"abc")), Ok(Bytes::new())]);
+        stream_chunks(ok_stream, 3, &limits, work_id, &events).await?;
+        match rx.recv().await {
+            Some(Event::Data(id, bytes)) => {
+                assert_eq!(id, work_id);
+                assert_eq!(bytes.as_ref(), b"abc");
+            }
+            _ => return Err("expected Data event".into()),
+        }
+
+        let extra_stream = futures_util::stream::iter([
+            Ok(Bytes::from_static(b"abc")),
+            Ok(Bytes::from_static(b"x")),
+        ]);
+        let err = stream_chunks(extra_stream, 3, &limits, work_id, &events).await;
+        assert!(matches!(
+            err,
+            Err(HttpError::InvalidResponse(
+                "body exceeds the requested range"
+            ))
+        ));
+
+        let short_stream = futures_util::stream::iter([Ok(Bytes::from_static(b"ab"))]);
+        let err = stream_chunks(short_stream, 3, &limits, work_id, &events).await;
+        assert!(matches!(err, Err(HttpError::Truncated)));
         Ok(())
     }
 }

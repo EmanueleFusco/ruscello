@@ -128,7 +128,27 @@ impl Browser for NativeBrowser {
             let steps =
                 recipe.map_or_else(Vec::new, |recipe| recipe.steps.iter().map(step).collect());
             let limits = recipe.map_or_else(Default::default, |recipe| recipe.limits());
-            match self.open(url, View::Resolve, steps, cancellation).await? {
+            let response = self.open(url, View::Resolve, steps, cancellation).await?;
+            let response = match response {
+                Response::Page {
+                    url: ref page,
+                    ref html,
+                    ..
+                } if crate::Builtin::FuckingFast.matches(url)
+                    && crate::plugins::fuckingfast_link(url, page, html).is_none()
+                    && crate::plugins::fuckingfast_hx_post(page, html).is_some() =>
+                {
+                    let steps = vec![
+                        Step::Click {
+                            selector: "a[hx-post], button[hx-post], [hx-post]".to_owned(),
+                        },
+                        Step::ExpectDownload,
+                    ];
+                    self.open(url, View::Resolve, steps, cancellation).await?
+                }
+                response => response,
+            };
+            match response {
                 Response::Download {
                     url,
                     referer,

@@ -171,7 +171,7 @@ impl HostPlugin for Builtin {
 
     fn limits(&self) -> HosterLimits {
         match self {
-            Self::FuckingFast | Self::XFileSharing | Self::Gofile => HosterLimits::SERIAL,
+            Self::XFileSharing | Self::Gofile => HosterLimits::SERIAL,
             _ => HosterLimits::default(),
         }
     }
@@ -216,7 +216,7 @@ fn fuckingfast_redirect(source: &Url, base: &Url, response: &reqwest::Response) 
     })
 }
 
-fn fuckingfast_hx_post(base: &Url, body: &str) -> Option<Url> {
+pub(crate) fn fuckingfast_hx_post(base: &Url, body: &str) -> Option<Url> {
     let document = Html::parse_document(body);
     let element = http::first(&document, "a[hx-post], button[hx-post], [hx-post]")?;
     http::join(base, element.attr("hx-post")?).filter(|url| url.origin() == base.origin())
@@ -631,7 +631,7 @@ mod tests {
         let ctx = resolver.context(&CancellationToken::new());
         let result = Builtin::FuckingFast.resolve(&ctx, &url).await?;
         assert_eq!(result.url.path(), "/dl/fixture-token");
-        assert_eq!(result.limits, HosterLimits::SERIAL);
+        assert_eq!(result.limits, HosterLimits::default());
         assert!(matches!(
             Builtin::FuckingFast.resolve(&ctx, &blocked).await,
             Err(ResolveError::VerificationRequired)
@@ -678,7 +678,7 @@ mod tests {
         let ctx = resolver.context(&CancellationToken::new());
         let resolved = Builtin::FuckingFast.resolve(&ctx, &share_url).await?;
         assert_eq!(resolved.url.path(), "/dl/hx-token");
-        assert_eq!(resolved.limits, HosterLimits::SERIAL);
+        assert_eq!(resolved.limits, HosterLimits::default());
         assert!(matches!(
             Builtin::FuckingFast.resolve(&ctx, &active_cf).await,
             Err(ResolveError::VerificationRequired)
