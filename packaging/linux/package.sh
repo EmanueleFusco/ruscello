@@ -10,19 +10,20 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$out"
 out=$(realpath "$out")
 app="$work/Ruscello.AppDir"
+desktop_file=org.ruscello.Ruscello.desktop
 install -Dm755 "$bin/ruscello" "$app/usr/bin/ruscello"
 install -Dm755 "$bin/ruscello-webview" "$app/usr/bin/ruscello-webview"
-install -Dm644 packaging/linux/ruscello.desktop "$app/usr/share/applications/ruscello.desktop"
+install -Dm644 "packaging/linux/$desktop_file" "$app/usr/share/applications/$desktop_file"
 install -Dm644 packaging/linux/ruscello.svg "$app/usr/share/icons/hicolor/scalable/apps/ruscello.svg"
 install -Dm644 LICENSE "$app/usr/share/doc/ruscello/copyright"
 install -Dm755 packaging/linux/AppRun "$app/AppRun"
-ln -s usr/share/applications/ruscello.desktop "$app/ruscello.desktop"
+ln -s "usr/share/applications/$desktop_file" "$app/$desktop_file"
 ln -s usr/share/icons/hicolor/scalable/apps/ruscello.svg "$app/ruscello.svg"
 ln -s ruscello.svg "$app/.DirIcon"
 stem="ruscello-$tag-linux-x86_64"
 ARCH=x86_64 VERSION="${tag#v}" APPIMAGE_EXTRACT_AND_RUN=1 \
   "$appimagetool" --no-appstream "$app" "$out/$stem.AppImage"
-rm "$app/AppRun" "$app/ruscello.desktop" "$app/ruscello.svg" "$app/.DirIcon"
+rm "$app/AppRun" "$app/$desktop_file" "$app/ruscello.svg" "$app/.DirIcon"
 mkdir "$app/DEBIAN"
 mkdir "$work/debian"
 printf 'Source: ruscello\n\nPackage: ruscello\nArchitecture: any\n' > "$work/debian/control"

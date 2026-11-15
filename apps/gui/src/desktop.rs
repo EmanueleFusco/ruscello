@@ -11,6 +11,9 @@ use tray_icon::{
 
 use crate::{app::Message, i18n::Strings};
 
+#[cfg(target_os = "linux")]
+pub(crate) const APP_ID: &str = "org.ruscello.Ruscello";
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Event {
     Show,
@@ -193,10 +196,11 @@ fn register_associations(exe: PathBuf) -> anyhow::Result<()> {
         "application/x-dlc",
     ];
     let entry = format!(
-        "[Desktop Entry]\nName=Ruscello\nType=Application\nExec=\"{exe}\" %U\nTerminal=false\nMimeType={};\n",
+        "[Desktop Entry]\nName=Ruscello\nType=Application\nExec=\"{exe}\" %U\nIcon=ruscello\nStartupWMClass={APP_ID}\nTerminal=false\nMimeType={};\n",
         types.join(";")
     );
-    fs::write(applications.join("org.ruscello.Ruscello.desktop"), entry)?;
+    let desktop_file = format!("{APP_ID}.desktop");
+    fs::write(applications.join(&desktop_file), entry)?;
     let mime = dirs.data_dir().join("mime");
     let packages = mime.join("packages");
     fs::create_dir_all(&packages)?;
@@ -208,7 +212,7 @@ fn register_associations(exe: PathBuf) -> anyhow::Result<()> {
     anyhow::ensure!(status.success(), "Could not update the MIME database");
     for mime in types {
         let status = Command::new("xdg-mime")
-            .args(["default", "org.ruscello.Ruscello.desktop", mime])
+            .args(["default", &desktop_file, mime])
             .status()?;
         anyhow::ensure!(status.success(), "xdg-mime could not set the association");
     }

@@ -50,7 +50,7 @@ jobs:
         run: |
           ./scripts/ci-linux-deps.sh
           sudo apt-get install -y --no-install-recommends dpkg-dev libfuse2t64 desktop-file-utils
-          desktop-file-validate packaging/linux/ruscello.desktop
+          desktop-file-validate packaging/linux/org.ruscello.Ruscello.desktop
           curl -fsSL -o /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
           echo "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
@@ -70,11 +70,13 @@ jobs:
         run: |
           bash packaging/linux/package.sh "$TAG"
           dpkg-deb --contents dist/*.deb
+          dpkg-deb --fsys-tarfile dist/*.deb | tar -tf - | grep -Fx './usr/share/applications/org.ruscello.Ruscello.desktop'
           mkdir -p "$RUNNER_TEMP/appimage"
           image="$(realpath dist/*.AppImage)"
           (cd "$RUNNER_TEMP/appimage"; "$image" --appimage-extract >/dev/null)
           test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/ruscello"
           test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/ruscello-webview"
+          test -f "$RUNNER_TEMP/appimage/squashfs-root/org.ruscello.Ruscello.desktop"
       - name: Windows NSIS
         if: runner.os == 'Windows'
         shell: pwsh
