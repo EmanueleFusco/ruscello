@@ -585,11 +585,18 @@ impl RangeSource {
         {
             return Err(HttpError::RepresentationChanged);
         }
-        if span != (start..end)
-            || response
-                .content_length()
-                .is_some_and(|length| length != end - start)
-        {
+        if !range_matches(
+            span.clone(),
+            start..end,
+            self.size,
+            response.content_length(),
+        ) {
+            tracing::debug!(
+                requested = ?(start..end),
+                actual = ?span,
+                content_length = ?response.content_length(),
+                "HTTP range response did not match assignment"
+            );
             return Err(HttpError::InvalidResponse(
                 "response range does not match the assignment",
             ));
@@ -606,6 +613,22 @@ impl RangeSource {
         });
         stream_chunks(chunks, remaining, &self.limits, work.id, events).await
     }
+}
+
+fn range_matches(
+    span: std::ops::Range<u64>,
+    requested: std::ops::Range<u64>,
+    total_size: u64,
+    content_length: Option<u64>,
+) -> bool {
+    let expected_len = requested.end - requested.start;
+    if content_length.is_some_and(|length| length != expected_len) {
+        return false;
+    }
+    span == requested
+        || (span.start == requested.start
+            && span.end == total_size
+            && content_length == Some(expected_len))
 }
 
 async fn stream_chunks<S>(
@@ -897,5 +920,16 @@ mod tests {
         let err = stream_chunks(short_stream, 3, &limits, work_id, &events).await;
         assert!(matches!(err, Err(HttpError::Truncated)));
         Ok(())
+    }
+
+    #[test]
+    fn validates_exact_and_file_end_content_ranges() {
+        assert!(range_matches(10..20, 10..20, 100, Some(10)));
+        assert!(range_matches(10..20, 10..20, 100, None));
+        assert!(range_matches(10..100, 10..20, 100, Some(10)));
+        assert!(!range_matches(10..100, 10..20, 100, None));
+        assert!(!range_matches(10..100, 10..20, 100, Some(90)));
+        assert!(!range_matches(11..20, 10..20, 100, Some(9)));
+        assert!(!range_matches(10..20, 10..20, 100, Some(11)));
     }
 }
