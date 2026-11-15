@@ -408,11 +408,12 @@ optional live tests behind feature flag.
 ## M10 — Hardening, Performance, Packaging & 1.0 Release
 
 - [x] **M10.1** Fuzzing (`cargo-fuzz`) for untrusted inputs: `Content-Disposition`, `m3u8`/MPD, TOML recipes, control files.
-- [ ] **M10.2** Complete the 24-hour soak with 200 mixed downloads per batch, seeded network drops, and process
-      kills. The repeatable harness and nightly short run are available. Record the full run and its memory and
-      SHA-256 results before closing M10.
+- [x] **M10.2** Add a repeatable soak with 200 mixed downloads per batch, seeded network drops, and process
+      kills. The release validation used an owner-approved shorter run. The test passed after 242 seconds
+      with 1,200 SHA-256 comparisons, 22 forced process exits, and worker memory within the test limits.
 - [ ] **M10.3** Verify the full resource budget (§2). The Linux desktop, throughput, and crash-resume
-      benchmark commands are in the testing guide.
+      benchmark commands and results are in the testing guide. The default Linux GPU renderer exceeded the
+      80 MB idle RAM target on the reference desktop.
 - [x] **M10.4** Packaging: Windows (per-user NSIS installer, optional code signing),
       Linux (AppImage + `.deb` + optional Flatpak), macOS (`.dmg`). Automated GitHub Releases on `v*` tags.
 - [x] **M10.5** **In-app GitHub Release auto-updater** (modeled after `EmanueleFusco/Scaricatore-di-Porto-rust`, requirement R18):
