@@ -8,6 +8,8 @@
   <string>Ruscello</string>
   <key>CFBundleExecutable</key>
   <string>ruscello</string>
+  <key>CFBundleIconFile</key>
+  <string>Ruscello.icns</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>

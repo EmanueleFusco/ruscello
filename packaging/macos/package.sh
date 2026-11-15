@@ -12,6 +12,16 @@ mkdir -p "$app/Contents/MacOS"
 install -m755 "$bin/ruscello" "$app/Contents/MacOS/ruscello"
 install -m755 "$bin/ruscello-webview" "$app/Contents/MacOS/ruscello-webview"
 install -m644 LICENSE "$app/Contents/Resources/LICENSE"
+iconset="$work/Ruscello.iconset"
+mkdir "$iconset"
+for size in 16 32 128 256 512; do
+  name="icon_${size}x${size}"
+  sips -z "$size" "$size" packaging/macos/ruscello-1024.png --out "$iconset/$name.png" >/dev/null
+  retina=$((size * 2))
+  sips -z "$retina" "$retina" packaging/macos/ruscello-1024.png --out "$iconset/${name}@2x.png" >/dev/null
+done
+iconutil --convert icns --output "$app/Contents/Resources/Ruscello.icns" "$iconset"
+rm -r "$iconset"
 sed "s/@VERSION@/${tag#v}/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - "$app/Contents/MacOS/ruscello-webview"

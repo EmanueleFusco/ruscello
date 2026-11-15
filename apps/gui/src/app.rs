@@ -436,6 +436,12 @@ impl App {
         let (window, open) = window::open(window::Settings {
             size: Size::new(1120.0, 720.0),
             min_size: Some(Size::new(950.0, 490.0)),
+            icon: window::icon::from_rgba(
+                crate::icons::APP_ICON_RGBA.to_vec(),
+                crate::icons::APP_ICON_SIZE,
+                crate::icons::APP_ICON_SIZE,
+            )
+            .ok(),
             #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
                 application_id: desktop::APP_ID.to_owned(),

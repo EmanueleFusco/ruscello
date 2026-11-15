@@ -5,6 +5,8 @@ use iced::{
 use ruscello_core::FileType;
 
 pub(crate) const FONT: &[u8] = include_bytes!("../assets/lucide.ttf");
+pub(crate) const APP_ICON_SIZE: u32 = 32;
+pub(crate) const APP_ICON_RGBA: &[u8; 32 * 32 * 4] = include_bytes!("../assets/ruscello-32.rgba");
 
 pub(crate) fn icon(glyph: char) -> Text<'static> {
     text(glyph.to_string())

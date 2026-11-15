@@ -13,6 +13,7 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
 - Tagged Windows, Linux, and macOS desktop packages with the native browser helper, plus SHA-256 sums.
 - Nightly parser fuzzing, an offline mixed-transfer soak, resource-budget tooling, and a personal-path audit.
 - Installation quickstart, FAQ, and coordinated vulnerability reporting policy.
+- Ruscello application icon for Windows, macOS, and Linux, including the launcher and system tray.
 - M9.1–M9.8: Automation & Post-Processing (`ruscello-platform`, `ruscello-http`, `ruscello-engine`,
   `ruscello-api`, `ruscello-cli`, `ruscello-gui`):
   - Time-of-day scheduler (`ScheduleSettings`, `ScheduleRule`, `WeekdayMask`, injectable `Clock`) with

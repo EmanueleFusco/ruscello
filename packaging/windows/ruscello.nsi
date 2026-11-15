@@ -10,6 +10,9 @@ InstallDir "$LOCALAPPDATA\Programs\Ruscello"
 InstallDirRegKey HKCU "Software\Ruscello" "InstallDir"
 SetCompressor /SOLID lzma
 
+!define MUI_ICON "..\..\apps\gui\assets\ruscello.ico"
+!define MUI_UNICON "..\..\apps\gui\assets\ruscello.ico"
+
 !insertmacro MUI_PAGE_LICENSE "..\..\LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -91,6 +94,7 @@ replace:
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Ruscello" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "DisplayName" "Ruscello"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "DisplayIcon" "$INSTDIR\ruscello.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   CreateShortcut "$SMPROGRAMS\Ruscello.lnk" "$INSTDIR\ruscello.exe"

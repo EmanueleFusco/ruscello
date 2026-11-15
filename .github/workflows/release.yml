@@ -71,12 +71,14 @@ jobs:
           bash packaging/linux/package.sh "$TAG"
           dpkg-deb --contents dist/*.deb
           dpkg-deb --fsys-tarfile dist/*.deb | tar -tf - | grep -Fx './usr/share/applications/org.ruscello.Ruscello.desktop'
+          dpkg-deb --fsys-tarfile dist/*.deb | tar -xOf - './usr/share/icons/hicolor/512x512/apps/ruscello.png' | cmp apps/gui/assets/ruscello.png -
           mkdir -p "$RUNNER_TEMP/appimage"
           image="$(realpath dist/*.AppImage)"
           (cd "$RUNNER_TEMP/appimage"; "$image" --appimage-extract >/dev/null)
           test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/ruscello"
           test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/ruscello-webview"
           test -f "$RUNNER_TEMP/appimage/squashfs-root/org.ruscello.Ruscello.desktop"
+          cmp apps/gui/assets/ruscello.png "$RUNNER_TEMP/appimage/squashfs-root/.DirIcon"
       - name: Windows NSIS
         if: runner.os == 'Windows'
         shell: pwsh
@@ -92,6 +94,10 @@ jobs:
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
           foreach ($file in 'ruscello.exe','ruscello-webview.exe','Uninstall.exe') {
             if (!(Test-Path "$install\$file")) { throw "Missing installed file $file" }
+          }
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ruscello'
+          if ((Get-ItemPropertyValue $uninstallKey DisplayIcon) -ne "$install\ruscello.exe") {
+            throw "Missing installed application icon registration"
           }
           $binaries = 'ruscello.exe','ruscello-webview.exe'
           foreach ($file in $binaries) {
