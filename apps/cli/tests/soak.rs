@@ -41,14 +41,12 @@ async fn soak_worker() -> anyhow::Result<()> {
         .urls
         .into_iter()
         .enumerate()
-        .filter(|(index, url)| {
-            let filename = format!("{}-{index}.bin", batch.generation);
+        .filter(|(_, url)| {
             !present.iter().any(|download| {
                 download.source
                     == Source::Http {
                         url: (*url).clone(),
                     }
-                    && download.filename.as_deref() == Some(filename.as_str())
             })
         })
         .map(|(index, url)| {
@@ -179,9 +177,12 @@ async fn mixed_download_soak() -> anyhow::Result<()> {
         engine.shutdown().await?;
         for (index, file) in files.iter().enumerate() {
             let name = format!("{generation}-{index}.bin");
+            let source = Source::Http {
+                url: file.url().to_owned(),
+            };
             let mut matches = downloads
                 .iter()
-                .filter(|d| d.filename.as_deref() == Some(&name));
+                .filter(|download| download.source == source);
             let entry = matches
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("Missing {name}"))?;
@@ -190,6 +191,7 @@ async fn mixed_download_soak() -> anyhow::Result<()> {
                 .completed_path
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Unpublished {name} (ID {:?})", entry.id))?;
+            assert_eq!(entry.filename.as_deref(), Some(name.as_str()), "{path:?}");
             let mut actual = fs::File::open(path)?;
             let payload = file.payload();
             let mut got = Sha256::new();

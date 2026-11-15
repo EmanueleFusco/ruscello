@@ -1642,18 +1642,7 @@ impl Scheduler {
     }
 
     async fn complete(&mut self, mut entry: QueueEntry) -> Result<(), EngineError> {
-        let id = entry.download.id;
-        self.ftp_credentials.remove(&id);
-        let cleanup_entry = entry.clone();
-        if let Err(error) =
-            tokio::task::spawn_blocking(move || transfer::discard_work(&cleanup_entry)).await?
-        {
-            tracing::debug!(id = id.0, kind = ?error.kind(), "Could not clean completed staging files");
-            self.emit(EngineEvent::Log {
-                id: Some(id),
-                message: EngineLog::CleanupFailed,
-            });
-        }
+        self.ftp_credentials.remove(&entry.download.id);
         let target_path = download_target_path(&entry.download);
         if should_post_process(&target_path, &self.automation.post_processing).await {
             entry.download.transition(Status::PostProcessing)?;
@@ -1662,9 +1651,27 @@ impl Scheduler {
             return Ok(());
         }
         entry.download.transition(Status::Completed)?;
-        self.save(entry).await?;
+        self.save(entry.clone()).await?;
+        self.cleanup_completed_work(entry).await;
         self.completed_since_reset = true;
         Ok(())
+    }
+
+    async fn cleanup_completed_work(&self, entry: QueueEntry) {
+        let id = entry.download.id;
+        // Keep the staging file and publication marker until completion is
+        // committed. Recovery uses both to recognize an already published file.
+        let result = tokio::task::spawn_blocking(move || transfer::discard_work(&entry)).await;
+        let error = match result {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => EngineError::from(error),
+            Err(error) => EngineError::from(error),
+        };
+        tracing::debug!(id = id.0, %error, "Could not clean completed staging files");
+        self.emit(EngineEvent::Log {
+            id: Some(id),
+            message: EngineLog::CleanupFailed,
+        });
     }
 
     async fn fail(
@@ -2862,9 +2869,12 @@ impl Scheduler {
                     tracing::warn!(id = id.0, %error, "Failed transitioning after post-processing");
                     return;
                 }
-                if let Err(error) = self.save(entry).await {
+                if let Err(error) = self.save(entry.clone()).await {
                     self.storage_error(Some(id), &error);
                 } else {
+                    if !matches!(entry.download.source, Source::Torrent(_)) {
+                        self.cleanup_completed_work(entry).await;
+                    }
                     self.completed_since_reset = true;
                 }
             }
@@ -2874,8 +2884,11 @@ impl Scheduler {
                 } else {
                     Status::Completed
                 };
-                if entry.download.transition(fallback).is_ok() {
-                    let _ = self.save(entry).await;
+                if entry.download.transition(fallback).is_ok()
+                    && self.save(entry.clone()).await.is_ok()
+                    && !matches!(entry.download.source, Source::Torrent(_))
+                {
+                    self.cleanup_completed_work(entry).await;
                 }
             }
             Err(error) => {

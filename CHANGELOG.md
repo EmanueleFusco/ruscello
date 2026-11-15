@@ -115,6 +115,8 @@ The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ru
 - Isolated rotating CLI logs from the GUI and browser helper log retention.
 
 ### Fixed
+- Preserve download staging until SQLite commits completion so a restart reuses the published
+  file without downloading it again or creating a numbered duplicate.
 - Browser cookie import sends multiple bounded requests when cookies from several profiles exceed a single
   helper request. Added regression coverage for idle exit, crash recovery, and a ten-link XFileSharing batch.
 - Prevented the scheduler from treating a removed BitTorrent handle as a failed download while force recheck

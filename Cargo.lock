@@ -6165,6 +6165,7 @@ dependencies = [
  "ruscello-storage",
  "ruscello-testkit",
  "ruscello-torrent",
+ "rusqlite",
  "serde",
  "serde_json",
  "sevenz-rust2",

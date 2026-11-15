@@ -60,6 +60,70 @@ fn add(url: &str) -> AddDownload {
     AddDownload::new(Source::Http { url: url.into() })
 }
 
+#[tokio::test]
+async fn retries_a_failed_completion_commit_without_publishing_twice() -> TestResult {
+    let server = TestServer::start().await?;
+    let file = server.file(FileSpec::random(5, SIZE).filename("original.bin"));
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("downloads");
+    let options = EngineOptions::new(temp.path().join("queue.db"), output.clone());
+    let engine = EngineHandle::start(options.clone()).await?;
+    let mut request = add(file.url());
+    request.start_immediately = false;
+    let id = engine.add(request).await?;
+    let database = rusqlite::Connection::open(&options.database)?;
+    database.execute_batch(
+        "CREATE TRIGGER reject_completion BEFORE UPDATE ON downloads
+         WHEN json_extract(NEW.record, '$.download.completed_path') IS NOT NULL
+         BEGIN SELECT RAISE(FAIL, 'simulated completion failure'); END;",
+    )?;
+    let mut events = engine.subscribe();
+    engine.resume(id).await?;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if matches!(events.recv().await?, EngineEvent::Log {
+                id: Some(changed),
+                message: ruscello_engine::EngineLog::DatabaseWriteFailed,
+            } if changed == id)
+            {
+                return Ok::<_, broadcast::error::RecvError>(());
+            }
+        }
+    })
+    .await??;
+    engine.shutdown().await?;
+    database.execute_batch("DROP TRIGGER reject_completion")?;
+    drop(database);
+
+    let requests_before_restart = file.requests().len();
+    let engine = EngineHandle::start(options).await?;
+    let mut events = engine.subscribe();
+    let completed = timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = engine.snapshot().await?;
+            if let Some(entry) = snapshot
+                .downloads
+                .into_iter()
+                .find(|entry| entry.id == id && entry.status() == Status::Completed)
+            {
+                return Ok::<_, Box<dyn Error>>(entry);
+            }
+            events.recv().await?;
+        }
+    })
+    .await??;
+    engine.shutdown().await?;
+    let expected = output.join("original.bin");
+    assert_eq!(
+        completed.completed_path.as_deref(),
+        Some(expected.as_path())
+    );
+    assert_eq!(fs::read(expected)?, file.payload().bytes(0..SIZE));
+    assert!(!output.join("original (1).bin").exists());
+    assert_eq!(file.requests().len(), requests_before_restart);
+    Ok(())
+}
+
 fn track(
     event: EngineEvent,
     active: &mut BTreeSet<DownloadId>,
