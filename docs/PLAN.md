@@ -418,6 +418,7 @@ optional live tests behind feature flag.
       and the 80 MB idle RAM target remains open for future optimization.
 - [x] **M10.4** Packaging: Windows (per-user NSIS installer, optional code signing),
       Linux (AppImage + `.deb` + optional Flatpak), macOS (`.dmg`). Automated GitHub Releases on `v*` tags.
+      Draft creation requires Hardening to pass on the tagged commit.
 - [x] **M10.5** **In-app GitHub Release auto-updater** (modeled after `EmanueleFusco/Scaricatore-di-Porto-rust`, requirement R18):
   - Check GitHub Releases (`api.github.com/repos/EmanueleFusco/ruscello/releases/latest` or release manifest JSON) automatically on startup (configurable toggle, enabled by default) and on demand via *Settings → About / Updates*;
   - Compare `semver` against current build version and return `UpdateCheck { available, current_version, version, notes, date }`;

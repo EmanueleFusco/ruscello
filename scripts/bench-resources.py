@@ -91,7 +91,7 @@ def window_visible():
     return '"Ruscello Download Manager"' in tree
 
 
-def desktop(binary, root, url, backend):
+def desktop_environment(root, backend):
     data = root / "data" / "ruscello"
     config = root / "config" / "ruscello"
     config.mkdir(parents=True)
@@ -111,6 +111,11 @@ def desktop(binary, root, url, backend):
                WINIT_UNIX_BACKEND="x11", ICED_PRESENT_MODE="fifo",
                ICED_BACKEND="wgpu" if backend == "Hardware" else "tiny-skia")
     env.pop("WAYLAND_DISPLAY", None)
+    return data, env
+
+
+def desktop(binary, root, url, backend):
+    data, env = desktop_environment(root, backend)
     startup, idle_rss, idle_cpu = idle_desktop(binary, env, data)
     with contextlib.closing(sqlite3.connect(data / "ruscello.db")) as db:
         db.execute("INSERT OR REPLACE INTO settings(key, record) VALUES (?, ?)",
@@ -212,6 +217,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, default=Path("target/release"))
     parser.add_argument("--backend", choices=["Hardware", "Software"], default="Hardware")
+    parser.add_argument("--warm-up", action="store_true",
+                        help="initialize shared host caches using a separate desktop profile")
     args = parser.parse_args()
     if not os.environ.get("DISPLAY") or not shutil.which("xwininfo"):
         parser.error("use an empty X11 display (for example xvfb-run with --backend Software)")
@@ -224,7 +231,12 @@ def main():
         try:
             url = f"http://127.0.0.1:{server.server_port}"
             root = Path(directory)
-            metrics = desktop(args.bin_dir.resolve() / "ruscello", root, url, args.backend)
+            gui = args.bin_dir.resolve() / "ruscello"
+            if args.warm_up:
+                data, env = desktop_environment(root / "warmup", args.backend)
+                warmup_startup, _, _ = idle_desktop(gui, env, data)
+                print(f"Host warm-up startup (s): {warmup_startup:.3f}", flush=True)
+            metrics = desktop(gui, root, url, args.backend)
             metrics.extend(single_transfer(args.bin_dir.resolve() / "ruscello-cli", root, url))
         finally:
             server.shutdown()

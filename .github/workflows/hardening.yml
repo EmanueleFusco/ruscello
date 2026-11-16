@@ -1,8 +1,7 @@
 name: Hardening
 
 on:
-  schedule:
-    - cron: '20 2 * * *'
+  workflow_call:
   workflow_dispatch:
     inputs:
       full_soak:
@@ -60,11 +59,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: |
           ./scripts/ci-linux-deps.sh
-          sudo apt-get install -y --no-install-recommends aria2 xvfb xauth x11-utils
+          sudo apt-get install -y --no-install-recommends aria2 xvfb xauth x11-utils libxkbcommon-x11-0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p ruscello-gui -p ruscello-cli
       - name: Desktop resource thresholds
-        run: xvfb-run -a ./scripts/bench-resources.py --backend Software
+        run: xvfb-run -a ./scripts/bench-resources.py --backend Software --warm-up
       - name: Segmented throughput
         if: success() || failure()
         run: cargo test --release --locked -p ruscello-cli --test http_benchmark -- --ignored --nocapture
