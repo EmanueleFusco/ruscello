@@ -63,7 +63,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p ruscello-gui -p ruscello-cli
       - name: Desktop resource thresholds
-        run: xvfb-run -a ./scripts/bench-resources.py --backend Software
+        run: xvfb-run -a ./scripts/bench-resources.py --backend Software --warm-up
       - name: Segmented throughput
         if: success() || failure()
         run: cargo test --release --locked -p ruscello-cli --test http_benchmark -- --ignored --nocapture

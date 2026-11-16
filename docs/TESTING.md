@@ -132,6 +132,8 @@ launch until the window and local queue API are ready. It counts consecutive pro
 sample the scheduler's four-per-second reporting cadence, with a small allowance for sampling at interval
 boundaries. It normalizes user-mode CPU at the measured throughput to 1 Gbit/s and requires loopback
 throughput to reach that rate. Run with an actual display and GPU to measure the default renderer.
+Hardening records an initial warm-up launch on the hosted runner. It then starts a new process with a fresh
+profile for the measured run, so the one-second limit applies after shared host caches have been initialized.
 For CPU profiling on Linux, run `perf record -g -- ./scripts/bench-resources.py` in the same environment
 and inspect the call stacks with `perf report`. Results depend on the filesystem, CPU, display and renderer.
 
