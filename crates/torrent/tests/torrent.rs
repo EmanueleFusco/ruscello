@@ -636,9 +636,30 @@ async fn inspect_and_selective_file_download_with_details() -> TestResult {
     assert_eq!(inspected.piece_length, 16_384);
     assert!(inspected.piece_count >= 14);
 
-    let alpha_idx = find_relative_file(&inspected, "alpha.bin")?;
-    let beta_idx = find_relative_file(&inspected, "nested/beta.bin")?;
-    let skip_idx = find_relative_file(&inspected, "skip_me.bin")?;
+    let mut files = [
+        (
+            find_relative_file(&inspected, "alpha.bin")?,
+            "alpha.bin",
+            alpha,
+        ),
+        (
+            find_relative_file(&inspected, "nested/beta.bin")?,
+            "nested/beta.bin",
+            beta,
+        ),
+        (
+            find_relative_file(&inspected, "skip_me.bin")?,
+            "skip_me.bin",
+            skip,
+        ),
+    ];
+    // Skip the first file in piece order even when the filesystem enumerates entries differently.
+    files.sort_by_key(|(index, _, _)| *index);
+    let [
+        (skip_idx, skip_path, skip),
+        (alpha_idx, alpha_path, alpha),
+        (beta_idx, beta_path, beta),
+    ] = files;
 
     let id = DownloadId(42);
     let started = leecher
@@ -672,9 +693,9 @@ async fn inspect_and_selective_file_download_with_details() -> TestResult {
     .await?;
     assert_eq!(snap.total_bytes, Some(selected_total));
 
-    let alpha_out = resolved_file_path(&leecher_dest, &inspected.name, "alpha.bin");
-    let beta_out = resolved_file_path(&leecher_dest, &inspected.name, "nested/beta.bin");
-    let skip_out = resolved_file_path(&leecher_dest, &inspected.name, "skip_me.bin");
+    let alpha_out = resolved_file_path(&leecher_dest, &inspected.name, alpha_path);
+    let beta_out = resolved_file_path(&leecher_dest, &inspected.name, beta_path);
+    let skip_out = resolved_file_path(&leecher_dest, &inspected.name, skip_path);
 
     assert_eq!(std::fs::read(&alpha_out)?, alpha);
     assert_eq!(std::fs::read(&beta_out)?, beta);

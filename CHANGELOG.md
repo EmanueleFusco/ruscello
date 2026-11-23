@@ -17,6 +17,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 
 ### Fixed
 - Update the URL parser to address RustSec advisory RUSTSEC-2026-0592.
+- Avoid opening skipped torrent files when a selected piece starts exactly at the next file boundary.
 - Keep the ordinary per-file connection limit when a host override redirects to an unrelated host and when it uses unrelated mirrors.
 - Retransmit a lost µTP connection probe within the current attempt so a single dropped datagram does not trigger the peer reconnect backoff.
 - Recover verified torrent pieces written after the last checkpoint and reject a saved completion claim when a sampled piece fails its hash check.

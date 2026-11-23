@@ -234,7 +234,7 @@ impl<'a> FileOps<'a> {
 
         for (file_idx, fi) in self.file_infos.iter().enumerate() {
             let file_len = fi.len;
-            if absolute_offset > file_len {
+            if absolute_offset >= file_len {
                 absolute_offset -= file_len;
                 continue;
             }
@@ -311,7 +311,7 @@ impl<'a> FileOps<'a> {
 
         for (file_idx, file_info) in self.file_infos.iter().enumerate() {
             let file_len = file_info.len;
-            if absolute_offset > file_len {
+            if absolute_offset >= file_len {
                 absolute_offset -= file_len;
                 continue;
             }
@@ -355,7 +355,7 @@ impl<'a> FileOps<'a> {
 
         for (file_idx, file_info) in self.file_infos.iter().enumerate() {
             let file_len = file_info.len;
-            if absolute_offset > file_len {
+            if absolute_offset >= file_len {
                 absolute_offset -= file_len;
                 continue;
             }
