@@ -95,6 +95,21 @@ pub(crate) async fn verify_for_completed(
         .map_err(|err| ChecksumVerifyError::Io(io::Error::other(err)))?
 }
 
+pub(crate) async fn verify_in_download_root(
+    manifest: &Path,
+    root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<Vec<VerifiedFile>, ChecksumVerifyError> {
+    let manifest = manifest.to_path_buf();
+    let root = root.to_path_buf();
+    let cancellation = cancellation.clone();
+    tokio::task::spawn_blocking(move || {
+        verify_manifest_targets(&manifest, &root, None, true, &cancellation)
+    })
+    .await
+    .map_err(|err| ChecksumVerifyError::Io(io::Error::other(err)))?
+}
+
 fn verify_blocking(
     completed_path: &Path,
     cancellation: &CancellationToken,
@@ -108,7 +123,7 @@ fn verify_blocking(
     };
 
     if SidecarKind::from_path(completed_path).is_some() {
-        return verify_manifest_targets(completed_path, parent, None, cancellation);
+        return verify_manifest_targets(completed_path, parent, None, false, cancellation);
     }
 
     if !completed_path.is_file() {
@@ -129,7 +144,7 @@ fn verify_blocking(
     let mut verified = Vec::new();
     for manifest in manifests {
         let mut results =
-            verify_manifest_targets(&manifest, parent, Some(completed_path), cancellation)?;
+            verify_manifest_targets(&manifest, parent, Some(completed_path), false, cancellation)?;
         verified.append(&mut results);
     }
     Ok(verified)
@@ -139,12 +154,19 @@ fn verify_manifest_targets(
     manifest_path: &Path,
     base_dir: &Path,
     only_target: Option<&Path>,
+    allow_in_root_parents: bool,
     cancellation: &CancellationToken,
 ) -> Result<Vec<VerifiedFile>, ChecksumVerifyError> {
     let Some(kind) = SidecarKind::from_path(manifest_path) else {
         return Ok(Vec::new());
     };
-    let entries = parse_manifest_file(manifest_path, kind)?;
+    let root = std::fs::canonicalize(base_dir)?;
+    let manifest = std::fs::canonicalize(manifest_path)?;
+    let relative_manifest = manifest
+        .strip_prefix(&root)
+        .map_err(|_| ChecksumVerifyError::UnsafePath(manifest_path.display().to_string()))?;
+    let relative_base = relative_manifest.parent().filter(|_| allow_in_root_parents);
+    let entries = parse_manifest_file(&manifest, kind, relative_base)?;
     let only_canonical = only_target.and_then(|path| std::fs::canonicalize(path).ok());
 
     let mut verified = Vec::new();
@@ -156,18 +178,21 @@ fn verify_manifest_targets(
         if !target_path.is_file() {
             continue;
         }
+        let candidate = std::fs::canonicalize(&target_path)?;
+        if !candidate.starts_with(&root) {
+            return Err(ChecksumVerifyError::UnsafePath(
+                entry.relative_path.display().to_string(),
+            ));
+        }
         if let Some(expected_target) = &only_canonical {
-            let Ok(candidate_canonical) = std::fs::canonicalize(&target_path) else {
-                continue;
-            };
-            if &candidate_canonical != expected_target {
+            if &candidate != expected_target {
                 continue;
             }
         } else if is_partial_temp(&target_path) {
             continue;
         }
 
-        let file = File::open(&target_path)?;
+        let file = File::open(&candidate)?;
         let reader = BufReader::new(file);
         let ok = entry.expected.verify(reader, cancellation).map_err(|err| {
             if err.kind() == io::ErrorKind::Interrupted {
@@ -199,9 +224,10 @@ fn is_partial_temp(path: &Path) -> bool {
         .is_some_and(|name| name.ends_with(".rscpart") || name.ends_with(".rscpart.ctl"))
 }
 
-pub(crate) fn parse_manifest_file(
+fn parse_manifest_file(
     path: &Path,
     kind: SidecarKind,
+    relative_base: Option<&Path>,
 ) -> Result<Vec<ChecksumEntry>, ChecksumVerifyError> {
     let meta = std::fs::metadata(path)?;
     if meta.len() > MAX_MANIFEST_BYTES {
@@ -210,7 +236,7 @@ pub(crate) fn parse_manifest_file(
         ));
     }
     let text = std::fs::read_to_string(path)?;
-    parse_manifest_text(&text, kind, infer_sidecar_target(path))
+    parse_manifest_text(&text, kind, infer_sidecar_target(path), relative_base)
 }
 
 fn infer_sidecar_target(manifest_path: &Path) -> Option<String> {
@@ -224,21 +250,33 @@ fn infer_sidecar_target(manifest_path: &Path) -> Option<String> {
     None
 }
 
-pub(crate) fn parse_manifest_text(
+fn parse_manifest_text(
     text: &str,
     kind: SidecarKind,
     default_target: Option<String>,
+    relative_base: Option<&Path>,
 ) -> Result<Vec<ChecksumEntry>, ChecksumVerifyError> {
     match kind {
-        SidecarKind::Sfv => parse_sfv(text),
-        SidecarKind::Md5 => parse_digest(text, ChecksumAlgorithm::Md5, default_target.as_deref()),
-        SidecarKind::Sha256 => {
-            parse_digest(text, ChecksumAlgorithm::Sha256, default_target.as_deref())
-        }
+        SidecarKind::Sfv => parse_sfv(text, relative_base),
+        SidecarKind::Md5 => parse_digest(
+            text,
+            ChecksumAlgorithm::Md5,
+            default_target.as_deref(),
+            relative_base,
+        ),
+        SidecarKind::Sha256 => parse_digest(
+            text,
+            ChecksumAlgorithm::Sha256,
+            default_target.as_deref(),
+            relative_base,
+        ),
     }
 }
 
-fn parse_sfv(text: &str) -> Result<Vec<ChecksumEntry>, ChecksumVerifyError> {
+fn parse_sfv(
+    text: &str,
+    relative_base: Option<&Path>,
+) -> Result<Vec<ChecksumEntry>, ChecksumVerifyError> {
     let mut entries = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim_end_matches('\r').trim();
@@ -254,7 +292,7 @@ fn parse_sfv(text: &str) -> Result<Vec<ChecksumEntry>, ChecksumVerifyError> {
         let Ok(expected) = ExpectedChecksum::from_hex(ChecksumAlgorithm::Crc32, hex) else {
             continue;
         };
-        let Some(relative_path) = safe_relative_path(filename) else {
+        let Some(relative_path) = path_within_root(filename, relative_base) else {
             return Err(ChecksumVerifyError::UnsafePath(filename.to_owned()));
         };
         entries.push(ChecksumEntry {
@@ -269,6 +307,7 @@ fn parse_digest(
     text: &str,
     algorithm: ChecksumAlgorithm,
     default_target: Option<&str>,
+    relative_base: Option<&Path>,
 ) -> Result<Vec<ChecksumEntry>, ChecksumVerifyError> {
     let mut entries = Vec::new();
     for raw_line in text.lines() {
@@ -281,7 +320,7 @@ fn parse_digest(
         if let Some((raw_target, hex)) = parse_bsd_digest_line(line, algorithm)
             && let Ok(expected) = ExpectedChecksum::from_hex(algorithm, hex)
         {
-            let Some(relative_path) = safe_relative_path(raw_target) else {
+            let Some(relative_path) = path_within_root(raw_target, relative_base) else {
                 return Err(ChecksumVerifyError::UnsafePath(raw_target.to_owned()));
             };
             entries.push(ChecksumEntry {
@@ -296,7 +335,7 @@ fn parse_digest(
             && !line.contains(char::is_whitespace)
             && let Ok(expected) = ExpectedChecksum::from_hex(algorithm, line)
         {
-            let Some(relative_path) = safe_relative_path(target_name) else {
+            let Some(relative_path) = path_within_root(target_name, relative_base) else {
                 return Err(ChecksumVerifyError::UnsafePath(target_name.to_owned()));
             };
             entries.push(ChecksumEntry {
@@ -320,7 +359,7 @@ fn parse_digest(
         if raw_target.is_empty() {
             continue;
         }
-        let Some(relative_path) = safe_relative_path(raw_target) else {
+        let Some(relative_path) = path_within_root(raw_target, relative_base) else {
             return Err(ChecksumVerifyError::UnsafePath(raw_target.to_owned()));
         };
         entries.push(ChecksumEntry {
@@ -345,6 +384,10 @@ fn parse_bsd_digest_line(line: &str, algorithm: ChecksumAlgorithm) -> Option<(&s
 }
 
 pub(crate) fn safe_relative_path(raw: &str) -> Option<PathBuf> {
+    path_within_root(raw, None)
+}
+
+fn path_within_root(raw: &str, relative_base: Option<&Path>) -> Option<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.contains('\0') {
         return None;
@@ -362,12 +405,15 @@ pub(crate) fn safe_relative_path(raw: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    let mut clean = PathBuf::new();
+    let mut clean = relative_base.map_or_else(PathBuf::new, Path::to_path_buf);
     for component in Path::new(&normalized).components() {
         match component {
-            Component::Normal(part) => clean.push(part),
+            Component::Normal(part) if !cfg!(windows) || !part.to_string_lossy().contains(':') => {
+                clean.push(part)
+            }
             Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+            Component::ParentDir if relative_base.is_some() && clean.pop() => {}
+            _ => return None,
         }
     }
     (!clean.as_os_str().is_empty()).then_some(clean)
@@ -378,6 +424,36 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[tokio::test]
+    async fn nested_manifest_can_verify_in_root_parent_files_but_cannot_escape() -> TestResult {
+        use sha2::{Digest as _, Sha256};
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("torrent");
+        std::fs::create_dir_all(root.join("sums"))?;
+        let manifest = root.join("sums/files.sha256");
+        let payload = b"checked torrent payload";
+        let digest = hex::encode(Sha256::digest(payload));
+        std::fs::write(root.join("payload.bin"), payload)?;
+        std::fs::write(temp.path().join("outside.bin"), payload)?;
+        let cancel = CancellationToken::new();
+        std::fs::write(&manifest, format!("{digest} *..\\payload.bin\n"))?;
+        assert_eq!(
+            verify_in_download_root(&manifest, &root, &cancel).await?[0].file,
+            root.join("payload.bin")
+        );
+        std::fs::write(root.join("payload.bin"), b"wrong")?;
+        assert!(matches!(
+            verify_in_download_root(&manifest, &root, &cancel).await,
+            Err(ChecksumVerifyError::Mismatch { .. })
+        ));
+        std::fs::write(&manifest, format!("{digest} *../../outside.bin\n"))?;
+        assert!(matches!(
+            verify_in_download_root(&manifest, &root, &cancel).await,
+            Err(ChecksumVerifyError::UnsafePath(_))
+        ));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn verifies_sfv_md5_and_sha256_valid_and_detects_corruption() -> TestResult {

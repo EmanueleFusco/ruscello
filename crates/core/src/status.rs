@@ -10,6 +10,13 @@ pub enum FailureReason {
     IntegrityCheck,
     FileSystem,
     Internal,
+    TorrentPortUnavailable,
+    TorrentInterfaceUnavailable,
+    TorrentInterfaceUnsupported,
+    ArchiveExtraction,
+    ChecksumVerification,
+    SourceMissing,
+    SourceRateLimited,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +68,7 @@ impl Status {
                     | Paused
                     | Stopped
                     | Seeding
+                    | PostProcessing
                     | Completed
                     | Failed { .. }
             ),
@@ -135,7 +143,7 @@ mod tests {
             [
                 true, true, false, true, true, true, false, false, false, true,
             ],
-            [true, true, true, true, true, true, true, false, true, true],
+            [true, true, true, true, true, true, true, true, true, true],
             [
                 true, true, true, false, true, true, false, false, false, true,
             ],

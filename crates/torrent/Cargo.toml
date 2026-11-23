@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 librqbit.workspace = true
+librqbit-dualstack-sockets.workspace = true
 reqwest = { workspace = true, features = ["rustls"] }
 ruscello-core.workspace = true
 serde.workspace = true
@@ -23,6 +24,9 @@ tracing.workspace = true
 [dev-dependencies]
 ruscello-testkit.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_Networking_WinSock"] }
 
 [lints]
 workspace = true

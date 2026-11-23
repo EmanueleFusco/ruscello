@@ -24,6 +24,8 @@ pub enum HttpError {
     },
     #[error("the representation changed")]
     RepresentationChanged,
+    #[error("the server ignored a conditional range for the same representation")]
+    RangeIgnored,
     #[error("the resolved link returned a web page")]
     ExpiredRepresentation,
     #[error("the host requires browser verification")]
@@ -34,6 +36,8 @@ pub enum HttpError {
     Ftp { message: String, transient: bool },
     #[error("the link could not be resolved")]
     ResolutionFailed,
+    #[error("the page did not provide a supported download")]
+    NoDownloadOnPage,
     #[error("download cancelled")]
     Cancelled,
     #[error("combining mirrors requires an expected checksum")]

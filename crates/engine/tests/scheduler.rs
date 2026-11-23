@@ -13,6 +13,48 @@ const SIZE: u64 = 384 * 1024;
 const THREE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(2);
 
 #[tokio::test]
+async fn starting_profile_limits_apply_only_to_new_databases_and_survive_reopening() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("downloads");
+    let existing = EngineOptions::new(temp.path().join("existing.db"), output.clone());
+    EngineHandle::start(existing.clone())
+        .await?
+        .shutdown()
+        .await?;
+    let suggested = Limits {
+        concurrent_downloads: NonZeroUsize::MIN.saturating_add(4),
+        connections_per_host: NonZeroUsize::MIN.saturating_add(15),
+        connections_per_download: NonZeroUsize::MIN.saturating_add(7),
+        ..Limits::default()
+    };
+    let mut existing = existing;
+    existing.new_profile_limits = Some(suggested);
+    let engine = EngineHandle::start(existing.clone()).await?;
+    assert_eq!(engine.snapshot().await?.limits, Limits::default());
+    let custom = Limits {
+        connections_per_download: NonZeroUsize::MIN.saturating_add(49),
+        fuckingfast_batch: true,
+        ..Limits::default()
+    };
+    engine.set_limits(custom).await?;
+    engine.shutdown().await?;
+    let engine = EngineHandle::start(existing).await?;
+    assert_eq!(engine.snapshot().await?.limits, custom);
+    engine.shutdown().await?;
+
+    let mut fresh = EngineOptions::new(temp.path().join("fresh.db"), output);
+    fresh.new_profile_limits = Some(suggested);
+    let engine = EngineHandle::start(fresh.clone()).await?;
+    assert_eq!(engine.snapshot().await?.limits, suggested);
+    engine.shutdown().await?;
+    fresh.new_profile_limits = None;
+    let engine = EngineHandle::start(fresh).await?;
+    assert_eq!(engine.snapshot().await?.limits, suggested);
+    engine.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn persists_expected_checksum_and_rejects_mismatched_output() -> TestResult {
     let server = TestServer::start().await?;
     let file = server.file(FileSpec::random(4, SIZE));

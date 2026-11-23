@@ -134,9 +134,7 @@ impl HostPlugin for Builtin {
             .trim_start_matches("www.");
         let path = url.path();
         match self {
-            Self::FuckingFast => {
-                matches!(host, "fuckingfast.co" | "dl.fuckingfast.co") && path != "/"
-            }
+            Self::FuckingFast => is_fuckingfast_host(url) && path != "/",
             Self::XFileSharing => host == "datanodes.to" && path != "/",
             Self::Pixeldrain => {
                 matches!(host, "pixeldrain.com" | "pixeldrain.net") && path.starts_with("/u/")
@@ -191,10 +189,16 @@ fn selected_link(base: &Url, body: &str, selector: &str) -> Option<Url> {
 static OPEN: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r#"window\s*\.\s*open\s*\(\s*["']([^"']+)["']"#).ok());
 
+pub const FUCKINGFAST_HOSTS: [&str; 4] = [
+    "fuckingfast.co",
+    "www.fuckingfast.co",
+    "dl.fuckingfast.co",
+    "www.dl.fuckingfast.co",
+];
+
 fn is_fuckingfast_host(url: &Url) -> bool {
     url.host_str()
-        .map(|host| host.trim_start_matches("www."))
-        .is_some_and(|host| matches!(host, "fuckingfast.co" | "dl.fuckingfast.co"))
+        .is_some_and(|host| FUCKINGFAST_HOSTS.contains(&host.trim_end_matches('.')))
 }
 
 fn is_fuckingfast_dl(source: &Url, url: &Url) -> bool {
@@ -628,6 +632,17 @@ impl CrawlerPlugin for IndexCrawler {
     }
     fn crawl<'a>(&'a self, ctx: &'a Context, url: &'a Url) -> ResolveFuture<'a, PageAnalysis> {
         Box::pin(async move {
+            if Builtin::GitHubReleases.matches(url)
+                && let Some(endpoint) = github_release_endpoint(url)
+            {
+                match github_release_assets(ctx, url, endpoint).await {
+                    Ok(analysis) => return Ok(analysis),
+                    Err(ResolveError::Cancelled) => return Err(ResolveError::Cancelled),
+                    Err(error) => {
+                        tracing::debug!(%error, "Could not load structured GitHub release assets")
+                    }
+                }
+            }
             let response = ctx.get(url.clone()).send().await?;
             if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
                 return Ok(PageAnalysis::direct(url.clone(), Some(0)));
@@ -651,6 +666,89 @@ impl CrawlerPlugin for IndexCrawler {
     }
 }
 
+fn github_release_endpoint(url: &Url) -> Option<Url> {
+    let mut path = url.path_segments()?;
+    let (owner, repository) = (path.next()?, path.next()?);
+    if path.next()? != "releases" {
+        return None;
+    }
+    let mut endpoint = Url::parse("https://api.github.com").ok()?;
+    {
+        let mut output = endpoint.path_segments_mut().ok()?;
+        output.extend(["repos", owner, repository, "releases"]);
+        match path.next()? {
+            "latest" if path.next().is_none() => {
+                output.push("latest");
+            }
+            "tag" => {
+                let encoded_tag = path.collect::<Vec<_>>().join("/");
+                let tag = percent_encoding::percent_decode_str(&encoded_tag)
+                    .decode_utf8()
+                    .ok()?;
+                if tag.is_empty() {
+                    return None;
+                }
+                output.extend(["tags", tag.as_ref()]);
+            }
+            _ => return None,
+        }
+    }
+    Some(endpoint)
+}
+
+async fn github_release_assets(
+    ctx: &Context,
+    source: &Url,
+    endpoint: Url,
+) -> Result<PageAnalysis, ResolveError> {
+    #[derive(serde::Deserialize)]
+    struct Asset {
+        name: String,
+        size: u64,
+        browser_download_url: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Release {
+        name: Option<String>,
+        tag_name: String,
+        assets: Vec<Asset>,
+    }
+
+    let response = ctx
+        .get(endpoint)
+        .header(header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await?;
+    let body = http::body(response, http::PAGE_LIMIT).await?;
+    let release: Release = serde_json::from_str(&body).map_err(|_| ResolveError::NoDownload)?;
+    let repository = source
+        .path()
+        .split_once("/releases/")
+        .ok_or(ResolveError::NoDownload)?
+        .0;
+    let prefix = format!("{repository}/releases/download/");
+    let candidates = release
+        .assets
+        .into_iter()
+        .filter_map(|asset| {
+            let url = http::join(source, &asset.browser_download_url)?;
+            let path = url.path();
+            (url.origin() == source.origin()
+                && path
+                    .get(..prefix.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(&prefix)))
+            .then(|| grabber::hoster_candidate(url, Some(&asset.name), Some(asset.size)))
+        })
+        .collect();
+    Ok(PageAnalysis::Page {
+        title: release
+            .name
+            .filter(|name| !name.is_empty())
+            .unwrap_or(release.tag_name),
+        candidates,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,6 +758,45 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[tokio::test]
+    async fn recognizes_release_tags_and_reads_asset_names_and_sizes() -> TestResult {
+        let source = Url::parse("https://github.com/owner/project/releases/tag/release/v1")?;
+        assert_eq!(
+            github_release_endpoint(&source)
+                .ok_or("missing endpoint")?
+                .as_str(),
+            "https://api.github.com/repos/owner/project/releases/tags/release%2Fv1"
+        );
+        let direct = Url::parse(
+            "https://github.com/owner/project/releases/download/release/v1/installer.exe",
+        )?;
+        assert!(github_release_endpoint(&direct).is_none());
+        let server = TestServer::start().await?;
+        let response_url = server.route("/release", |_| Reply::bytes("application/json", br#"{
+          "name":"Release One", "tag_name":"release/v1", "assets":[
+            {"name":"setup.exe","size":1048576,"browser_download_url":"https://github.com/owner/project/releases/download/release/v1/installer.exe"},
+            {"name":"unrelated.exe","size":3,"browser_download_url":"https://github.com/other/project/issue-1"}
+          ]
+        }"#.to_vec()));
+        let cancel = CancellationToken::new();
+        let resolver = Resolver::new(None)?;
+        let analysis = github_release_assets(
+            &resolver.context(&cancel),
+            &source,
+            Url::parse(&response_url)?,
+        )
+        .await?;
+        let PageAnalysis::Page { title, candidates } = analysis else {
+            panic!("expected asset collection")
+        };
+        assert_eq!(title, "Release One");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].url, direct);
+        assert_eq!(candidates[0].filename, "setup.exe");
+        assert_eq!(candidates[0].size, Some(1048576));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn parses_fuckingfast_html_and_refuses_verification() -> TestResult {

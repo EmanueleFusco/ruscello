@@ -42,8 +42,8 @@ pub use resolution::{ResolvedDownload, prepare_http_download, resolve_download};
 /// Direct HTTP entry point for developer commands and benchmarks.
 pub use ruscello_http::{
     ChecksumAlgorithm, ChecksumError, DownloadOptions, DownloadProgress, ErrorClass,
-    ExpectedChecksum, FtpCredentials, HttpDownloader, HttpError, Probe, SegmentProgress, Url,
-    WriterError, sanitize_ftp_url,
+    ExpectedChecksum, FtpCredentials, HttpDownloader, HttpError, MAX_HTTP_CONNECTIONS, Probe,
+    SegmentProgress, Url, WriterError, sanitize_ftp_url,
 };
 pub use ruscello_media::{
     BandwidthContext, FormatPreset, HeaderMap, MediaEngine, MediaError, MediaFormat,

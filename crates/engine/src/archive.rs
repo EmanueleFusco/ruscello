@@ -708,6 +708,10 @@ fn extract_tar_stream<R: Read>(
             return Err(ArchiveError::UnsafeEntry(raw_path));
         }
 
+        if entry_type.is_dir() && matches!(raw_path.as_str(), "." | "./") {
+            continue;
+        }
+
         let Some(rel) = safe_relative_path(&raw_path) else {
             return Err(ArchiveError::UnsafeEntry(raw_path));
         };
@@ -1182,6 +1186,29 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn extracts_tar_with_a_root_directory_marker() -> TestResult {
+        let mut tar = TarBuilder::new(Vec::new());
+        let mut root = tar::Header::new_gnu();
+        root.set_entry_type(EntryType::Directory);
+        root.set_size(0);
+        root.as_mut_bytes()[..2].copy_from_slice(b"./");
+        root.set_cksum();
+        tar.append(&root, io::empty())?;
+        let mut file = tar::Header::new_gnu();
+        file.set_size(3);
+        file.set_mode(0o644);
+        tar.append_data(&mut file, "hello.txt", &b"hey"[..])?;
+        let bytes = tar.into_inner()?;
+        let output = tempfile::tempdir()?;
+        assert_eq!(
+            extract_tar_stream(bytes.as_slice(), output.path(), &CancellationToken::new())?,
+            1
+        );
+        assert_eq!(fs::read(output.path().join("hello.txt"))?, b"hey");
+        Ok(())
+    }
 
     #[test]
     fn concat_reader_reads_and_seeks_across_split_parts() -> TestResult {

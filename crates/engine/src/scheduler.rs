@@ -29,7 +29,7 @@ use crate::{
     PowerController, ProgressUpdate, QueueCompletionAction, ScheduleDecision, SidecarSettings,
     SleepInhibitor, SystemClock, SystemPowerController, SystemSleepInhibitor,
     TorrentRuntimeProgress,
-    archive::{ArchiveError, parse_archive_volume},
+    archive::parse_archive_volume,
     categories::CategoryBook,
     handle::{AUTOMATION_SETTINGS_KEY, Command, LIMITS_KEY, Reply, TORRENT_SETTINGS_KEY, Update},
     media_bridge::{self, SIDECAR_SETTINGS_KEY},
@@ -164,6 +164,7 @@ impl Scheduler {
     ) -> Result<Self, EngineError> {
         let limits = options.limits;
         let hosts = HostConnections::new(limits.connections_per_host);
+        limits.configure_hosts(&hosts);
         let http = HttpDownloader::with_host_connections(hosts.clone())?;
         let automation = options.automation.normalized();
         let clock: Arc<dyn Clock> = options.clock.unwrap_or_else(|| Arc::new(SystemClock));
@@ -216,11 +217,11 @@ impl Scheduler {
             .values()
             .any(|entry| matches!(entry.download.source, Source::Torrent(_)));
         let torrent_manager = if options.eager_torrent_session || has_torrents {
-            let effective = torrent_bridge::effective_settings(&torrent_settings, limits.bandwidth);
-            match TorrentManager::new(
+            match torrent_bridge::start_manager(
                 torrent_data_dir.clone(),
                 options.destination.clone(),
-                effective,
+                torrent_settings.clone(),
+                http.global_bandwidth(),
             )
             .await
             {
@@ -934,11 +935,10 @@ impl Scheduler {
                     }])
                     .await?;
                 self.limits = limits;
-                self.hosts.set_limit(limits.connections_per_host);
+                limits.configure_hosts(&self.hosts);
                 self.http
                     .global_bandwidth()
                     .set_rate(self.effective_bandwidth());
-                self.sync_torrent_ratelimits().await;
                 self.emit(EngineEvent::QueueChanged);
                 Ok(())
             }
@@ -947,7 +947,6 @@ impl Scheduler {
                 self.http
                     .global_bandwidth()
                     .set_rate(self.effective_bandwidth());
-                self.sync_torrent_ratelimits().await;
                 self.emit(EngineEvent::QueueChanged);
                 Ok(())
             }
@@ -1187,12 +1186,12 @@ impl Scheduler {
                     } else {
                         hoster_cap
                     };
-                    if *running
-                        >= hoster_cap
-                            .unwrap_or(self.limits.connections_per_host)
-                            .min(self.limits.connections_per_host)
-                            .get()
-                    {
+                    let per_host = if self.limits.host_override(&url) {
+                        Limits::FUCKINGFAST_CONNECTIONS_PER_HOST
+                    } else {
+                        self.limits.connections_per_host
+                    };
+                    if *running >= hoster_cap.unwrap_or(per_host).min(per_host).get() {
                         continue;
                     }
                     if let Some(category) = entry.download.category {
@@ -1768,7 +1767,10 @@ impl Scheduler {
     }
 
     fn storage_error(&self, id: Option<DownloadId>, error: &EngineError) {
-        tracing::warn!(%error, "Could not update the download queue");
+        let source = id
+            .and_then(|id| self.queue.get(&id))
+            .map(|entry| entry.download.source.kind());
+        tracing::warn!(id = ?id.map(|id| id.0), ?source, %error, "Could not update the download queue");
         self.emit(EngineEvent::Log {
             id,
             message: EngineLog::DatabaseWriteFailed,
@@ -1779,12 +1781,11 @@ impl Scheduler {
         if let Some(manager) = &self.torrent_manager {
             return Ok(manager.clone());
         }
-        let effective =
-            torrent_bridge::effective_settings(&self.torrent_settings, self.effective_bandwidth());
-        let manager = TorrentManager::new(
+        let manager = torrent_bridge::start_manager(
             self.torrent_data_dir.clone(),
             self.destination.clone(),
-            effective,
+            self.torrent_settings.clone(),
+            self.http.global_bandwidth(),
         )
         .await?;
         let known: Vec<(DownloadId, Option<String>)> = self
@@ -1810,27 +1811,15 @@ impl Scheduler {
         Ok(arc)
     }
 
-    async fn sync_torrent_ratelimits(&self) {
-        if let Some(manager) = &self.torrent_manager {
-            let effective = torrent_bridge::effective_settings(
-                &self.torrent_settings,
-                self.effective_bandwidth(),
-            );
-            if let Err(error) = manager.apply_settings(effective).await {
-                tracing::debug!(%error, "Failed to update live torrent rate limits");
-            }
-        }
-    }
-
     async fn set_torrent_settings(&mut self, settings: TorrentSettings) -> Result<(), EngineError> {
-        let effective = torrent_bridge::effective_settings(&settings, self.effective_bandwidth());
         if let Some(manager) = &self.torrent_manager {
-            manager.apply_settings(effective).await?;
+            manager.apply_settings(settings.clone()).await?;
         } else {
-            let manager = TorrentManager::new(
+            let manager = torrent_bridge::start_manager(
                 self.torrent_data_dir.clone(),
                 self.destination.clone(),
-                effective,
+                settings.clone(),
+                self.http.global_bandwidth(),
             )
             .await?;
             let known: Vec<(DownloadId, Option<String>)> = self
@@ -2239,6 +2228,7 @@ impl Scheduler {
                     seeders_connected: snap.seeders_connected,
                     eta_secs: snap.eta_secs,
                     piece_count: snap.piece_count,
+                    checking_existing_pieces: matches!(snap.phase, TorrentPhase::Checking { .. }),
                 },
             );
             if let Err(error) = self.apply_torrent_snapshot(id, snap).await {
@@ -2491,7 +2481,6 @@ impl Scheduler {
 
         if old_rate != new_rate {
             self.http.global_bandwidth().set_rate(new_rate);
-            self.sync_torrent_ratelimits().await;
         }
 
         if decision.pause_queue {
@@ -2959,20 +2948,16 @@ impl Scheduler {
                     self.triggered_archive_groups.remove(&info.group_key);
                 }
                 let (log_msg, reason) = match &error {
-                    PostProcessError::Checksum(_) => {
-                        (EngineLog::ChecksumFailed, FailureReason::IntegrityCheck)
-                    }
-                    PostProcessError::Archive(
-                        ArchiveError::CorruptOrUnsupported(_)
-                        | ArchiveError::PasswordRequiredOrWrong
-                        | ArchiveError::UnsafeEntry(_),
-                    ) => (
-                        EngineLog::ArchiveExtractionFailed,
-                        FailureReason::IntegrityCheck,
+                    PostProcessError::Checksum(
+                        crate::checksum_verify::ChecksumVerifyError::Mismatch { .. },
+                    ) => (EngineLog::ChecksumFailed, FailureReason::IntegrityCheck),
+                    PostProcessError::Checksum(_) => (
+                        EngineLog::ChecksumFailed,
+                        FailureReason::ChecksumVerification,
                     ),
                     PostProcessError::Archive(_) => (
                         EngineLog::ArchiveExtractionFailed,
-                        FailureReason::FileSystem,
+                        FailureReason::ArchiveExtraction,
                     ),
                     _ => (EngineLog::PostProcessCommandFailed, FailureReason::Internal),
                 };

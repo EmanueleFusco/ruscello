@@ -24,6 +24,11 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  ci:
+    name: Release CI
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/ci.yml
+
   hardening:
     name: Release hardening
     if: startsWith(github.ref, 'refs/tags/v')
@@ -276,7 +281,7 @@ jobs:
   publish:
     name: Publish GitHub release (draft)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [assemble, hardening]
+    needs: [assemble, ci, hardening]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -293,7 +298,11 @@ jobs:
         run: |
           (cd dist; sha256sum --check SHA256SUMS)
           notes="$RUNNER_TEMP/release-notes.md"
-          awk '/^## \[Unreleased\]/{notes=1;next} notes && /^## /{exit} notes{print}' CHANGELOG.md > "$notes"
+          awk -v heading="## [${GITHUB_REF_NAME#v}]" '
+            index($0, heading) == 1 { notes=1; next }
+            notes && /^## / { exit }
+            notes { print }
+          ' CHANGELOG.md > "$notes"
           if ! grep -q '[^[:space:]]' "$notes"; then
             gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --draft \
               --title "Ruscello Download Manager $GITHUB_REF_NAME" --generate-notes

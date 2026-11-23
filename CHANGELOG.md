@@ -5,6 +5,46 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 
 ## [Unreleased]
 
+## [1.1.0]
+
+### Added
+- macOS bundle associations for `magnet:`, `.torrent`, and `.dlc`, using the same import flow as desktop startup arguments.
+- Balanced, Limited connections, and Large files presets in Download Settings, with manual values and a scoped FuckingFast batch override. New desktop profiles start with Balanced.
+- A default BitTorrent session budget of 500 peers, a 100-peer per-torrent default, and experimental TCP + µTP support in Torrent settings. TCP remains the default.
+
+### Changed
+- Smooth the displayed download and upload rates over a 2.5-second window independently of bandwidth limits.
+
+### Fixed
+- Update the URL parser to address RustSec advisory RUSTSEC-2026-0592.
+- Avoid opening skipped torrent files when a selected piece starts exactly at the next file boundary.
+- Keep the ordinary per-file connection limit when a host override redirects to an unrelated host and when it uses unrelated mirrors.
+- Retransmit a lost µTP connection probe within the current attempt so a single dropped datagram does not trigger the peer reconnect backoff.
+- Recover verified torrent pieces written after the last checkpoint and reject a saved completion claim when a sampled piece fails its hash check.
+- Avoid reading unallocated regions of Windows sparse torrent files during resume when the expected piece hash requires nonzero data.
+- Recover valid complete HTTP responses when a server ignores a matching conditional range or a partial probe cannot establish resumable framing. Preserve independent checksum verification and durable checkpoint ordering.
+- Share the global download rate between HTTP and BitTorrent, with fair access across different request sizes. Use a negotiated fallback port when the default-managed BitTorrent listener is occupied, report occupied fixed ports and invalid interfaces, and honor PEX and local discovery independently.
+- Resume saved torrent transfers after validation, with fresh peer discovery. In TCP + µTP mode, select the first transport that completes a valid BitTorrent handshake.
+- Keep BitTorrent UDP discovery listening through temporary macOS address and routing errors.
+- Keep the Windows BitTorrent µTP listener running when a peer disconnects and its old UDP port becomes unreachable.
+- Require both sockets when TCP + µTP is selected. An occupied UDP port triggers the same automatic port selection or fixed-port error as an occupied TCP port.
+- Remove the unmaintained Chrono dependency from the active graph while retaining DHT persistence, HLS date tags, and existing FTP resume validators.
+- Process completed hoster and torrent jobs even when the transfer reaches completion between progress samples. Verify nested torrent manifests within the download root and accept TAR root directory markers.
+- Keep exact download and package IDs in the Web UI and deduplicate normalized URLs within one submitted batch.
+- Keep Web UI live updates connected when an earlier health request reports session state from before sign-in.
+- Detect self-closing DASH representations, keep audio-only HLS renditions out of video selections, and match the audio selection shown during inspection to the downloaded rendition.
+- Find assets on GitHub release pages, preserve extensionless text filenames, secure implicit FTPS data channels, and publish downloads to Windows long paths.
+- Improve localized transfer and container errors, pairing layout, and macOS update rollback and startup registration.
+- Report unsupported Windows BitTorrent interface binding explicitly and require the user to clear the setting before retrying over the system route.
+- Start the Windows renderer in the main desktop process and preserve the saved renderer and explicit graphics backend selection.
+- Keep the previous macOS app bundle until the replacement opens a window. Restore both executables if the replacement cannot run or exits during startup.
+- Start intercepted downloads after Firefox or Chrome confirms cancellation of the native copy. Preserve browser downloads when filtering or handoff cannot complete safely.
+
+### Validation
+- Windows workspace regression tests passed. Native Linux and macOS runtime checks and BitTorrent validation across physical peers remain pending. The Windows hardware-renderer idle memory target remains open.
+
+## [1.0.0]
+
 The M9 feature set is on `main` via [PR #57](https://github.com/EmanueleFusco/ruscello/pull/57).
 
 ### Added

@@ -17,7 +17,8 @@ mod writer;
 
 pub use checksum::{ChecksumAlgorithm, ChecksumError, ExpectedChecksum};
 pub use download::{
-    DownloadOptions, DownloadPreparation, DownloadProgress, HttpDownloader, SegmentProgress,
+    DownloadOptions, DownloadPreparation, DownloadProgress, HttpDownloader, MAX_HTTP_CONNECTIONS,
+    ScopedConnections, SegmentProgress,
 };
 pub use ftp::{FtpCredentials, sanitize_ftp_url};
 pub use limit::BandwidthLimit;

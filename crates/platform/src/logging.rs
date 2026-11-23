@@ -20,6 +20,8 @@ pub enum LoggingError {
     Paths(#[from] PathsUnavailable),
     #[error("could not open the rotating log")]
     Open(#[from] InitError),
+    #[error("could not create the log directory")]
+    CreateDirectory(#[source] std::io::Error),
     #[error("could not install the tracing subscriber")]
     Subscriber(#[from] tracing::subscriber::SetGlobalDefaultError),
     #[error("invalid application log directory name")]
@@ -68,6 +70,7 @@ fn log_filter() -> Targets {
 
 /// Installs the subscriber in an explicitly chosen directory.
 pub fn init_in(application: &str, directory: &Path) -> Result<WorkerGuard, LoggingError> {
+    std::fs::create_dir_all(directory).map_err(LoggingError::CreateDirectory)?;
     let log = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix(application)

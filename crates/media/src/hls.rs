@@ -8,7 +8,10 @@ use std::{
     },
 };
 
-use m3u8_rs::{AlternativeMediaType, KeyMethod, MediaPlaylist, Playlist};
+use m3u8_rs::{
+    AlternativeMedia, AlternativeMediaType, KeyMethod, MasterPlaylist, MediaPlaylist, Playlist,
+    VariantStream,
+};
 use reqwest::{Client, Url, header::HeaderMap};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -53,18 +56,7 @@ pub(crate) async fn inspect(
 
     let (formats, default_ext) = match playlist {
         Playlist::MasterPlaylist(master) => {
-            let mut variants: Vec<_> = master
-                .variants
-                .iter()
-                .filter(|variant| !variant.is_i_frame && !variant.uri.trim().is_empty())
-                .collect();
-            variants.sort_by(|left, right| {
-                let left_h = left.resolution.map_or(0, |r| r.height);
-                let right_h = right.resolution.map_or(0, |r| r.height);
-                right_h
-                    .cmp(&left_h)
-                    .then_with(|| right.bandwidth.cmp(&left.bandwidth))
-            });
+            let variants = video_variants(&master);
 
             let mut formats = Vec::new();
             let top_needs_merge = variants.first().is_some_and(|v| {
@@ -73,36 +65,31 @@ pub(crate) async fn inspect(
                     .is_some_and(|group| find_audio_uri(&master.alternatives, group).is_some())
             });
 
-            formats.push(MediaFormat {
-                id: "best".to_owned(),
-                label: "Best (Auto)".to_owned(),
-                preset: FormatPreset::Best,
-                ext: if top_needs_merge && ffmpeg_available {
-                    "mp4".to_owned()
-                } else {
-                    "ts".to_owned()
-                },
-                height: variants
-                    .first()
-                    .and_then(|v| v.resolution.map(|r| r.height as u32)),
-                width: variants
-                    .first()
-                    .and_then(|v| v.resolution.map(|r| r.width as u32)),
-                bandwidth_bps: variants.first().map(|v| v.bandwidth),
-                filesize: None,
-                vcodec: variants.first().and_then(|v| v.codecs.clone()),
-                acodec: None,
-                has_video: true,
-                has_audio: true,
-                needs_merge: top_needs_merge,
-                url: variants
-                    .first()
-                    .and_then(|v| url.join(&v.uri).ok())
-                    .map(Into::into),
-                audio_url: None,
-                audio_format_id: None,
-                headers: Vec::new(),
-            });
+            if let Some(top) = variants.first() {
+                formats.push(MediaFormat {
+                    id: "best".to_owned(),
+                    label: "Best (Auto)".to_owned(),
+                    preset: FormatPreset::Best,
+                    ext: if top_needs_merge && ffmpeg_available {
+                        "mp4".to_owned()
+                    } else {
+                        "ts".to_owned()
+                    },
+                    height: top.resolution.map(|r| r.height as u32),
+                    width: top.resolution.map(|r| r.width as u32),
+                    bandwidth_bps: Some(top.bandwidth),
+                    filesize: None,
+                    vcodec: top.codecs.clone(),
+                    acodec: None,
+                    has_video: true,
+                    has_audio: true,
+                    needs_merge: top_needs_merge,
+                    url: url.join(&top.uri).ok().map(Into::into),
+                    audio_url: None,
+                    audio_format_id: None,
+                    headers: Vec::new(),
+                });
+            }
 
             for variant in variants {
                 let Ok(resolved) = url.join(&variant.uri) else {
@@ -149,16 +136,15 @@ pub(crate) async fn inspect(
                 });
             }
 
-            if let Some(audio) = master
-                .alternatives
-                .iter()
-                .find(|alt| alt.media_type == AlternativeMediaType::Audio && alt.uri.is_some())
-                && let Some(raw_uri) = audio.uri.as_deref()
+            if let Some((raw_uri, rendition)) = audio_selection(&master)
                 && let Ok(audio_url) = url.join(raw_uri)
             {
                 formats.push(MediaFormat {
                     id: "audio".to_owned(),
-                    label: format!("Audio Only ({})", audio.name),
+                    label: rendition.map_or_else(
+                        || "Audio Only".to_owned(),
+                        |audio| format!("Audio Only ({})", audio.name),
+                    ),
                     preset: FormatPreset::AudioOnly { mp3: false },
                     ext: "aac".to_owned(),
                     height: None,
@@ -172,7 +158,7 @@ pub(crate) async fn inspect(
                     needs_merge: false,
                     url: Some(audio_url.as_str().to_owned()),
                     audio_url: None,
-                    audio_format_id: Some(audio.group_id.clone()),
+                    audio_format_id: rendition.map(|audio| audio.group_id.clone()),
                     headers: Vec::new(),
                 });
             }
@@ -407,6 +393,71 @@ fn find_audio_uri<'a>(
         .and_then(|alt| alt.uri.as_deref())
 }
 
+fn playable(variant: &VariantStream) -> bool {
+    !variant.is_i_frame && !variant.uri.trim().is_empty()
+}
+
+fn is_audio_only(variant: &VariantStream) -> bool {
+    variant.resolution.is_none()
+        && variant.video.is_none()
+        && variant
+            .codecs
+            .as_deref()
+            .filter(|codecs| !codecs.trim().is_empty())
+            .is_some_and(|codecs| {
+                codecs.split(',').all(|codec| {
+                    let family = codec.trim().split('.').next().unwrap_or_default();
+                    matches!(
+                        family,
+                        "mp4a"
+                            | "ac-3"
+                            | "ec-3"
+                            | "ac-4"
+                            | "alac"
+                            | "flac"
+                            | "fLaC"
+                            | "opus"
+                            | "Opus"
+                            | "mp3"
+                            | "vorbis"
+                    )
+                })
+            })
+}
+
+fn video_variants(master: &MasterPlaylist) -> Vec<&VariantStream> {
+    let mut variants: Vec<_> = master
+        .variants
+        .iter()
+        .filter(|variant| playable(variant) && !is_audio_only(variant))
+        .collect();
+    variants.sort_by_key(|variant| {
+        std::cmp::Reverse((
+            variant.resolution.map_or(0, |r| r.height),
+            variant.bandwidth,
+        ))
+    });
+    variants
+}
+
+fn audio_selection(master: &MasterPlaylist) -> Option<(&str, Option<&AlternativeMedia>)> {
+    master
+        .alternatives
+        .iter()
+        .filter(|audio| audio.media_type == AlternativeMediaType::Audio)
+        .filter_map(|audio| audio.uri.as_deref().map(|uri| (uri, audio)))
+        .min_by_key(|(_, audio)| !audio.default)
+        .map(|(uri, audio)| (uri, Some(audio)))
+        .or_else(|| {
+            master
+                .variants
+                .iter()
+                .filter(|variant| playable(variant) && is_audio_only(variant))
+                .max_by_key(|variant| variant.bandwidth)
+                .map(|variant| (variant.uri.as_str(), None))
+        })
+}
+
 fn select_master_streams(
     base_url: &Url,
     master: &m3u8_rs::MasterPlaylist,
@@ -415,39 +466,12 @@ fn select_master_streams(
     ffmpeg_available: bool,
 ) -> Result<(Url, Option<Url>), MediaError> {
     if matches!(preset, FormatPreset::AudioOnly { .. })
-        && let Some(audio) = master
-            .alternatives
-            .iter()
-            .find(|alt| {
-                alt.media_type == AlternativeMediaType::Audio && alt.default && alt.uri.is_some()
-            })
-            .or_else(|| {
-                master
-                    .alternatives
-                    .iter()
-                    .find(|alt| alt.media_type == AlternativeMediaType::Audio && alt.uri.is_some())
-            })
-        && let Some(uri) = audio.uri.as_deref()
+        && let Some((uri, _)) = audio_selection(master)
     {
         return Ok((join_url(base_url, uri)?, None));
     }
 
-    let mut variants: Vec<_> = master
-        .variants
-        .iter()
-        .filter(|variant| !variant.is_i_frame && !variant.uri.trim().is_empty())
-        .collect();
-    if variants.is_empty() {
-        return Err(MediaError::NoSuitableFormat);
-    }
-
-    variants.sort_by(|left, right| {
-        let left_h = left.resolution.map_or(0, |r| r.height);
-        let right_h = right.resolution.map_or(0, |r| r.height);
-        right_h
-            .cmp(&left_h)
-            .then_with(|| right.bandwidth.cmp(&left.bandwidth))
-    });
+    let variants = video_variants(master);
 
     if let Some(target) = explicit_variant_uri
         && let Some(variant) = variants.iter().find(|v| {
@@ -478,11 +502,17 @@ fn select_master_streams(
         }
         FormatPreset::MaxHeight(max_h) => {
             let cap = *max_h as u64;
-            variants
+            let selected = variants
                 .iter()
                 .find(|v| v.resolution.is_some_and(|r| r.height <= cap))
                 .or_else(|| variants.last())
-                .copied()
+                .copied();
+            if let Some(variant) = selected
+                && variant.resolution.is_none_or(|r| r.height > cap)
+            {
+                tracing::warn!(requested_height = cap, available_height = ?variant.resolution.map(|r| r.height), "HLS playlist offers no video at a confirmed height within the requested limit");
+            }
+            selected
         }
         FormatPreset::FormatId(id) => variants
             .iter()
@@ -635,4 +665,60 @@ fn join_url(base: &Url, relative: &str) -> Result<Url, MediaError> {
 #[cfg(feature = "fuzzing")]
 pub(crate) fn fuzz_parse(input: &[u8]) {
     let _ = parse_playlist(input);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_cap_excludes_audio_only_variants_without_advertised_heights() -> Result<(), MediaError>
+    {
+        let url = Url::parse("https://example.test/master.m3u8")
+            .map_err(|error| MediaError::ManifestParse(error.to_string()))?;
+        let Playlist::MasterPlaylist(master) = parse_playlist(
+            br#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS="avc1.42e01e,mp4a.40.2"
+large.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.42e015,mp4a.40.2"
+small.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"
+audio.m3u8
+"#,
+        )?
+        else {
+            panic!("expected HLS master")
+        };
+        let (capped, _) =
+            select_master_streams(&url, &master, &FormatPreset::MaxHeight(360), None, false)?;
+        assert_eq!(capped.path(), "/small.m3u8");
+        let (audio, _) = select_master_streams(
+            &url,
+            &master,
+            &FormatPreset::AudioOnly { mp3: false },
+            None,
+            false,
+        )?;
+        assert_eq!(audio.path(), "/audio.m3u8");
+        Ok(())
+    }
+
+    #[test]
+    fn alternate_audio_selection_uses_the_declared_default() -> Result<(), MediaError> {
+        let Playlist::MasterPlaylist(master) = parse_playlist(
+            br#"#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="English",DEFAULT=NO,URI="english.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Italian",DEFAULT=YES,URI="italian.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=300000,AUDIO="a",RESOLUTION=320x180
+video.m3u8
+"#,
+        )?
+        else {
+            panic!("expected HLS master")
+        };
+        let (path, rendition) = audio_selection(&master).ok_or(MediaError::NoSuitableFormat)?;
+        assert_eq!(path, "italian.m3u8");
+        assert_eq!(rendition.map(|audio| audio.name.as_str()), Some("Italian"));
+        Ok(())
+    }
 }

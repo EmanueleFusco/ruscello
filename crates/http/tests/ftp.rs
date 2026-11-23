@@ -89,6 +89,7 @@ async fn downloads_over_explicit_ftps_with_rest_resume_and_credentials() -> Test
         credentials: Some(("alice".into(), "top-secret-pw".into())),
         allow_tls: true,
         require_tls: true,
+        implicit_tls: false,
         drop_first_after_bytes: Some(16_384),
         allow_restart: true,
         support_size: true,
@@ -198,7 +199,7 @@ async fn restarts_from_zero_when_ftp_server_refuses_rest() -> TestResult {
 }
 
 #[tokio::test]
-async fn ftp_checkpoints_strip_passwords_before_writing_control_file() -> TestResult {
+async fn ftp_checkpoints_strip_passwords_and_resume_with_the_legacy_validator() -> TestResult {
     let server = MockFtpServer::start(FtpServerOptions {
         credentials: Some(("alice".into(), "super-secret-password".into())),
         drop_first_after_bytes: Some(8_192),
@@ -257,7 +258,7 @@ async fn ftp_checkpoints_strip_passwords_before_writing_control_file() -> TestRe
         ..FtpServerOptions::default()
     })
     .await;
-    server_anon.register_file("/anon.bin", payload);
+    server_anon.register_file("/anon.bin", payload.clone());
     let dir_anon = tempfile::tempdir()?;
     let anon_url = Url::parse(&server_anon.url("ftp", "/anon.bin"))?;
     let anon_err = downloader
@@ -273,6 +274,7 @@ async fn ftp_checkpoints_strip_passwords_before_writing_control_file() -> TestRe
                     id: 100,
                     destination: dir_anon.path().to_path_buf(),
                 }),
+                expected_checksum: Some(sha256_checksum(&payload)?),
                 ..DownloadOptions::default()
             },
         )
@@ -283,6 +285,34 @@ async fn ftp_checkpoints_strip_passwords_before_writing_control_file() -> TestRe
     assert_eq!(
         anon_checkpoints[0].recovery_url().map(Url::as_str),
         Some(anon_url.as_str())
+    );
+    let ctl = std::fs::read(dir_anon.path().join("anon.bin.rscpart.ctl"))?;
+    let legacy_validator = b"ftp-mdtm:20260101120000";
+    assert!(
+        ctl.windows(legacy_validator.len())
+            .any(|part| part == legacy_validator)
+    );
+    let restarted = HttpDownloader::new()?;
+    let completed = restarted
+        .download(
+            &anon_url,
+            DownloadOptions {
+                directory: dir_anon.path().to_path_buf(),
+                checkpoint_job: Some(CheckpointJob {
+                    id: 100,
+                    destination: dir_anon.path().to_path_buf(),
+                }),
+                expected_checksum: Some(sha256_checksum(&payload)?),
+                ..DownloadOptions::default()
+            },
+        )
+        .await?;
+    assert_eq!(std::fs::read(completed)?, payload);
+    assert!(
+        server_anon
+            .observed_commands()
+            .iter()
+            .any(|cmd| cmd == "REST 4096")
     );
     Ok(())
 }

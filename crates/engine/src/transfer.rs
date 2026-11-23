@@ -9,8 +9,8 @@ use std::{
 use ruscello_core::{DownloadId, FailureReason, FileType, Source};
 use ruscello_http::{
     BandwidthLimit, CheckpointJob, DownloadOptions, DownloadProgress, ErrorClass, FtpCredentials,
-    HttpDownloader, HttpError, RetryPolicy, Url, WriterError, filename_candidate, sanitize_ftp_url,
-    scan_checkpoints,
+    HttpDownloader, HttpError, RetryPolicy, ScopedConnections, Url, WriterError,
+    filename_candidate, sanitize_ftp_url, scan_checkpoints,
 };
 use ruscello_storage::QueueEntry;
 use tokio::{
@@ -85,6 +85,18 @@ impl TransferError {
     }
 
     pub(super) fn reason(&self) -> FailureReason {
+        let upstream_status = match self {
+            Self::Resolver(crate::ResolveError::Status(code))
+            | Self::Http(HttpError::Status(code) | HttpError::Throttled { status: code, .. }) => {
+                Some(code.as_u16())
+            }
+            _ => None,
+        };
+        match upstream_status {
+            Some(404 | 410) => return FailureReason::SourceMissing,
+            Some(429) => return FailureReason::SourceRateLimited,
+            _ => {}
+        }
         match self {
             Self::File(_) => FailureReason::FileSystem,
             Self::Worker(_) => FailureReason::Internal,
@@ -223,15 +235,30 @@ pub(super) async fn run(
         Some(staged) => staged,
         None => {
             let transfer_cancellation = cancellation.child_token();
-            let default_connections = context.limits.connections_per_download;
-            let mut options = DownloadOptions {
-                directory: entry.working_directory.clone(),
-                connections: entry
+            let limit = |per_file, per_host| {
+                entry
                     .download
                     .max_connections
-                    .unwrap_or(default_connections)
-                    .min(default_connections)
-                    .min(context.limits.connections_per_host),
+                    .unwrap_or(per_file)
+                    .min(per_file)
+                    .min(per_host)
+            };
+            let mut options = DownloadOptions {
+                directory: entry.working_directory.clone(),
+                connections: limit(
+                    context.limits.connections_per_download,
+                    context.limits.connections_per_host,
+                ),
+                scoped_connections: context
+                    .limits
+                    .host_override(&url)
+                    .then(|| ScopedConnections {
+                        hostnames: &ruscello_resolver::FUCKINGFAST_HOSTS,
+                        limit: limit(
+                            crate::MAX_HTTP_CONNECTIONS,
+                            Limits::FUCKINGFAST_CONNECTIONS_PER_HOST,
+                        ),
+                    }),
                 expected_checksum: entry
                     .download
                     .checksum
@@ -584,6 +611,13 @@ fn same_content(first: &Path, second: &Path) -> io::Result<bool> {
 }
 
 pub(super) fn write_marker(intent: &Path, name: &str, directory: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    let canonical = directory.canonicalize()?;
+    #[cfg(windows)]
+    let (intent, directory) = (
+        &canonical.join(intent.file_name().ok_or(io::ErrorKind::InvalidInput)?) as &Path,
+        canonical.as_path(),
+    );
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
     temporary.write_all(name.as_bytes())?;
     temporary.as_file().sync_all()?;
@@ -623,6 +657,16 @@ fn copy_staged(
 ) -> io::Result<()> {
     let scratch = copy_path(directory, id);
     fs::create_dir_all(directory.join(RECOVERY_FOLDER))?;
+    #[cfg(windows)]
+    let (scratch, path) = (
+        directory
+            .join(RECOVERY_FOLDER)
+            .canonicalize()?
+            .join(scratch.file_name().ok_or(io::ErrorKind::InvalidInput)?),
+        &directory
+            .canonicalize()?
+            .join(path.file_name().ok_or(io::ErrorKind::InvalidInput)?) as &Path,
+    );
     // The completed staging file remains available if a previous copy was interrupted.
     ignore_missing(fs::remove_file(&scratch))?;
     disk.check(directory, bytes)?;

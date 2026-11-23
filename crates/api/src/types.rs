@@ -30,7 +30,11 @@ pub struct HealthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadDto {
     pub id: u64,
+    #[serde(default)]
+    pub id_string: String,
     pub package_id: Option<u64>,
+    #[serde(default)]
+    pub package_id_string: Option<String>,
     pub filename: String,
     pub source_summary: String,
     pub file_type: String,
@@ -48,6 +52,8 @@ pub struct DownloadDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageDto {
     pub id: u64,
+    #[serde(default)]
+    pub id_string: String,
     pub name: String,
 }
 
@@ -106,6 +112,8 @@ pub struct AddDownloadsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddDownloadsResponse {
     pub added_ids: Vec<u64>,
+    #[serde(default)]
+    pub added_id_strings: Vec<String>,
     pub count: usize,
 }
 
@@ -265,6 +273,13 @@ pub(crate) fn failure_name(reason: FailureReason) -> &'static str {
         FailureReason::IntegrityCheck => "IntegrityCheck",
         FailureReason::FileSystem => "FileSystem",
         FailureReason::Internal => "Internal",
+        FailureReason::TorrentPortUnavailable => "TorrentPortUnavailable",
+        FailureReason::TorrentInterfaceUnavailable => "TorrentInterfaceUnavailable",
+        FailureReason::TorrentInterfaceUnsupported => "TorrentInterfaceUnsupported",
+        FailureReason::ArchiveExtraction => "ArchiveExtraction",
+        FailureReason::ChecksumVerification => "ChecksumVerification",
+        FailureReason::SourceMissing => "SourceMissing",
+        FailureReason::SourceRateLimited => "SourceRateLimited",
     }
 }
 

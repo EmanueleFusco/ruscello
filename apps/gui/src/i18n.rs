@@ -99,6 +99,12 @@ pub(crate) fn file_type(kind: FileType) -> &'static str {
 
 pub(crate) fn status(status: Status) -> &'static str {
     match status {
+        Status::Failed {
+            reason: ruscello_core::FailureReason::SourceMissing,
+        } => "source-missing",
+        Status::Failed {
+            reason: ruscello_core::FailureReason::SourceRateLimited,
+        } => "source-rate-limited",
         Status::Queued => "queued",
         Status::Resolving => "resolving",
         Status::WaitingUser => "waiting-user",
@@ -108,6 +114,21 @@ pub(crate) fn status(status: Status) -> &'static str {
         Status::Seeding => "seeding",
         Status::PostProcessing => "post-processing",
         Status::Completed => "completed",
+        Status::Failed {
+            reason: ruscello_core::FailureReason::TorrentPortUnavailable,
+        } => "torrent-port-unavailable",
+        Status::Failed {
+            reason: ruscello_core::FailureReason::TorrentInterfaceUnavailable,
+        } => "torrent-interface-unavailable",
+        Status::Failed {
+            reason: ruscello_core::FailureReason::TorrentInterfaceUnsupported,
+        } => "torrent-interface-unsupported",
+        Status::Failed {
+            reason: ruscello_core::FailureReason::ArchiveExtraction,
+        } => "archive-extraction-failed",
+        Status::Failed {
+            reason: ruscello_core::FailureReason::ChecksumVerification,
+        } => "checksum-verification-unavailable",
         Status::Failed { .. } => "failed",
     }
 }
@@ -132,6 +153,26 @@ mod tests {
         assert_eq!(strings.get("settings"), "Settings");
         strings.set_locale(Locale::Italian);
         assert_eq!(strings.get("settings"), "Impostazioni");
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_torrent_binding_has_recovery_guidance_in_both_locales() -> anyhow::Result<()> {
+        let key = status(Status::Failed {
+            reason: ruscello_core::FailureReason::TorrentInterfaceUnsupported,
+        });
+        let mut strings = Strings::new(Locale::English)?;
+        assert!(
+            strings
+                .get(key)
+                .contains("only if you want to use the system network route")
+        );
+        strings.set_locale(Locale::Italian);
+        assert!(
+            strings
+                .get(key)
+                .contains("solo se vuoi usare il percorso di rete del sistema")
+        );
         Ok(())
     }
 }

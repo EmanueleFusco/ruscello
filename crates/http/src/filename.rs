@@ -25,7 +25,10 @@ pub(crate) fn suggest_filename(headers: &HeaderMap, url: &Url) -> String {
         && let Some(extension) = headers
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| mime_guess::get_mime_extensions_str(value.split(';').next()?.trim()))
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .filter(|mime| !mime.eq_ignore_ascii_case("text/plain"))
+            .and_then(mime_guess::get_mime_extensions_str)
             .and_then(|extensions| extensions.first())
     {
         filename.push('.');

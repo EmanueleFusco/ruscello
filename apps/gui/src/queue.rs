@@ -312,6 +312,12 @@ impl Queue {
         self.torrent_session = telemetry;
     }
 
+    pub(crate) fn checking_torrent(&self, id: DownloadId) -> bool {
+        self.torrent
+            .get(&id)
+            .is_some_and(|progress| progress.checking_existing_pieces)
+    }
+
     pub(crate) fn speed(&self, id: DownloadId) -> u64 {
         if self
             .downloads

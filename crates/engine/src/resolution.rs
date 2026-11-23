@@ -152,6 +152,7 @@ fn http_error(error: ResolveError) -> HttpError {
     match error {
         ResolveError::Cancelled => HttpError::Cancelled,
         ResolveError::VerificationRequired => HttpError::VerificationRequired,
+        ResolveError::NoDownload => HttpError::NoDownloadOnPage,
         ResolveError::Status(status) => HttpError::Status(status),
         ResolveError::Request(error) => HttpError::Request(error),
         _ => HttpError::ResolutionFailed,

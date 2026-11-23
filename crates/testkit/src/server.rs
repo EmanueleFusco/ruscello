@@ -61,6 +61,7 @@ pub struct Request {
 pub enum Reply {
     Response(StatusCode, HeaderMap, String),
     Bytes(StatusCode, HeaderMap, Vec<u8>),
+    Chunked(StatusCode, HeaderMap, Vec<u8>),
     File(TestFile),
 }
 
@@ -346,6 +347,10 @@ async fn respond_custom(
     }) {
         Reply::Response(status, headers, body) => (status, headers, body).into_response(),
         Reply::Bytes(status, headers, body) => (status, headers, body).into_response(),
+        Reply::Chunked(status, headers, body) => {
+            let stream = stream::iter([Ok::<_, io::Error>(body)]);
+            (status, headers, Body::from_stream(stream)).into_response()
+        }
         Reply::File(file) => respond_resource(&file.resource, peer.ip(), &parts.headers).await,
     }
 }

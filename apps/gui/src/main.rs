@@ -7,10 +7,14 @@ mod desktop;
 mod i18n;
 mod icons;
 mod instance;
+#[cfg(target_os = "macos")]
+mod macos_open;
 #[cfg(windows)]
 mod nvidia;
 mod preferences;
 mod queue;
+#[cfg(windows)]
+mod renderer;
 mod settings;
 mod settings_view;
 mod theme;
@@ -46,18 +50,10 @@ fn main() -> ExitCode {
             let present_matches =
                 !gpu || std::env::var("ICED_PRESENT_MODE").as_deref() == Ok("fifo");
             if !backend_matches || !present_matches {
-                // Pass the selected backend to the desktop process before iced starts.
-                let mut command = std::process::Command::new(std::env::current_exe()?);
-                command
-                    .args(std::env::args_os().skip(1))
-                    .env("ICED_BACKEND", backend);
-                if gpu {
-                    command.env("ICED_PRESENT_MODE", "fifo");
-                    if cfg!(target_os = "windows") && std::env::var_os("WGPU_BACKEND").is_none() {
-                        command.env("WGPU_BACKEND", "dx12");
-                    }
-                }
-                return start_desktop(command);
+                #[cfg(windows)]
+                renderer::configure(preferences.renderer)?;
+                #[cfg(unix)]
+                return exec_with_renderer(backend, gpu);
             }
             run(paths, config, preferences, restore_failed)
         });
@@ -74,15 +70,16 @@ fn main() -> ExitCode {
 }
 
 #[cfg(unix)]
-fn start_desktop(mut command: std::process::Command) -> anyhow::Result<()> {
+fn exec_with_renderer(backend: &str, gpu: bool) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .args(std::env::args_os().skip(1))
+        .env("ICED_BACKEND", backend);
+    if gpu {
+        command.env("ICED_PRESENT_MODE", "fifo");
+    }
     Err(command.exec().into())
-}
-
-#[cfg(windows)]
-fn start_desktop(mut command: std::process::Command) -> anyhow::Result<()> {
-    anyhow::ensure!(command.status()?.success(), "Desktop process failed");
-    Ok(())
 }
 
 fn run(
@@ -100,6 +97,8 @@ fn run(
     let Some(primary) = instance::start(paths.data(), inputs.clone())? else {
         return Ok(());
     };
+    #[cfg(target_os = "macos")]
+    let native_open = macos_open::OpenEvents::install(primary.native_sender())?;
     let events = desktop::event_bridge();
     let strings = Strings::new(preferences.locale)?;
     let default_destination = directories::UserDirs::new()
@@ -143,36 +142,47 @@ fn run(
         .font(&include_bytes!("../assets/Inter-Regular.ttf")[..])
         .font(icons::FONT)
         .run()?;
+    #[cfg(target_os = "macos")]
+    drop(native_open);
     let prepared = restart
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     if let Some(update) = prepared {
         let (next, failed) = match update.apply() {
-            Ok(Some(path)) => (path, false),
+            Ok(Some(relaunch)) => (relaunch, false),
             Ok(None) => return Ok(()), // The Windows installer relaunches after replacement.
             Err(error) => {
                 tracing::debug!(%error, "Could not apply the verified update");
-                (updater::relaunch_path()?, true)
+                (updater::Relaunch::new(updater::relaunch_path()?), true)
             }
         };
         // Release the IPC lock before the new instance tries to start.
         drop(primary);
         drop(update);
-        let mut command = std::process::Command::new(next);
-        command.env_remove("RUSCELLO_UPDATE_FAILED");
-        if failed {
-            command.env("RUSCELLO_UPDATE_FAILED", "1");
+        let command = relaunch_command(&next.executable, failed);
+        if let Some(restored) = next.launch(command)? {
+            relaunch_command(&restored, true).spawn()?;
         }
-        #[cfg(target_os = "linux")]
-        {
-            // The new AppImage runtime supplies its own mount and executable paths.
-            command.env_remove("APPDIR").env_remove("APPIMAGE");
-            if let Some(directory) = std::env::var_os("OWD") {
-                command.current_dir(directory);
-            }
-        }
-        command.spawn()?;
     }
     Ok(())
+}
+
+fn relaunch_command(path: &std::path::Path, failed: bool) -> std::process::Command {
+    let mut command = std::process::Command::new(path);
+    command.env_remove("RUSCELLO_UPDATE_FAILED");
+    #[cfg(target_os = "macos")]
+    command.env_remove(updater::STARTUP_MARKER);
+    if failed {
+        command.env("RUSCELLO_UPDATE_FAILED", "1");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // The new AppImage runtime supplies its own mount and executable paths.
+        command.env_remove("APPDIR").env_remove("APPIMAGE");
+        if let Some(directory) = std::env::var_os("OWD") {
+            command.current_dir(directory);
+        }
+    }
+    command
 }

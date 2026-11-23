@@ -98,6 +98,59 @@ async fn apply(app: &mut App, message: Message) {
 }
 
 #[tokio::test]
+async fn saves_localized_connection_presets_and_the_independent_host_override() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let options = EngineOptions::new(temp.path().join("queue.db"), temp.path().join("downloads"));
+    let engine = EngineHandle::start(options.clone()).await?;
+    let mut app = app(&temp)?;
+    app.preferences.check_updates = false;
+    apply(&mut app, Message::Started(Some(engine.clone()))).await;
+    let initial = engine.snapshot().await?;
+    let initial_limits = initial.limits;
+    apply(&mut app, Message::Snapshot(Some(Box::new(initial)))).await;
+    apply(&mut app, Message::Settings(true)).await;
+    apply(&mut app, Message::SettingsPage(Page::Downloads)).await;
+    let selection = click(&app, "Large files (5 / 32 / 16)")?;
+    apply(&mut app, selection).await;
+    assert_eq!(engine.snapshot().await?.limits, initial_limits);
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+    assert!(
+        simulator(&app)
+            .find("File di grandi dimensioni (5 / 32 / 16)")
+            .is_ok()
+    );
+    apply(
+        &mut app,
+        Message::SettingNumber(crate::settings::Number::PerDownload, "50".into()),
+    )
+    .await;
+    assert!(simulator(&app).find("Personalizzato").is_ok());
+    assert!(
+        simulator(&app)
+            .find("HTTP diretto usa al massimo 32 connessioni per file.")
+            .is_ok()
+    );
+    assert!(
+        simulator(&app)
+            .find("Code FuckingFast di grandi dimensioni (100 per host / 32 per file)")
+            .is_ok()
+    );
+    apply(&mut app, Message::FuckingFastBatch(true)).await;
+    apply(&mut app, Message::SaveLimits).await;
+    let saved = engine.snapshot().await?.limits;
+    assert_eq!(saved.concurrent_downloads.get(), 5);
+    assert_eq!(saved.connections_per_host.get(), 32);
+    assert_eq!(saved.connections_per_download.get(), 50);
+    assert!(saved.fuckingfast_batch);
+    engine.shutdown().await?;
+    let reopened = EngineHandle::start(options).await?;
+    assert_eq!(reopened.snapshot().await?.limits, saved);
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn adds_pauses_resumes_and_removes_a_loopback_download() -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let mut app = app(&temp)?;
@@ -635,6 +688,11 @@ async fn inspects_selects_files_adds_torrent_and_saves_bittorrent_settings() -> 
     apply(&mut app, Message::Settings(true)).await;
     apply(&mut app, Message::SettingsPage(Page::Torrent)).await;
     assert!(simulator(&app).find("Enable DHT").is_ok());
+    assert!(
+        simulator(&app)
+            .find("Maximum peers across all torrents (default 500)")
+            .is_ok()
+    );
     apply(
         &mut app,
         Message::TorrentField(TorrentField::Port, "invalid".into()),
@@ -656,6 +714,11 @@ async fn inspects_selects_files_adds_torrent_and_saves_bittorrent_settings() -> 
     apply(
         &mut app,
         Message::TorrentField(TorrentField::MaxPeers, "24".into()),
+    )
+    .await;
+    apply(
+        &mut app,
+        Message::TorrentField(TorrentField::MaxGlobalPeers, "40".into()),
     )
     .await;
     let save_ok = click(&app, "Save")?;
@@ -715,6 +778,7 @@ async fn displays_torrent_status_telemetry_and_contextual_details_tabs() -> anyh
     apply(
         &mut app,
         Message::Event(EngineEvent::TorrentProgress(vec![TorrentRuntimeProgress {
+            checking_existing_pieces: false,
             id: torrent_id,
             download_rate_bps: 1024,
             upload_rate_bps: 4096,
@@ -1477,6 +1541,18 @@ async fn one_click_extension_pairing_forwards_linkgrabber_and_revokes() -> anyho
 
     let pending_text = format!("Extension pairing request from Chrome MV3 Test ({ext_origin})");
     assert!(simulator_at(&app, tall).find(pending_text.as_str()).is_ok());
+    let narrow = Size::new(950.0, 1600.0);
+    assert!(
+        matches!(click_in(&app, narrow, "Reject")?, Message::RejectPairing(ref id) if id == &request_id)
+    );
+    apply(&mut app, Message::Locale(Locale::Italian)).await;
+    assert!(
+        matches!(click_in(&app, narrow, "Rifiuta")?, Message::RejectPairing(ref id) if id == &request_id)
+    );
+    assert!(
+        matches!(click_in(&app, narrow, "Approva")?, Message::ApprovePairing(ref id) if id == &request_id)
+    );
+    apply(&mut app, Message::Locale(Locale::English)).await;
 
     let approve = click_in(&app, tall, "Approve")?;
     apply(&mut app, approve).await;
@@ -1770,6 +1846,7 @@ async fn submits_ftp_url_through_add_dialog_and_masks_password() -> anyhow::Resu
         credentials: Some(("alice".into(), "s3cr3t-ftp-pw".into())),
         allow_tls: false,
         require_tls: false,
+        implicit_tls: false,
         drop_first_after_bytes: None,
         allow_restart: true,
         support_size: true,
@@ -2021,6 +2098,7 @@ async fn prevents_long_filename_and_simultaneous_speed_overlap_in_queue_rows() -
     apply(
         &mut app,
         Message::Event(EngineEvent::TorrentProgress(vec![TorrentRuntimeProgress {
+            checking_existing_pieces: false,
             id,
             download_rate_bps: 26_424_115,
             upload_rate_bps: 1_258_291,

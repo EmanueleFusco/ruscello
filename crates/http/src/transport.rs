@@ -30,6 +30,7 @@ struct HostState {
 #[derive(Debug)]
 struct Usage {
     limit: NonZeroUsize,
+    overrides: HashMap<String, NonZeroUsize>,
     active: HashMap<String, usize>,
 }
 
@@ -38,6 +39,7 @@ impl HostConnections {
         Self(Arc::new(HostState {
             usage: Mutex::new(Usage {
                 limit,
+                overrides: HashMap::new(),
                 active: HashMap::new(),
             }),
             changed: watch::channel(()).0,
@@ -50,6 +52,18 @@ impl HostConnections {
         self.0.changed.send_replace(());
     }
 
+    /// Replaces the default and exact-host caps without interrupting requests in flight.
+    pub fn set_limits(&self, limit: NonZeroUsize, overrides: &[(&str, NonZeroUsize)]) {
+        let mut usage = self.usage();
+        usage.limit = limit;
+        usage.overrides = overrides
+            .iter()
+            .map(|(host, limit)| (host.to_string(), *limit))
+            .collect();
+        drop(usage);
+        self.0.changed.send_replace(());
+    }
+
     fn usage(&self) -> MutexGuard<'_, Usage> {
         self.0
             .usage
@@ -59,7 +73,12 @@ impl HostConnections {
 
     fn try_acquire(&self, hostname: &str) -> bool {
         let mut usage = self.usage();
-        if usage.active.get(hostname).copied().unwrap_or(0) >= usage.limit.get() {
+        let limit = usage
+            .overrides
+            .get(hostname)
+            .copied()
+            .unwrap_or(usage.limit);
+        if usage.active.get(hostname).copied().unwrap_or(0) >= limit.get() {
             return false;
         }
         *usage.active.entry(hostname.to_owned()).or_default() += 1;
@@ -142,6 +161,20 @@ impl Transport {
     ) -> Result<Probe, HttpError> {
         headers.insert(header::RANGE, header::HeaderValue::from_static("bytes=0-"));
         let response = self.get(url, headers, true).await?;
+        parse_probe(&response)
+    }
+
+    pub(crate) async fn probe_full(
+        &self,
+        url: &Url,
+        mut headers: HeaderMap,
+    ) -> Result<Probe, HttpError> {
+        headers.remove(header::RANGE);
+        headers.remove(header::IF_RANGE);
+        let response = self.get(url, headers, true).await?;
+        if response.status() != StatusCode::OK {
+            return Err(crate::retry::status_error(&response));
+        }
         parse_probe(&response)
     }
 
@@ -285,6 +318,29 @@ mod tests {
         let second = waiting.await;
         assert!(!limit.try_acquire("first.test"));
         drop((first, second, other));
+        assert!(limit.usage().active.is_empty());
+    }
+
+    #[tokio::test]
+    async fn exact_host_overrides_leave_other_origins_and_in_flight_requests_unchanged() {
+        let limit = HostConnections::new(NonZeroUsize::MIN);
+        let origin = limit.acquire("selected.test".into()).await;
+        let endpoint = limit.acquire("cdn.selected.test".into()).await;
+        let other = limit.acquire("unrelated.test".into()).await;
+        let two = NonZeroUsize::MIN.saturating_add(1);
+        limit.set_limits(
+            NonZeroUsize::MIN,
+            &[("selected.test", two), ("cdn.selected.test", two)],
+        );
+        let second_origin = limit.acquire("selected.test".into()).await;
+        let second_endpoint = limit.acquire("cdn.selected.test".into()).await;
+        assert!(!limit.try_acquire("unrelated.test"));
+        assert!(!limit.try_acquire("cdn.selected.test"));
+        limit.set_limits(NonZeroUsize::MIN, &[]);
+        drop((second_origin, second_endpoint));
+        assert!(!limit.try_acquire("selected.test"));
+        assert!(!limit.try_acquire("cdn.selected.test"));
+        drop((origin, endpoint, other));
         assert!(limit.usage().active.is_empty());
     }
 }

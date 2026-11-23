@@ -29,6 +29,8 @@ pub struct FtpServerOptions {
     pub allow_tls: bool,
     /// Rejects plain logins until `AUTH TLS` succeeds.
     pub require_tls: bool,
+    /// Starts TLS before sending the welcome banner.
+    pub implicit_tls: bool,
     /// When set, the first `RETR` disconnects after writing this many bytes so the client
     /// must recover using `REST`.
     pub drop_first_after_bytes: Option<usize>,
@@ -44,6 +46,7 @@ impl Default for FtpServerOptions {
             credentials: None,
             allow_tls: true,
             require_tls: false,
+            implicit_tls: false,
             drop_first_after_bytes: None,
             allow_restart: true,
             support_size: true,
@@ -246,7 +249,13 @@ async fn handle_connection(
     state: Arc<ServerState>,
     acceptor: TlsAcceptor,
 ) -> std::io::Result<()> {
-    let mut reader = BufReader::new(SessionStream::Plain(tcp));
+    let mut is_tls = state.options.implicit_tls;
+    let control = if is_tls {
+        SessionStream::Tls(Box::new(acceptor.accept(tcp).await?))
+    } else {
+        SessionStream::Plain(tcp)
+    };
+    let mut reader = BufReader::new(control);
     reader
         .get_mut()
         .write_all(b"220 Ruscello Mock FTP ready\r\n")
@@ -254,7 +263,6 @@ async fn handle_connection(
 
     let mut username = String::new();
     let mut logged_in = false;
-    let mut is_tls = false;
     let mut prot_private = false;
     let mut cwd = String::new();
     let mut restart_offset = 0usize;

@@ -82,6 +82,37 @@ async fn completed(events: &mut broadcast::Receiver<EngineEvent>, id: DownloadId
 }
 
 #[tokio::test]
+#[cfg(windows)]
+async fn publishes_to_a_long_unicode_destination_without_a_verbatim_prefix() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let mut destination = temp.path().to_path_buf();
+    while destination.as_os_str().len() < 274 {
+        destination.push("données-ruscello-long-path");
+    }
+    assert!(!destination.to_string_lossy().starts_with(r"\\?\"));
+    let server = TestServer::start().await?;
+    let file = server.file(FileSpec::random(89, SIZE));
+    let engine = EngineHandle::start(EngineOptions::new(
+        temp.path().join("qa.db"),
+        destination.clone(),
+    ))
+    .await?;
+    let mut events = engine.subscribe();
+    let id = engine
+        .add(AddDownload::new(Source::Http {
+            url: file.url().into(),
+        }))
+        .await?;
+    timeout(Duration::from_secs(10), completed(&mut events, id)).await??;
+    assert_eq!(
+        fs::read(destination.join("payload.bin"))?,
+        file.payload().bytes(0..SIZE)
+    );
+    engine.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn checks_known_size_before_opening_a_partial_file() -> TestResult {
     let server = TestServer::start().await?;
     let file = server.file(FileSpec::random(1, SIZE));

@@ -61,6 +61,10 @@ async fn main() -> ExitCode {
                     error(messages.media_failure(media_error));
                 } else if let Some(resolve_error) = failure.downcast_ref::<ResolveError>() {
                     error(messages.resolve_failure(resolve_error));
+                } else if let Some(ruscello_engine::EngineError::Resolver(resolve_error)) =
+                    failure.downcast_ref()
+                {
+                    error(messages.resolve_failure(resolve_error));
                 } else {
                     error(&failure.to_string());
                 }

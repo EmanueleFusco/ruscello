@@ -22,6 +22,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_METADATA: usize = 2 * 1024 * 1024;
 const MAX_ASSET: u64 = 512 * 1024 * 1024;
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const STARTUP_MARKER: &str = "RUSCELLO_UPDATE_STARTUP_MARKER";
+
 pub(crate) type Restart = Arc<Mutex<Option<PreparedUpdate>>>;
 
 #[derive(Debug, Clone, Default)]
@@ -97,8 +100,10 @@ impl Installation {
         #[cfg(target_os = "macos")]
         return std::env::current_exe().ok().and_then(|exe| {
             let bundle = exe.parent()?.parent()?.parent()?;
-            (bundle.extension()? == "app" && bundle.join("Contents/Info.plist").is_file())
-                .then(|| Self::AppBundle(bundle.to_owned()))
+            (bundle.extension()? == "app"
+                && bundle.join("Contents/Info.plist").is_file()
+                && tempfile::tempdir_in(bundle.parent()?).is_ok())
+            .then(|| Self::AppBundle(bundle.to_owned()))
         });
     }
 
@@ -289,6 +294,12 @@ pub(crate) async fn download_and_install(
     asset: Asset,
     mut progress: impl FnMut(UpdateProgress),
 ) -> anyhow::Result<PreparedUpdate> {
+    #[cfg(target_os = "macos")]
+    let replacement_directory = match &asset.install {
+        Installation::AppBundle(bundle) => bundle.parent().map(std::path::Path::to_path_buf),
+        #[cfg(test)]
+        Installation::Fixture => None,
+    };
     let extension = asset.install.extension();
     let staging = tokio::task::spawn_blocking(move || {
         tempfile::Builder::new()
@@ -331,6 +342,10 @@ pub(crate) async fn download_and_install(
     );
     file.sync_all().await?;
     drop(file);
+    #[cfg(target_os = "macos")]
+    if let Some(directory) = replacement_directory {
+        tokio::task::spawn_blocking(move || tempfile::tempdir_in(directory).map(drop)).await??;
+    }
     progress(state);
     Ok(PreparedUpdate {
         file: Arc::new(path),
@@ -340,7 +355,7 @@ pub(crate) async fn download_and_install(
 
 /// Applies a verified update after the application has drained its engine.
 impl PreparedUpdate {
-    pub(crate) fn apply(&self) -> anyhow::Result<Option<PathBuf>> {
+    pub(crate) fn apply(&self) -> anyhow::Result<Option<Relaunch>> {
         match &self.install {
             #[cfg(target_os = "linux")]
             Installation::AppImage(image) => {
@@ -357,7 +372,7 @@ impl PreparedUpdate {
                 if let Err(error) = std::fs::File::open(directory).and_then(|dir| dir.sync_all()) {
                     tracing::debug!(%error, "Could not sync the AppImage directory");
                 }
-                Ok(Some(image.clone()))
+                Ok(Some(Relaunch::new(image.clone())))
             }
             #[cfg(windows)]
             Installation::Nsis(directory) => {
@@ -389,15 +404,64 @@ impl PreparedUpdate {
                 Ok(None)
             }
             #[cfg(target_os = "macos")]
-            Installation::AppBundle(bundle) => replace_bundle(&self.file, bundle).map(Some),
+            Installation::AppBundle(bundle) => {
+                let backup = replace_bundle(&self.file, bundle)?;
+                Ok(Some(Relaunch {
+                    executable: backup.executable(),
+                    backup: Some(backup),
+                }))
+            }
             #[cfg(test)]
             Installation::Fixture => anyhow::bail!("Test fixture cannot be installed"),
         }
     }
 }
 
+pub(crate) struct Relaunch {
+    pub(crate) executable: PathBuf,
+    #[cfg(target_os = "macos")]
+    backup: Option<SwappedBundle>,
+}
+
+impl Relaunch {
+    pub(crate) fn new(executable: PathBuf) -> Self {
+        Self {
+            executable,
+            #[cfg(target_os = "macos")]
+            backup: None,
+        }
+    }
+
+    pub(crate) fn launch(
+        self,
+        mut command: std::process::Command,
+    ) -> std::io::Result<Option<PathBuf>> {
+        #[cfg(target_os = "macos")]
+        if let Some(backup) = self.backup {
+            return backup.launch(&mut command, Duration::from_secs(30));
+        }
+        command.spawn()?;
+        Ok(None)
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn replace_bundle(dmg: &std::path::Path, bundle: &std::path::Path) -> anyhow::Result<PathBuf> {
+pub(crate) async fn confirm_startup(marker: PathBuf) {
+    if let Err(error) = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(marker)
+        .await
+    {
+        tracing::warn!(%error, "Could not acknowledge restart after the verified update");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn replace_bundle(
+    dmg: &std::path::Path,
+    bundle: &std::path::Path,
+) -> anyhow::Result<SwappedBundle> {
     use std::process::Command;
     let parent = bundle.parent().context("No bundle parent directory")?;
     let stage = tempfile::tempdir_in(parent)?;
@@ -429,15 +493,15 @@ fn replace_bundle(dmg: &std::path::Path, bundle: &std::path::Path) -> anyhow::Re
     swap_macos_bundle(bundle, &next, stage)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn swap_macos_bundle(
     bundle: &std::path::Path,
     next: &std::path::Path,
     stage: tempfile::TempDir,
-) -> anyhow::Result<PathBuf> {
-    let executable = std::path::Path::new("Contents/MacOS/ruscello");
+) -> anyhow::Result<SwappedBundle> {
     ensure!(
-        next.join(executable).is_file() && next.join("Contents/MacOS/ruscello-webview").is_file(),
+        next.join("Contents/MacOS/ruscello").is_file()
+            && next.join("Contents/MacOS/ruscello-webview").is_file(),
         "The updated application bundle is incomplete"
     );
     let previous = stage.path().join("previous.app");
@@ -449,7 +513,70 @@ fn swap_macos_bundle(
         }
         return Err(error.into());
     }
-    Ok(bundle.join(executable))
+    Ok(SwappedBundle {
+        bundle: bundle.to_owned(),
+        stage,
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+struct SwappedBundle {
+    bundle: PathBuf,
+    stage: tempfile::TempDir,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl SwappedBundle {
+    fn executable(&self) -> PathBuf {
+        self.bundle.join("Contents/MacOS/ruscello")
+    }
+
+    fn launch(
+        self,
+        command: &mut std::process::Command,
+        timeout: Duration,
+    ) -> std::io::Result<Option<PathBuf>> {
+        let marker = self.stage.path().join("started");
+        match command.env(STARTUP_MARKER, &marker).spawn() {
+            Ok(mut child) => {
+                let until = Instant::now() + timeout;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            tracing::warn!(%status, "Updated application exited before startup was confirmed");
+                            break;
+                        }
+                        Ok(None) if marker.is_file() => return Ok(None),
+                        Ok(None) if Instant::now() < until => {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        result => {
+                            // The replacement may be running transfers. Keep the previous
+                            // bundle without trying to stop or replace a live process.
+                            let backup = self.stage.keep();
+                            tracing::warn!(path = %backup.display(), ?result, "Startup unconfirmed; kept the previous application bundle");
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "Could not start the updated application"),
+        }
+        let executable = self.executable();
+        self.rollback()?;
+        Ok(Some(executable))
+    }
+
+    fn rollback(self) -> std::io::Result<()> {
+        let result = std::fs::rename(&self.bundle, self.stage.path().join("failed.app"))
+            .and_then(|()| std::fs::rename(self.stage.path().join("previous.app"), &self.bundle));
+        if let Err(error) = result {
+            let backup = self.stage.keep();
+            tracing::error!(path = %backup.display(), %error, "The original application could not be restored");
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -542,7 +669,7 @@ mod tests {
             file: Arc::new(source),
             install: Installation::AppImage(image.clone()),
         };
-        assert_eq!(state.apply()?, Some(image.clone()));
+        assert_eq!(state.apply()?.map(|r| r.executable), Some(image.clone()));
         assert_eq!(std::fs::read(image)?, b"new");
         assert_eq!(std::fs::read(&*state.file)?, b"new");
         Ok(())
@@ -582,10 +709,115 @@ mod tests {
             result.status,
             String::from_utf8_lossy(&result.stderr)
         );
-        let binary = replace_bundle(&image, &app)?;
+        let swap = replace_bundle(&image, &app)?;
+        let binary = swap.executable();
         assert_eq!(binary, app.join(desktop));
         assert_eq!(fs::read(binary)?, b"new desktop");
         assert_eq!(fs::read(app.join(helper))?, b"new helper");
+        Ok(())
+    }
+
+    fn macos_swap_fixture() -> anyhow::Result<(tempfile::TempDir, SwappedBundle)> {
+        let root = tempfile::tempdir()?;
+        let app = root.path().join("Installed.app");
+        let stage = tempfile::tempdir_in(root.path())?;
+        let next = stage.path().join("New.app");
+        for (path, bytes) in [(&app, b"old"), (&next, b"new")] {
+            std::fs::create_dir_all(path.join("Contents/MacOS"))?;
+            std::fs::write(path.join("Contents/MacOS/ruscello"), bytes)?;
+            std::fs::write(path.join("Contents/MacOS/ruscello-webview"), bytes)?;
+        }
+        Ok((root, swap_macos_bundle(&app, &next, stage)?))
+    }
+
+    #[test]
+    fn macos_swap_restores_both_binaries_on_spawn_failure_or_early_exit() -> anyhow::Result<()> {
+        for early_exit in [false, true] {
+            let (_root, swap) = macos_swap_fixture()?;
+            let executable = swap.executable();
+            let helper = executable.with_file_name("ruscello-webview");
+            let stage = swap.stage.path().to_owned();
+            assert_eq!(std::fs::read(&executable)?, b"new");
+            let mut command = if early_exit {
+                let mut command = std::process::Command::new(std::env::current_exe()?);
+                command.arg("--list").stdout(std::process::Stdio::null());
+                command
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
+                }
+                std::process::Command::new(&executable)
+            };
+            assert_eq!(
+                swap.launch(&mut command, Duration::from_secs(5))?,
+                Some(executable.clone())
+            );
+            assert_eq!(std::fs::read(executable)?, b"old");
+            assert_eq!(std::fs::read(helper)?, b"old");
+            assert!(!stage.exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn macos_swap_cleans_up_only_after_startup_confirmation() -> anyhow::Result<()> {
+        for confirm in [true, false] {
+            let (root, swap) = macos_swap_fixture()?;
+            let executable = swap.executable();
+            let stage = swap.stage.path().to_owned();
+            let release = root.path().join("release");
+            let mut command = std::process::Command::new(std::env::current_exe()?);
+            command
+                .args(["--ignored", "--exact", "updater::tests::startup_fixture"])
+                .env("RUSCELLO_TEST_RELEASE_PROCESS", &release)
+                .stdout(std::process::Stdio::null());
+            if confirm {
+                command.env("RUSCELLO_TEST_CONFIRM_STARTUP", "1");
+            }
+            let timeout = if confirm {
+                Duration::from_secs(5)
+            } else {
+                Duration::ZERO
+            };
+            assert!(swap.launch(&mut command, timeout)?.is_none());
+            assert_eq!(!stage.exists(), confirm);
+            if !confirm {
+                assert_eq!(
+                    std::fs::read(stage.join("previous.app/Contents/MacOS/ruscello"))?,
+                    b"old"
+                );
+            }
+            assert_eq!(std::fs::read(executable)?, b"new");
+            std::fs::write(&release, b"")?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while release.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(!release.exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "child process fixture for the macOS startup confirmation tests"]
+    fn startup_fixture() -> anyhow::Result<()> {
+        let release = PathBuf::from(
+            std::env::var_os("RUSCELLO_TEST_RELEASE_PROCESS").context("No release signal")?,
+        );
+        if std::env::var_os("RUSCELLO_TEST_CONFIRM_STARTUP").is_some() {
+            let marker = std::env::var_os(STARTUP_MARKER).context("No startup marker")?;
+            std::fs::File::options()
+                .write(true)
+                .create_new(true)
+                .open(marker)?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !release.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::remove_file(release)?;
         Ok(())
     }
 }

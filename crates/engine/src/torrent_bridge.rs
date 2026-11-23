@@ -4,9 +4,9 @@ use std::{
 };
 
 use ruscello_core::TorrentSource;
-use ruscello_http::Url;
+use ruscello_http::{BandwidthLimit, Url};
 use ruscello_storage::{QueueEntry, TorrentQueueState};
-use ruscello_torrent::{AddTorrentRequest, TorrentError, TorrentSettings};
+use ruscello_torrent::{AddTorrentRequest, TorrentError, TorrentManager, TorrentSettings};
 
 pub(super) fn meta_file_path(torrent_data_dir: &Path, id: u64) -> PathBuf {
     torrent_data_dir.join("meta").join(format!("{id}.torrent"))
@@ -88,16 +88,22 @@ pub(super) fn magnet_display_name(uri: &str) -> Option<String> {
     None
 }
 
-pub(super) fn effective_settings(
-    base: &TorrentSettings,
-    global_bandwidth: Option<NonZeroU64>,
-) -> TorrentSettings {
-    let mut effective = base.clone();
-    effective.download_limit_bps = match (base.download_limit_bps, global_bandwidth) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
-    effective
+pub(super) async fn start_manager(
+    data_dir: PathBuf,
+    destination: PathBuf,
+    settings: TorrentSettings,
+    bandwidth: BandwidthLimit,
+) -> Result<TorrentManager, TorrentError> {
+    TorrentManager::with_download_budget(data_dir, destination, settings, move |length| {
+        let bandwidth = bandwidth.clone();
+        async move {
+            let mut remaining = length.get() as usize;
+            while remaining > 0 {
+                remaining -= bandwidth.acquire(&bandwidth, None, remaining).await;
+            }
+        }
+    })
+    .await
 }
 
 pub(super) fn build_request(

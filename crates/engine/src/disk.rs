@@ -17,6 +17,10 @@ struct SystemSpace;
 
 impl DiskSpaceProbe for SystemSpace {
     fn available_bytes(&self, directory: &Path) -> io::Result<u64> {
+        #[cfg(windows)]
+        let canonical = directory.canonicalize()?;
+        #[cfg(windows)]
+        let directory = canonical.as_path();
         fs4::available_space(directory)
     }
 }

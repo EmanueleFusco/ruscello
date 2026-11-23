@@ -8,7 +8,7 @@ use std::{
 };
 
 use tokio::{
-    sync::watch,
+    sync::{Semaphore, watch},
     time::{self, Instant},
 };
 
@@ -23,6 +23,7 @@ struct Limit {
     bucket: Mutex<Bucket>,
     limited: AtomicBool,
     changed: watch::Sender<()>,
+    shared_turn: Semaphore,
 }
 
 #[derive(Debug)]
@@ -30,6 +31,12 @@ struct Bucket {
     rate: Option<NonZeroU64>,
     tokens: f64,
     updated: Instant,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GrantWait {
+    Shared(Duration),
+    Scoped(Duration),
 }
 
 impl Default for BandwidthLimit {
@@ -48,6 +55,7 @@ impl BandwidthLimit {
                 updated: Instant::now(),
             }),
             changed: watch::channel(()).0,
+            shared_turn: Semaphore::new(1),
         }))
     }
 
@@ -88,26 +96,32 @@ impl BandwidthLimit {
         limits.sort_unstable_by_key(|limit| {
             limit.map_or(usize::MAX, |limit| Arc::as_ptr(&limit.0).addr())
         });
-        if let Ok(granted) = Self::try_acquire(limits, requested) {
-            return granted;
-        }
         let mut global_changed = self.0.changed.subscribe();
         let mut local_changed = local.0.changed.subscribe();
         let mut individual_changed = individual.map(|limit| limit.0.changed.subscribe());
+        let mut turn = None;
         loop {
-            match Self::try_acquire(limits, requested) {
+            if turn.is_none() && self.0.limited.load(Ordering::Acquire) {
+                // Competing byte sizes must wait for the shared bucket in arrival order.
+                turn = self.0.shared_turn.acquire().await.ok();
+            }
+            let wait = match self.try_acquire(limits, requested) {
                 Ok(granted) => return granted,
-                Err(wait) => {
-                    tokio::select! {
-                        _ = time::sleep(wait) => {}
-                        _ = global_changed.changed() => {}
-                        _ = local_changed.changed() => {}
-                        () = async {
-                            if let Some(receiver) = &mut individual_changed { let _ = receiver.changed().await; }
-                            else { std::future::pending::<()>().await; }
-                        } => {}
-                    }
+                Err(GrantWait::Shared(wait)) => wait,
+                Err(GrantWait::Scoped(wait)) => {
+                    // A slower category or per-download limit must not hold up unrelated jobs.
+                    drop(turn.take());
+                    wait
                 }
+            };
+            tokio::select! {
+                _ = time::sleep(wait) => {}
+                _ = global_changed.changed() => {}
+                _ = local_changed.changed() => {}
+                () = async {
+                    if let Some(receiver) = &mut individual_changed { let _ = receiver.changed().await; }
+                    else { std::future::pending::<()>().await; }
+                } => {}
             }
         }
     }
@@ -119,7 +133,11 @@ impl BandwidthLimit {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn try_acquire(limits: [Option<&Self>; 3], requested: usize) -> Result<usize, Duration> {
+    fn try_acquire(
+        &self,
+        limits: [Option<&Self>; 3],
+        requested: usize,
+    ) -> Result<usize, GrantWait> {
         let mut previous = None;
         let mut guards = limits.map(|limit| {
             let limit = limit?;
@@ -128,10 +146,13 @@ impl BandwidthLimit {
                 return None;
             }
             previous = Some(current);
-            Some(limit.lock())
+            Some((Arc::ptr_eq(&self.0, &limit.0), limit.lock()))
         });
         debit(
-            guards.iter_mut().filter_map(Option::as_deref_mut),
+            guards
+                .iter_mut()
+                .flatten()
+                .map(|(shared, guard)| (*shared, &mut **guard)),
             requested,
             Instant::now(),
         )
@@ -168,29 +189,36 @@ impl Bucket {
 }
 
 fn debit<'a>(
-    limits: impl Iterator<Item = &'a mut Bucket>,
+    limits: impl Iterator<Item = (bool, &'a mut Bucket)>,
     requested: usize,
     now: Instant,
-) -> Result<usize, Duration> {
-    let mut buckets: [Option<&mut Bucket>; 3] = [None, None, None];
+) -> Result<usize, GrantWait> {
+    let mut buckets = [None, None, None];
     for (slot, bucket) in buckets.iter_mut().zip(limits) {
         *slot = Some(bucket);
     }
     let mut count = requested;
-    for bucket in buckets.iter_mut().flatten() {
+    for (_, bucket) in buckets.iter_mut().flatten() {
         bucket.refill(now);
         count = count.min(capacity(bucket.rate));
     }
-    let wait = buckets
-        .iter()
-        .flatten()
-        .map(|bucket| bucket.wait(count))
-        .max()
-        .unwrap_or_default();
-    if !wait.is_zero() {
-        return Err(wait);
+    let mut shared_wait = Duration::ZERO;
+    let mut scoped_wait = Duration::ZERO;
+    for (shared, bucket) in buckets.iter().flatten() {
+        let wait = bucket.wait(count);
+        if *shared {
+            shared_wait = wait;
+        } else {
+            scoped_wait = scoped_wait.max(wait);
+        }
     }
-    for bucket in buckets.iter_mut().flatten() {
+    if !scoped_wait.is_zero() {
+        return Err(GrantWait::Scoped(scoped_wait));
+    }
+    if !shared_wait.is_zero() {
+        return Err(GrantWait::Shared(shared_wait));
+    }
+    for (_, bucket) in buckets.iter_mut().flatten() {
         bucket.spend(count);
     }
     Ok(count)
@@ -214,13 +242,21 @@ mod tests {
             updated: start,
         };
         assert_eq!(
-            debit([&mut global, &mut local].into_iter(), 30, start),
-            Err(Duration::from_millis(100))
+            debit(
+                [(true, &mut global), (false, &mut local)].into_iter(),
+                30,
+                start
+            ),
+            Err(GrantWait::Scoped(Duration::from_millis(100)))
         );
         assert_eq!(global.tokens, 100.0);
         let later = start + Duration::from_millis(100);
         assert_eq!(
-            debit([&mut global, &mut local].into_iter(), 30, later),
+            debit(
+                [(true, &mut global), (false, &mut local)].into_iter(),
+                30,
+                later
+            ),
             Ok(20)
         );
         assert_eq!(global.tokens, 80.0);
@@ -268,6 +304,72 @@ mod tests {
         assert_eq!(
             time::timeout(Duration::from_secs(1), pending).await.ok(),
             Some(500)
+        );
+    }
+
+    #[tokio::test]
+    async fn smaller_requests_cannot_overtake_a_waiting_shared_grant() {
+        let global = BandwidthLimit::new(NonZeroU64::new(1_000));
+        let local = BandwidthLimit::default();
+        assert_eq!(global.acquire(&local, None, 100).await, 100);
+        let large = global.acquire(&local, None, 100);
+        tokio::pin!(large);
+        assert!(
+            time::timeout(Duration::from_millis(10), &mut large)
+                .await
+                .is_err()
+        );
+        assert!(
+            time::timeout(Duration::from_millis(15), global.acquire(&local, None, 1))
+                .await
+                .is_err(),
+            "a small grant overtook the waiter for a full block"
+        );
+        assert_eq!(
+            time::timeout(Duration::from_secs(1), large).await.ok(),
+            Some(100)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scoped_wait_releases_the_shared_turn() {
+        let global = BandwidthLimit::new(NonZeroU64::new(1_000));
+        let slow = BandwidthLimit::new(Some(NonZeroU64::MIN));
+        let unlimited = BandwidthLimit::default();
+        assert_eq!(global.acquire(&slow, None, 1).await, 1);
+        let scoped = global.acquire(&slow, None, 1);
+        tokio::pin!(scoped);
+        assert!(
+            time::timeout(Duration::from_millis(10), &mut scoped)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            time::timeout(
+                Duration::from_millis(100),
+                global.acquire(&unlimited, None, 10)
+            )
+            .await
+            .ok(),
+            Some(10)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_shared_wait_releases_its_turn() {
+        let global = BandwidthLimit::new(NonZeroU64::new(1_000));
+        let local = BandwidthLimit::default();
+        assert_eq!(global.acquire(&local, None, 100).await, 100);
+        assert!(
+            time::timeout(Duration::from_millis(10), global.acquire(&local, None, 100))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            time::timeout(Duration::from_millis(50), global.acquire(&local, None, 1))
+                .await
+                .ok(),
+            Some(1)
         );
     }
 }

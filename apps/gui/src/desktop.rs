@@ -101,6 +101,9 @@ pub(crate) async fn notify(title: String, body: String) -> Message {
 
 pub(crate) async fn autostart(enabled: bool) -> bool {
     tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let result = set_launch_agent(enabled);
+        #[cfg(not(target_os = "macos"))]
         let result = (|| -> anyhow::Result<()> {
             let executable = std::env::current_exe()?;
             let app = auto_launch::AutoLaunchBuilder::new()
@@ -123,6 +126,69 @@ pub(crate) async fn autostart(enabled: bool) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn set_launch_agent(enabled: bool) -> anyhow::Result<()> {
+    use std::{
+        fs,
+        io::{self, Write as _},
+    };
+    let home = directories::UserDirs::new()
+        .ok_or_else(|| anyhow::anyhow!("Home directory unavailable"))?;
+    let directory = home.home_dir().join("Library/LaunchAgents");
+    let path = directory.join("Ruscello.plist");
+    if !enabled {
+        return match fs::remove_file(path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        };
+    }
+    let executable = std::env::current_exe()?;
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid executable path"))?;
+    fs::create_dir_all(&directory)?;
+    let mut staged = tempfile::Builder::new()
+        .suffix(".plist")
+        .tempfile_in(directory)?;
+    staged.write_all(launch_agent_plist(executable).as_bytes())?;
+    staged.as_file().sync_all()?;
+    anyhow::ensure!(
+        std::process::Command::new("/usr/bin/plutil")
+            .args(["-lint", "--"])
+            .arg(staged.path())
+            .output()?
+            .status
+            .success(),
+        "LaunchAgent plist failed validation"
+    );
+    staged.persist(path)?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn launch_agent_plist(executable: &str) -> String {
+    let executable = quick_xml::escape::escape(executable);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>Ruscello</string>
+<key>AssociatedBundleIdentifiers</key><array><string>org.ruscello.desktop</string></array>
+<key>ProgramArguments</key><array><string>{executable}</string><string>--startup</string></array>
+<key>RunAtLoad</key><true/>
+</dict></plist>"#
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn launch_agent_preserves_xml_sensitive_executable_paths() {
+    let executable = "/Applications/Apps & Tools/Ruscello <Test>.app/Contents/MacOS/ruscello";
+    let xml = launch_agent_plist(executable);
+    assert!(xml.contains("Apps &amp; Tools/Ruscello &lt;Test&gt;.app"));
+    assert!(xml.contains("<string>--startup</string>"));
 }
 
 #[cfg(any(windows, target_os = "linux"))]
