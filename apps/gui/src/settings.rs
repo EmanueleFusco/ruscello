@@ -85,6 +85,49 @@ impl Number {
 #[derive(Debug, Default)]
 pub(crate) struct Draft {
     pub(crate) fields: [String; 6],
+    pub(crate) fuckingfast_batch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionPreset {
+    Balanced,
+    Limited,
+    LargeFiles,
+}
+
+impl ConnectionPreset {
+    pub(crate) const ALL: [Self; 3] = [Self::Balanced, Self::Limited, Self::LargeFiles];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Balanced => "connection-preset-balanced",
+            Self::Limited => "connection-preset-limited",
+            Self::LargeFiles => "connection-preset-large",
+        }
+    }
+
+    pub(crate) fn connections(self) -> [NonZeroUsize; 3] {
+        let values = match self {
+            Self::Balanced => [5, 16, 8],
+            Self::Limited => [3, 8, 1],
+            Self::LargeFiles => [5, 32, 16],
+        };
+        values.map(|value| NonZeroUsize::MIN.saturating_add(value - 1))
+    }
+
+    pub(crate) fn balanced_limits() -> Limits {
+        let [
+            concurrent_downloads,
+            connections_per_host,
+            connections_per_download,
+        ] = Self::Balanced.connections();
+        Limits {
+            concurrent_downloads,
+            connections_per_host,
+            connections_per_download,
+            ..Limits::default()
+        }
+    }
 }
 
 impl Draft {
@@ -100,6 +143,22 @@ impl Draft {
                 alternate.to_string(),
                 port.to_string(),
             ],
+            fuckingfast_batch: limits.fuckingfast_batch,
+        }
+    }
+
+    pub(crate) fn connection_preset(&self) -> Option<ConnectionPreset> {
+        ConnectionPreset::ALL.into_iter().find(|preset| {
+            self.fields[..3]
+                .iter()
+                .zip(preset.connections())
+                .all(|(field, value)| field.trim().parse::<NonZeroUsize>() == Ok(value))
+        })
+    }
+
+    pub(crate) fn apply_connection_preset(&mut self, preset: ConnectionPreset) {
+        for (field, value) in self.fields[..3].iter_mut().zip(preset.connections()) {
+            *field = value.to_string();
         }
     }
 
@@ -109,6 +168,7 @@ impl Draft {
         limits.connections_per_host = value(Number::PerHost).parse::<NonZeroUsize>().ok()?;
         limits.connections_per_download =
             value(Number::PerDownload).parse::<NonZeroUsize>().ok()?;
+        limits.fuckingfast_batch = self.fuckingfast_batch;
         let bandwidth = value(Number::Bandwidth);
         limits.bandwidth = if bandwidth.is_empty() {
             None
@@ -133,6 +193,7 @@ pub(crate) enum Folder {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TorrentOption {
     Dht,
+    Utp,
     Pex,
     Upnp,
     Lsd,
@@ -146,6 +207,7 @@ pub(crate) enum TorrentField {
     Ratio,
     Minutes,
     MaxPeers,
+    MaxGlobalPeers,
     Interface,
     Blocklist,
 }
@@ -725,6 +787,32 @@ pub(crate) async fn open_latest_log() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_presets_only_edit_the_connection_fields_and_detect_custom_values()
+    -> anyhow::Result<()> {
+        let mut limits = ConnectionPreset::balanced_limits();
+        limits.bandwidth = NonZeroU64::new(5000);
+        limits.retries = 2;
+        let mut draft = Draft::new(limits, NonZeroU64::MIN, NonZeroU16::MIN);
+        assert_eq!(draft.connection_preset(), Some(ConnectionPreset::Balanced));
+        draft.fuckingfast_batch = true;
+        draft.apply_connection_preset(ConnectionPreset::Limited);
+        assert_eq!(draft.connection_preset(), Some(ConnectionPreset::Limited));
+        let (saved, _, _) = draft
+            .parse(limits)
+            .ok_or_else(|| anyhow::anyhow!("Invalid limits"))?;
+        assert_eq!(saved.bandwidth, limits.bandwidth);
+        assert_eq!(saved.retries, limits.retries);
+        assert!(saved.fuckingfast_batch);
+        draft.fields[Number::PerDownload.index()] = "50".to_owned();
+        assert_eq!(draft.connection_preset(), None);
+        let (saved, _, _) = draft
+            .parse(limits)
+            .ok_or_else(|| anyhow::anyhow!("Invalid custom limits"))?;
+        assert_eq!(saved.connections_per_download.get(), 50);
+        Ok(())
+    }
 
     #[test]
     fn validates_limits_and_lan_port_without_changing_unedited_settings() -> anyhow::Result<()> {

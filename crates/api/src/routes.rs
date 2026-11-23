@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     convert::Infallible,
     net::SocketAddr,
     path::PathBuf,
@@ -624,16 +625,30 @@ async fn process_add_downloads(
     let mut groups: Vec<(Option<String>, Vec<AddDownload>)> = Vec::new();
     let mut direct_items = Vec::new();
 
+    let mut seen = HashSet::new();
     for raw in &req.urls {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let Some(mut dl) = add_request_from_str(trimmed) else {
+        let Ok(mut url) = Url::parse(trimmed) else {
             return Err(ApiError::BadRequest(format!(
                 "invalid download URL: {trimmed}"
             )));
         };
+        let mut dl = if url.scheme() == "magnet" {
+            AddDownload::new(Source::Torrent(TorrentSource::Magnet(url.to_string())))
+        } else if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps")
+            && url.host_str().is_some()
+        {
+            url.set_fragment(None);
+            add_request_from_url(&url)
+        } else {
+            return Err(ApiError::BadRequest("invalid download URL".to_owned()));
+        };
+        if !seen.insert(url) {
+            continue;
+        }
         dl.destination.clone_from(&req.destination);
         dl.start_immediately = start_immediately;
         if req.urls.len() == 1 {
@@ -709,6 +724,7 @@ async fn process_add_downloads(
     let _ = ctx.server.telemetry.refresh_snapshot().await;
     Ok(AddDownloadsResponse {
         count: ids.len(),
+        added_id_strings: ids.iter().map(|id| id.0.to_string()).collect(),
         added_ids: ids.into_iter().map(|id| id.0).collect(),
     })
 }
@@ -738,19 +754,6 @@ async fn import_request_cookies(ctx: &RouteCtx, req: &AddDownloadsRequest) {
                 .await;
         }
     }
-}
-
-fn add_request_from_str(raw: &str) -> Option<AddDownload> {
-    if raw.len() >= 7 && raw[..7].eq_ignore_ascii_case("magnet:") {
-        return Some(AddDownload::new(Source::Torrent(TorrentSource::Magnet(
-            raw.to_owned(),
-        ))));
-    }
-    let url = Url::parse(raw).ok()?;
-    if !matches!(url.scheme(), "http" | "https" | "ftp" | "ftps") || url.host_str().is_none() {
-        return None;
-    }
-    Some(add_request_from_url(&url))
 }
 
 fn add_request_from_url(url: &Url) -> AddDownload {

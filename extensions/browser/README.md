@@ -12,6 +12,11 @@ Cross-browser WebExtension (Chrome / Chromium / Edge and Firefox) connecting to 
 - **Automatic domain session forwarding**: forwards domain cookies, `User-Agent`, and `Referer` to Ruscello's resolver session store so authenticated hoster and direct links resume seamlessly without extra verification.
 - **Bilingual UI**: localized in English (`en`) and Italian (`it`).
 
+Interception keeps the native download when it finishes first or when the extension cannot confirm
+the configured filters. Firefox uses a one-byte range request to check that the source can resume
+before the extension pauses the transfer. Ruscello starts its queued copy after the browser confirms
+cancellation. If the desktop cannot queue the job, the extension resumes the original browser download.
+
 ## Loading Unpacked for Development
 
 ### Chromium / Chrome / Edge

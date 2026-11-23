@@ -12,7 +12,7 @@ use reqwest::{
     header::{self, HeaderMap, HeaderValue},
 };
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
     task::{AbortHandle, JoinSet},
     time::{self, Instant},
 };
@@ -36,10 +36,25 @@ const RATE_INTERVAL: Duration = Duration::from_millis(250);
 const RAMP_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_CHUNK_BYTES: usize = 128 * 1024;
 const MAX_RESTARTS: usize = 3;
+pub const MAX_HTTP_CONNECTIONS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(31);
 
 /// Synchronous preflight executed on a blocking worker after probing and before opening the writer.
 pub trait DownloadPreparation: std::fmt::Debug + Send + Sync {
     fn prepare(&self, metadata: &Probe) -> Result<(), WriterError>;
+}
+
+/// A per-file connection limit for a specific group of HTTP hosts.
+#[derive(Debug, Clone, Copy)]
+pub struct ScopedConnections {
+    pub hostnames: &'static [&'static str],
+    pub limit: NonZeroUsize,
+}
+
+impl ScopedConnections {
+    fn includes(self, url: &Url) -> bool {
+        url.host_str()
+            .is_some_and(|host| self.hostnames.contains(&host.trim_end_matches('.')))
+    }
 }
 
 /// Settings for one HTTP download.
@@ -47,6 +62,7 @@ pub trait DownloadPreparation: std::fmt::Debug + Send + Sync {
 pub struct DownloadOptions {
     pub directory: PathBuf,
     pub connections: NonZeroUsize,
+    pub scoped_connections: Option<ScopedConnections>,
     pub min_segment_size: NonZeroU64,
     pub cancellation: CancellationToken,
     pub retry: RetryPolicy,
@@ -75,6 +91,7 @@ impl Default for DownloadOptions {
         Self {
             directory: PathBuf::from("."),
             connections: NonZeroUsize::new(8).unwrap_or(NonZeroUsize::MIN),
+            scoped_connections: None,
             min_segment_size: NonZeroU64::new(DEFAULT_MIN_SEGMENT_SIZE).unwrap_or(NonZeroU64::MIN),
             cancellation: CancellationToken::new(),
             retry: RetryPolicy::default(),
@@ -197,12 +214,18 @@ impl HttpDownloader {
             .resolved
             .clone()
             .unwrap_or_else(|| TransferLink::new(url.clone()));
+        let ceiling = options
+            .scoped_connections
+            .map_or(options.connections, |scope| {
+                scope.limit.max(options.connections)
+            });
         let mut state = DownloadState {
-            cap: options
-                .connections
-                .min(NonZeroUsize::new(32).unwrap_or(NonZeroUsize::MIN)),
+            cap: ceiling
+                .min(current.max_connections.unwrap_or(MAX_HTTP_CONNECTIONS))
+                .min(MAX_HTTP_CONNECTIONS),
             retry: RetryState::default(),
             restarted: false,
+            full_only: false,
         };
         let mut representation_changes = 0;
         let mut refreshes = 0;
@@ -224,6 +247,12 @@ impl HttpDownloader {
                     Err(error) => error,
                 }
             };
+            if matches!(error, HttpError::RangeIgnored) && !state.full_only {
+                tracing::debug!("Server ignored a matching conditional range; using a full GET");
+                state.full_only = true;
+                state.restart();
+                continue;
+            }
             if matches!(error, HttpError::RepresentationChanged) {
                 if representation_changes == MAX_RESTARTS {
                     return Err(error);
@@ -243,6 +272,7 @@ impl HttpDownloader {
                     result = resolver.resolve_transfer(&current.url) => result?,
                 };
                 resolved = true;
+                state.full_only = false;
                 if let Some(cap) = current.max_connections {
                     state.cap = state.cap.min(cap);
                 }
@@ -255,7 +285,12 @@ impl HttpDownloader {
             else {
                 return Err(error);
             };
-            tracing::debug!(?delay, "Retrying HTTP download");
+            tracing::debug!(
+                ?delay,
+                ?error,
+                connections = state.cap.get(),
+                "Retrying HTTP download"
+            );
             if error.offline() {
                 options.waiting(true);
             }
@@ -272,9 +307,27 @@ impl HttpDownloader {
         state: &mut DownloadState,
         resolved: bool,
     ) -> Result<PathBuf, HttpError> {
+        let probe = async {
+            if !state.full_only {
+                let probe = self
+                    .transport
+                    .probe_with(&current.url, current.headers.clone())
+                    .await?;
+                if !probe.supports_ranges
+                    || probe.size == Some(0)
+                    || (probe.size.is_some() && probe.validators.if_range().is_some())
+                {
+                    return Ok(probe);
+                }
+            }
+            // A single-stream transfer cannot use framing from a partial response.
+            self.transport
+                .probe_full(&current.url, current.headers.clone())
+                .await
+        };
         let mut data = tokio::select! {
             () = options.cancellation.cancelled() => return Err(HttpError::Cancelled),
-            result = self.transport.probe_with(&current.url, current.headers.clone()) => result?,
+            result = probe => result?,
         };
         let detect_page = resolved || options.expired_link_resolver.is_some();
         if detect_page && !data.attachment && is_page(data.content_type.as_deref()) {
@@ -341,12 +394,15 @@ impl HttpDownloader {
             ..DownloadProgress::default()
         };
         let result = if let Some(source) = source {
-            let allocator = SegmentAllocator::restore(
-                source.size,
-                state.cap,
-                options.min_segment_size,
-                &completed,
-            );
+            let ordinary_cap = options.connections.min(state.cap);
+            // Range requests target the final probe URL. Never transfer an override across a
+            // redirect that leaves its host group, including after link renewal.
+            let scope = options
+                .scoped_connections
+                .filter(|scope| scope.includes(&source.url));
+            let cap = scope.map_or(ordinary_cap, |scope| scope.limit.min(state.cap));
+            let allocator =
+                SegmentAllocator::restore(source.size, cap, options.min_segment_size, &completed);
             progress.completed = allocator.completed();
             progress.segments = Some(SegmentProgress::sample(&allocator, 0));
             options.report(progress);
@@ -354,7 +410,13 @@ impl HttpDownloader {
                 source.check_complete(&options.cancellation).await
             } else {
                 let mirrors = self.mirrors(&source, &limits, options).await?;
-                let mut segmented = Segmented::new(source, mirrors, allocator, state.cap);
+                let mut segmented = Segmented::new(
+                    source,
+                    mirrors,
+                    allocator,
+                    cap,
+                    scope.map(|scope| (scope, ordinary_cap.get())),
+                );
                 let result = segmented.run(&mut writer, options, progress).await;
                 progress.completed = segmented.allocator.completed();
                 progress.segments = Some(SegmentProgress::sample(&segmented.allocator, 0));
@@ -472,6 +534,7 @@ struct DownloadState {
     cap: NonZeroUsize,
     retry: RetryState,
     restarted: bool,
+    full_only: bool,
 }
 
 impl DownloadState {
@@ -563,11 +626,21 @@ impl RangeSource {
                     error
                 }
             })?;
-        if self.detect_page && looks_like_page(response.headers()) {
+        if self.detect_page && response.status().is_success() && looks_like_page(response.headers())
+        {
             return Err(HttpError::ExpiredRepresentation);
         }
         match response.status() {
             StatusCode::PARTIAL_CONTENT => {}
+            StatusCode::OK
+                if self.has_etag
+                    && response.url() == &self.url
+                    && response.content_length() == Some(self.size)
+                    && response.headers().get(header::ETAG) == Some(&self.validator) =>
+            {
+                require_identity(response.headers())?;
+                return Err(HttpError::RangeIgnored);
+            }
             StatusCode::OK | StatusCode::RANGE_NOT_SATISFIABLE => {
                 return Err(HttpError::RepresentationChanged);
             }
@@ -586,6 +659,10 @@ impl RangeSource {
             || actual_validator.is_some_and(|value| value != self.validator)
             || self.has_etag && actual_validator.is_none()
         {
+            tracing::debug!(requested = ?(start..end), expected_size = self.size, ?total,
+                redirected = response.url() != &self.url, validator_present = actual_validator.is_some(),
+                validator_matches = actual_validator.is_some_and(|value| value == self.validator),
+                "Partial response did not match the probed representation");
             return Err(HttpError::RepresentationChanged);
         }
         if !range_matches(
@@ -686,6 +763,7 @@ struct Segmented {
     source: RangeSource,
     mirrors: Vec<Option<RangeSource>>,
     next_source: usize,
+    scope: Option<(ScopedConnections, Arc<Semaphore>)>,
     allocator: SegmentAllocator,
     connections: ConnectionController,
     tasks: JoinSet<()>,
@@ -700,12 +778,14 @@ impl Segmented {
         mirrors: Vec<RangeSource>,
         allocator: SegmentAllocator,
         cap: NonZeroUsize,
+        scope: Option<(ScopedConnections, usize)>,
     ) -> Self {
         let (events, incoming) = mpsc::channel(cap.get() * 2);
         Self {
             source,
             mirrors: mirrors.into_iter().map(Some).collect(),
             next_source: 0,
+            scope: scope.map(|(scope, cap)| (scope, Arc::new(Semaphore::new(cap)))),
             allocator,
             connections: ConnectionController::with_initial(
                 cap,
@@ -718,15 +798,23 @@ impl Segmented {
         }
     }
 
-    fn choose_source(&mut self) -> (usize, RangeSource) {
+    fn choose_source(&mut self) -> (usize, RangeSource, Option<OwnedSemaphorePermit>) {
         loop {
             let index = self.next_source;
             self.next_source = (index + 1) % (self.mirrors.len() + 1);
             if index == 0 {
-                return (index, self.source.clone());
+                return (index, self.source.clone(), None);
             }
             if let Some(Some(mirror)) = self.mirrors.get(index - 1) {
-                return (index, mirror.clone());
+                if let Some((scope, slots)) = &self.scope
+                    && !scope.includes(&mirror.url)
+                {
+                    if let Ok(permit) = slots.clone().try_acquire_owned() {
+                        return (index, mirror.clone(), Some(permit));
+                    }
+                    continue;
+                }
+                return (index, mirror.clone(), None);
             }
         }
     }
@@ -736,10 +824,12 @@ impl Segmented {
             let Some(work) = self.allocator.assign() else {
                 break;
             };
-            let (source_index, source) = self.choose_source();
+            let (source_index, source, outside_scope_permit) = self.choose_source();
             let events = self.events.clone();
             let (id, requested_end) = (work.id, work.range.end);
             let task = self.tasks.spawn(async move {
+                // An aborted worker keeps its slot until it stops streaming the response.
+                let _permit = outside_scope_permit;
                 let result = source.stream(&work, &events).await;
                 let _ = events.send(Event::End(work.id, result)).await;
             });
@@ -885,6 +975,55 @@ mod tests {
             local: BandwidthLimit::default(),
             individual: None,
         }
+    }
+
+    #[tokio::test]
+    async fn outside_mirrors_share_the_ordinary_worker_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let transport = Transport::new(None)?;
+        let source = |url: Url| RangeSource {
+            transport: transport.clone(),
+            url,
+            size: 4_000,
+            validator: HeaderValue::from_static("\"stable\""),
+            has_etag: true,
+            limits: unlimited(),
+            headers: HeaderMap::new(),
+            resolved: false,
+            detect_page: false,
+        };
+        let primary = source(Url::parse("http://selected.test/file")?);
+        let mirrors = [
+            "http://first.test/file",
+            "http://second.test/file",
+            "http://cdn.selected.test/file",
+        ]
+        .map(|url| Url::parse(url).map(source))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+        let cap = NonZeroUsize::MIN.saturating_add(3);
+        let mut pool = Segmented::new(
+            primary,
+            mirrors,
+            SegmentAllocator::new(4_000, cap, NonZeroU64::MIN),
+            cap,
+            Some((
+                ScopedConnections {
+                    hostnames: &["selected.test", "cdn.selected.test"],
+                    limit: cap,
+                },
+                1,
+            )),
+        );
+        assert_eq!(pool.choose_source().0, 0);
+        let (index, _, first_slot) = pool.choose_source();
+        assert_eq!(index, 1);
+        assert!(first_slot.is_some());
+        assert_eq!(pool.choose_source().0, 3);
+        assert_eq!(pool.choose_source().0, 0);
+        drop(first_slot);
+        assert_eq!(pool.choose_source().0, 1);
+        Ok(())
     }
 
     #[tokio::test]

@@ -24,6 +24,10 @@ pub(crate) struct Messages {
     verification: &'static str,
     browser: &'static str,
     dlc_key: &'static str,
+    invalid_container: &'static str,
+    missing: &'static str,
+    rate_limited: &'static str,
+    page_without_download: &'static str,
     sidecar_missing: &'static str,
     media_invalid: &'static str,
 }
@@ -56,6 +60,10 @@ const EN: Messages = Messages {
     verification: "The host requires verification. Use --browser to open the verification window.",
     browser: "Ruscello could not use the browser helper. Check that ruscello-webview is installed and its profile is available.",
     dlc_key: "Ruscello could not obtain the container key.",
+    invalid_container: "The download container is invalid.",
+    missing: "The file is no longer available at this address. Check the link.",
+    rate_limited: "The server is limiting requests. Retry later or use fewer connections.",
+    page_without_download: "This page did not provide a supported direct download. Use inspect or LinkGrabber to look for links.",
     sidecar_missing: "This media source requires an external sidecar binary (yt-dlp/ffmpeg). Pass --ytdlp/--ffmpeg or install it from the app Preferences.",
     media_invalid: "The media stream or playlist manifest could not be parsed or is unsupported.",
 };
@@ -88,15 +96,29 @@ const IT: Messages = Messages {
     verification: "Il servizio richiede una verifica. Usa --browser per aprire la finestra di verifica.",
     browser: "Impossibile usare il browser integrato. Verifica che ruscello-webview sia installato e che il profilo sia disponibile.",
     dlc_key: "Ruscello non ha potuto ottenere la chiave del contenitore.",
+    invalid_container: "Il contenitore di download non è valido.",
+    missing: "Il file non è più disponibile a questo indirizzo. Controlla il link.",
+    rate_limited: "Il server sta limitando le richieste. Riprova più tardi o usa meno connessioni.",
+    page_without_download: "La pagina non ha fornito un download diretto supportato. Cerca i link con inspect o LinkGrabber.",
     sidecar_missing: "Questa sorgente richiede un binario opzionale (yt-dlp/ffmpeg). Passa --ytdlp/--ffmpeg oppure installalo dalle Impostazioni dell’app.",
     media_invalid: "Il manifest o la playlist multimediale non è valido o non è supportato.",
 };
 
 impl Messages {
     pub(crate) fn failure(&self, failure: Option<&HttpError>) -> &'static str {
+        use reqwest::StatusCode;
         match failure {
+            Some(HttpError::Status(StatusCode::NOT_FOUND | StatusCode::GONE)) => self.missing,
+            Some(
+                HttpError::Status(StatusCode::TOO_MANY_REQUESTS)
+                | HttpError::Throttled {
+                    status: StatusCode::TOO_MANY_REQUESTS,
+                    ..
+                },
+            ) => self.rate_limited,
             Some(HttpError::Cancelled) => self.cancelled,
             Some(HttpError::VerificationRequired) => self.verification,
+            Some(HttpError::NoDownloadOnPage) => self.page_without_download,
             Some(HttpError::RepresentationChanged) => self.changed,
             Some(HttpError::MirrorChecksumRequired) => self.checksum_required,
             Some(HttpError::Storage(WriterError::ChecksumMismatch)) => self.checksum_failed,
@@ -136,11 +158,16 @@ impl Messages {
     }
 
     pub(crate) fn resolve_failure(&self, failure: &ResolveError) -> &'static str {
+        use reqwest::StatusCode;
         match failure {
             ResolveError::Cancelled => self.cancelled,
             ResolveError::VerificationRequired => self.verification,
             ResolveError::Browser(_) => self.browser,
             ResolveError::KeyService => self.dlc_key,
+            ResolveError::InvalidContainer => self.invalid_container,
+            ResolveError::NoDownload => self.page_without_download,
+            ResolveError::Status(StatusCode::NOT_FOUND | StatusCode::GONE) => self.missing,
+            ResolveError::Status(StatusCode::TOO_MANY_REQUESTS) => self.rate_limited,
             ResolveError::AccountRequired | ResolveError::Keyring => self.auth,
             _ => self.resolution,
         }

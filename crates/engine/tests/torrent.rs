@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     fmt,
+    num::NonZeroU64,
     path::Path,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
@@ -11,8 +12,10 @@ use ruscello_core::{
 };
 use ruscello_engine::{
     AddDownload, CategoryMatch, CategoryRule, EngineError, EngineEvent, EngineHandle,
-    EngineOptions, TorrentError, TorrentFilePriority, TorrentSettings,
+    EngineOptions, ScheduleAction, ScheduleRule, ScheduleSettings, TorrentError,
+    TorrentFilePriority, TorrentSettings,
 };
+use ruscello_testkit::{FileSpec, TestServer};
 use tempfile::TempDir;
 use tokio::{sync::broadcast, time::timeout};
 use tokio_util::sync::CancellationToken;
@@ -189,6 +192,188 @@ fn torrent_options(dir: &Path) -> EngineOptions {
 }
 
 #[tokio::test]
+async fn existing_torrent_payload_finishes_checking_and_verifies_nested_manifest() -> TestResult {
+    use sha2::{Digest as _, Sha256};
+    let root = TempDir::new()?;
+    let options = torrent_options(root.path());
+    let source = options.destination.join("already-present");
+    std::fs::create_dir_all(source.join("sums"))?;
+    let payload = deterministic_bytes(46, 512 * 1024);
+    let digest = hex::encode(Sha256::digest(&payload));
+    std::fs::write(source.join("payload.bin"), &payload)?;
+    std::fs::write(
+        source.join("sums/files.sha256"),
+        format!("{digest} *..\\payload.bin\n"),
+    )?;
+    let engine = EngineHandle::start(options).await?;
+    let seed_path = root.path().join("fixture-seeder");
+    std::fs::create_dir_all(&seed_path)?;
+    let owner = EngineHandle::start(torrent_options(&seed_path)).await?;
+    let (metainfo, _, _) = owner
+        .create_and_serve_local_torrent(&source, vec![], None)
+        .await?;
+    owner.shutdown().await?;
+    let mut events = engine.subscribe();
+    let mut verification = engine.subscribe();
+    let mut request = AddDownload::new(Source::Torrent(TorrentSource::File(
+        root.path().join("local.torrent"),
+    )));
+    request.cached_torrent_bytes = Some(metainfo);
+    let id = engine.add(request).await?;
+    wait_for_status(
+        &engine,
+        &mut events,
+        id,
+        Status::Seeding,
+        Duration::from_secs(10),
+    )
+    .await?;
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(verification.recv().await?, EngineEvent::Log { id: Some(actual), message: ruscello_engine::EngineLog::ChecksumVerified } if actual == id) {
+                return Ok::<_, broadcast::error::RecvError>(());
+            }
+        }
+    }).await??;
+    assert_eq!(std::fs::read(source.join("payload.bin"))?, payload);
+    engine.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_and_torrent_use_one_live_global_download_budget() -> TestResult {
+    let root = TempDir::new()?;
+    let seed_dir = root.path().join("seed");
+    std::fs::create_dir(&seed_dir)?;
+    let seed = EngineHandle::start(torrent_options(&seed_dir)).await?;
+    let payload = deterministic_bytes(622, 4 * 1024 * 1024);
+    let source = seed_dir.join("torrent.bin");
+    std::fs::write(&source, &payload)?;
+    let (metainfo, _, peer) = seed
+        .create_and_serve_local_torrent(&source, vec![], Some(16_384))
+        .await?;
+    let server = TestServer::start().await?;
+    let file = server.file(FileSpec::random(287, 4 * 1024 * 1024).filename("http.bin"));
+    let mut options = torrent_options(&root.path().join("client"));
+    let scheduled_cap = 384 * 1024;
+    options.automation.schedule = ScheduleSettings {
+        enabled: true,
+        rules: vec![ScheduleRule {
+            start_minute: 0,
+            end_minute: 0,
+            action: ScheduleAction::SpeedLimit {
+                max_bytes_per_sec: scheduled_cap,
+            },
+            ..ScheduleRule::default()
+        }],
+        ..ScheduleSettings::default()
+    };
+    std::fs::create_dir_all(&options.destination)?;
+    let destination = options.destination.clone();
+    let client = EngineHandle::start(options).await?;
+
+    let mut torrent = AddDownload::new(Source::Torrent(TorrentSource::File(
+        root.path().join("local.torrent"),
+    )));
+    torrent.cached_torrent_bytes = Some(metainfo);
+    torrent.initial_peers = vec![peer];
+    let torrent_id = client.add(torrent).await?;
+    let http_id = client
+        .add(AddDownload::new(Source::Http {
+            url: file.url().to_owned(),
+        }))
+        .await?;
+    let mut events = client.subscribe();
+    wait_for_status(
+        &client,
+        &mut events,
+        torrent_id,
+        Status::Downloading,
+        Duration::from_secs(10),
+    )
+    .await?;
+    wait_for_status(
+        &client,
+        &mut events,
+        http_id,
+        Status::Downloading,
+        Duration::from_secs(10),
+    )
+    .await?;
+    let ids = [torrent_id, http_id];
+    assert_shared_payload_budget(&client, ids, scheduled_cap).await?;
+    let temporary_cap = 512 * 1024;
+    client
+        .set_temporary_bandwidth(NonZeroU64::new(temporary_cap))
+        .await?;
+    let temporary_rate = assert_shared_payload_budget(&client, ids, temporary_cap).await?;
+    assert!(
+        temporary_rate > scheduled_cap as f64 * 1.05,
+        "the temporary cap did not supersede the scheduled limit"
+    );
+    client.set_temporary_bandwidth(None).await?;
+    assert_shared_payload_budget(&client, ids, scheduled_cap).await?;
+    client.set_automation_settings(Default::default()).await?;
+    wait_for_status(
+        &client,
+        &mut events,
+        torrent_id,
+        Status::Seeding,
+        Duration::from_secs(10),
+    )
+    .await?;
+    wait_for_status(
+        &client,
+        &mut events,
+        http_id,
+        Status::Completed,
+        Duration::from_secs(10),
+    )
+    .await?;
+    assert_eq!(std::fs::read(destination.join("torrent.bin"))?, payload);
+    assert_eq!(
+        std::fs::read(destination.join("http.bin"))?,
+        file.payload().bytes(0..file.payload().len())
+    );
+    client.shutdown().await?;
+    seed.shutdown().await?;
+    Ok(())
+}
+
+async fn assert_shared_payload_budget(
+    client: &EngineHandle,
+    ids: [DownloadId; 2],
+    cap: u64,
+) -> Result<f64, Box<dyn Error>> {
+    let before = client.snapshot().await?;
+    let start = std::time::Instant::now();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let after = client.snapshot().await?;
+    let mut combined = 0;
+    for id in ids {
+        let updated = find_download(&after.downloads, id)?;
+        let delta = updated
+            .downloaded_bytes
+            .saturating_sub(find_download(&before.downloads, id)?.downloaded_bytes);
+        assert!(
+            delta > 0,
+            "{:?} made no progress while sharing the {cap} B/s cap (status: {:?}, downloaded: {})",
+            updated.source.kind(),
+            updated.status(),
+            updated.downloaded_bytes
+        );
+        combined += delta;
+    }
+    let observed_rate = combined as f64 / start.elapsed().as_secs_f64();
+    assert!(
+        observed_rate < cap as f64 * 1.15,
+        "combined rate {observed_rate:.0} B/s exceeded the shared cap {cap}"
+    );
+    eprintln!("Shared cap {cap} B/s, observed combined payload {observed_rate:.0} B/s");
+    Ok(observed_rate)
+}
+
+#[tokio::test]
 async fn inspects_selects_files_updates_settings_and_completes_on_seed_ratio() -> TestResult {
     let seeder_dir = TempDir::new()?;
     let src_dir = seeder_dir.path().join("release");
@@ -303,6 +488,8 @@ async fn inspects_selects_files_updates_settings_and_completes_on_seed_ratio() -
 
     let updated = TorrentSettings {
         seed_ratio_millis: Some(0),
+        enable_utp: true,
+        max_global_peers: std::num::NonZeroUsize::MIN.saturating_add(39),
         ..TorrentSettings::offline_ephemeral()
     };
     leecher.set_torrent_settings(updated.clone()).await?;
@@ -331,9 +518,15 @@ async fn inspects_selects_files_updates_settings_and_completes_on_seed_ratio() -
         Ok(()) => return Err("invalid interface should return error".into()),
         Err(err) => err,
     };
+    #[cfg(windows)]
     assert!(matches!(
         err,
-        EngineError::Torrent(TorrentError::InvalidInterface(_) | TorrentError::Session(_))
+        EngineError::Torrent(TorrentError::InterfaceBindingUnsupported)
+    ));
+    #[cfg(not(windows))]
+    assert!(matches!(
+        err,
+        EngineError::Torrent(TorrentError::InvalidInterface(_))
     ));
     assert_eq!(leecher.snapshot().await?.torrent, updated);
 

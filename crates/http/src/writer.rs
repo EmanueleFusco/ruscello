@@ -550,9 +550,16 @@ impl Worker {
         let mut partial = TempPath::try_from_path(self.partial)?;
         partial.disable_cleanup(true);
         let directory = directory.as_deref().unwrap_or(&self.directory);
+        #[cfg(windows)]
+        let canonical = directory.canonicalize()?;
         for index in 0..CANDIDATES {
-            let destination = directory.join(names::candidate(&self.name, index));
-            match partial.persist_noclobber(&destination) {
+            let name = names::candidate(&self.name, index);
+            let destination = directory.join(&name);
+            #[cfg(windows)]
+            let target = &canonical.join(&name);
+            #[cfg(not(windows))]
+            let target = &destination;
+            match partial.persist_noclobber(target) {
                 Ok(()) => {
                     if directory != self.directory {
                         disk::sync_directory(directory)?;

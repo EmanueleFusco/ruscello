@@ -9,9 +9,9 @@ use crate::{
     icons::icon,
     preferences::{Appearance, Locale, Renderer},
     settings::{
-        COMPLETION_ACTIONS, Folder, Number, OutsideHoursMode, Page, ScheduleRuleDraft,
-        ScheduleRuleMode, TorrentField, TorrentOption, WATCH_BEHAVIORS, WatchFolderDraft,
-        completion_action_key, watch_behavior_key,
+        COMPLETION_ACTIONS, ConnectionPreset, Folder, Number, OutsideHoursMode, Page,
+        ScheduleRuleDraft, ScheduleRuleMode, TorrentField, TorrentOption, WATCH_BEHAVIORS,
+        WatchFolderDraft, completion_action_key, watch_behavior_key,
     },
     theme,
     updater::UpdateStatus,
@@ -61,14 +61,22 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
         Page::Advanced => advanced(app),
         Page::About => about(app),
     };
+    let mut header = row![
+        heading('\u{e154}', l.get("settings")),
+        space::horizontal().width(Fill),
+    ];
+    if app.page == Page::Torrent {
+        header = header.push(
+            theme::action(text(l.get("save")))
+                .style(theme::primary)
+                .on_press(Message::SaveTorrentSettings),
+        );
+    }
     column![
-        row![
-            heading('\u{e154}', l.get("settings")),
-            space::horizontal().width(Fill),
-            theme::action(text(l.get("back"))).on_press(Message::Settings(false)),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(10),
+        header
+            .push(theme::action(text(l.get("back"))).on_press(Message::Settings(false)))
+            .align_y(Alignment::Center)
+            .spacing(10),
         row![
             container(theme::vertical(navigation).spacing(6))
                 .padding(8)
@@ -239,13 +247,53 @@ fn downloads(app: &App) -> Element<'_, Message> {
         .align_y(Alignment::Center),
         text(l.get("folder-restart")).style(muted),
         rule::horizontal(1).style(theme::separator),
+        connection_presets(app),
         number(app, Number::Concurrent),
         number(app, Number::PerHost),
         number(app, Number::PerDownload),
+        connection_overrides(app),
         save(app),
     ]
     .spacing(10)
     .into()
+}
+
+fn connection_presets(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let selected = app.settings_draft.connection_preset();
+    let mut choices = column![text(l.get("connection-presets"))].spacing(6);
+    for preset in ConnectionPreset::ALL {
+        let [queue, host, file] = preset.connections();
+        choices = choices.push(option(
+            format!("{} ({queue} / {host} / {file})", l.get(preset.key())),
+            selected == Some(preset),
+            Message::ConnectionPreset(preset),
+        ));
+    }
+    if selected.is_none() {
+        choices = choices.push(text(l.get("connection-preset-custom")).style(muted));
+    }
+    choices.into()
+}
+
+fn connection_overrides(app: &App) -> Element<'_, Message> {
+    let l = &app.strings;
+    let mut controls = column![].spacing(6);
+    if app.settings_draft.fields[Number::PerDownload.index()]
+        .trim()
+        .parse::<usize>()
+        .is_ok_and(|value| value > ruscello_engine::MAX_HTTP_CONNECTIONS.get())
+    {
+        controls = controls.push(text(l.get("connection-http-ceiling")).style(muted));
+    }
+    controls
+        .push(text(l.get("connection-host-overrides")))
+        .push(
+            theme::check(app.settings_draft.fuckingfast_batch)
+                .label(l.get("connection-fuckingfast"))
+                .on_toggle(Message::FuckingFastBatch),
+        )
+        .into()
 }
 
 fn speed(app: &App) -> Element<'_, Message> {
@@ -705,6 +753,7 @@ fn torrent(app: &App) -> Element<'_, Message> {
     }
     for (key, value, choice) in [
         ("torrent-dht", preferences.dht, TorrentOption::Dht),
+        ("torrent-utp", preferences.utp, TorrentOption::Utp),
         ("torrent-pex", preferences.pex, TorrentOption::Pex),
         ("torrent-upnp", preferences.upnp, TorrentOption::Upnp),
         ("torrent-lsd", preferences.lsd, TorrentOption::Lsd),
@@ -744,6 +793,11 @@ fn torrent(app: &App) -> Element<'_, Message> {
             TorrentField::MaxPeers,
         ),
         (
+            "torrent-max-global-peers",
+            &preferences.max_global_peers,
+            TorrentField::MaxGlobalPeers,
+        ),
+        (
             "torrent-interface",
             &preferences.interface,
             TorrentField::Interface,
@@ -764,6 +818,14 @@ fn torrent(app: &App) -> Element<'_, Message> {
             .spacing(8),
         );
     }
+    #[cfg(windows)]
+    {
+        controls = controls.push(
+            text(l.get("torrent-interface-unsupported"))
+                .size(12)
+                .style(muted),
+        );
+    }
     let blocklist_label = l.get("torrent-blocklist");
     controls = controls.push(
         row![
@@ -778,11 +840,6 @@ fn torrent(app: &App) -> Element<'_, Message> {
         ]
         .align_y(Alignment::Center)
         .spacing(8),
-    );
-    controls = controls.push(
-        theme::action(text(l.get("save")))
-            .style(theme::primary)
-            .on_press(Message::SaveTorrentSettings),
     );
     controls.into()
 }
@@ -1035,20 +1092,24 @@ fn integrations(app: &App) -> Element<'_, Message> {
     }
     for req in &app.pairing.pending {
         controls = controls.push(
-            row![
+            column![
                 text(l.with(
                     "extension-pair-pending",
                     [
                         ("client", req.client_name.clone()),
                         ("origin", req.origin.clone()),
                     ],
-                )),
-                theme::action(text(l.get("extension-pair-approve")))
-                    .on_press(Message::ApprovePairing(req.request_id.clone())),
-                theme::action(text(l.get("extension-pair-reject")))
-                    .on_press(Message::RejectPairing(req.request_id.clone())),
+                ))
+                .width(Fill),
+                row![
+                    theme::action(text(l.get("extension-pair-approve")))
+                        .on_press(Message::ApprovePairing(req.request_id.clone())),
+                    theme::action(text(l.get("extension-pair-reject")))
+                        .on_press(Message::RejectPairing(req.request_id.clone())),
+                ]
+                .spacing(8),
             ]
-            .align_y(Alignment::Center)
+            .width(Fill)
             .spacing(8),
         );
     }
@@ -1246,6 +1307,7 @@ fn sidecars(app: &App) -> Element<'_, Message> {
 
 fn sidecar_card(app: &App, kind: SidecarKind) -> Element<'_, Message> {
     let l = &app.strings;
+    let manual_only = cfg!(target_os = "macos") && kind == SidecarKind::Ffmpeg;
     let (tool_name, title_key, consent_key, consented, binary_status) = match kind {
         SidecarKind::YtDlp => (
             "yt-dlp",
@@ -1272,7 +1334,7 @@ fn sidecar_card(app: &App, kind: SidecarKind) -> Element<'_, Message> {
             Some(version) => l.with("sidecar-installed", [("version", version.to_owned())]),
             None => l.get("sidecar-installed-unknown"),
         }
-    } else if consented {
+    } else if manual_only || consented {
         l.get("sidecar-not-installed")
     } else {
         l.get("sidecar-consent-needed")
@@ -1292,11 +1354,18 @@ fn sidecar_card(app: &App, kind: SidecarKind) -> Element<'_, Message> {
         ]
         .align_y(Alignment::Center)
         .spacing(8),
-        theme::check(consented)
-            .label(l.get(consent_key))
-            .on_toggle(move |value| Message::SidecarConsent(kind, value)),
     ]
     .spacing(8);
+
+    card = if manual_only {
+        card.push(text(l.get("sidecar-ffmpeg-manual-macos")).width(Fill))
+    } else {
+        card.push(
+            theme::check(consented)
+                .label(l.get(consent_key))
+                .on_toggle(move |value| Message::SidecarConsent(kind, value)),
+        )
+    };
 
     if kind == SidecarKind::YtDlp {
         card = card.push(
@@ -1310,24 +1379,27 @@ fn sidecar_card(app: &App, kind: SidecarKind) -> Element<'_, Message> {
         card = card.push(text(path.display().to_string()).size(11).style(muted));
     }
 
-    card = card.push(
-        row![
-            context_field(
-                TextTarget::SidecarPath(kind),
-                theme::field(&l.get("sidecar-custom-path"), custom_value)
-                    .on_input(move |value| Message::SidecarCustomPath(kind, value))
-                    .width(Fill),
-            ),
-            theme::action(text(
-                l.with("sidecar-pick-binary", [("name", tool_name.to_owned())])
-            ))
-            .on_press(Message::PickSidecarPath(kind)),
+    let mut actions = row![
+        context_field(
+            TextTarget::SidecarPath(kind),
+            theme::field(&l.get("sidecar-custom-path"), custom_value)
+                .on_input(move |value| Message::SidecarCustomPath(kind, value))
+                .width(Fill),
+        ),
+        theme::action(text(
+            l.with("sidecar-pick-binary", [("name", tool_name.to_owned())])
+        ))
+        .on_press(Message::PickSidecarPath(kind)),
+    ]
+    .align_y(Alignment::Center)
+    .spacing(8);
+    if !manual_only {
+        actions = actions.push(
             theme::action(text(l.with(action_key, [("name", tool_name.to_owned())])))
                 .on_press_maybe(can_install.then_some(Message::InstallSidecar(kind))),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(8),
-    );
+        );
+    }
+    card = card.push(actions);
 
     container(card)
         .padding(12)

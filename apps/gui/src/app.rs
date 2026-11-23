@@ -34,7 +34,7 @@ use crate::{
     i18n::Strings,
     preferences::{Appearance, Locale, Preferences, Renderer},
     queue::{self, Queue, StatusFilter},
-    settings::{self, Draft, Folder, Number, Page},
+    settings::{self, ConnectionPreset, Draft, Folder, Number, Page},
     theme,
     updater::{self, PreparedUpdate, UpdateProgress, UpdateStatus},
     view,
@@ -341,6 +341,8 @@ pub(crate) enum Message {
     #[cfg(windows)]
     NvidiaProfileResult(crate::nvidia::Outcome),
     SettingNumber(Number, String),
+    ConnectionPreset(ConnectionPreset),
+    FuckingFastBatch(bool),
     SaveLimits,
     ChooseFolder(Folder),
     SettingsFolder(Folder, Option<PathBuf>),
@@ -374,7 +376,7 @@ pub(crate) enum Message {
     SaveTorrentSettings,
     PickBlocklist,
     BlocklistPicked(Option<PathBuf>),
-    TorrentSettingsApplied(Option<TorrentSessionTelemetry>),
+    TorrentSettingsApplied(Result<TorrentSessionTelemetry, &'static str>),
     TorrentDetails(DownloadId, Option<TorrentDetailsSnapshot>),
     SetTorrentFilePriority(DownloadId, usize, bool),
     TorrentFilePriorityUpdated(DownloadId, bool, Option<TorrentDetailsSnapshot>),
@@ -576,6 +578,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| default_destination.clone());
         let mut options = EngineOptions::new(database, destination.clone());
+        options.new_profile_limits = Some(ConnectionPreset::balanced_limits());
         options.temporary_directory = preferences.temporary_folder.clone();
         options.data_dir = options.database.parent().map(Path::to_path_buf);
         options.browser = options
@@ -1199,6 +1202,9 @@ impl App {
                 } else {
                     "shutdown-failed"
                 });
+                if update.is_none() {
+                    return self.show_window();
+                }
             }
             Message::Search(value) => {
                 self.queue.search = value;
@@ -1351,6 +1357,10 @@ impl App {
             Message::WindowHandle(raw_id) => {
                 self.raw_window_id = Some(raw_id);
                 desktop::apply_window_theme(raw_id, self.is_dark());
+                #[cfg(target_os = "macos")]
+                if let Some(marker) = std::env::var_os(updater::STARTUP_MARKER) {
+                    return Task::future(updater::confirm_startup(PathBuf::from(marker))).discard();
+                }
             }
             Message::SystemTheme(mode) => {
                 self.system_theme = mode;
@@ -2068,6 +2078,10 @@ impl App {
             Message::SettingNumber(field, value) => {
                 self.settings_draft.fields[field.index()] = value
             }
+            Message::ConnectionPreset(preset) => {
+                self.settings_draft.apply_connection_preset(preset)
+            }
+            Message::FuckingFastBatch(enabled) => self.settings_draft.fuckingfast_batch = enabled,
             Message::SaveLimits => {
                 let Some((limits, alternate, port)) = self.settings_draft.parse(self.queue.limits)
                 else {
@@ -2300,6 +2314,7 @@ impl App {
             Message::TorrentOption(option, value) => {
                 match option {
                     settings::TorrentOption::Dht => self.preferences.torrent.dht = value,
+                    settings::TorrentOption::Utp => self.preferences.torrent.utp = value,
                     settings::TorrentOption::Pex => self.preferences.torrent.pex = value,
                     settings::TorrentOption::Upnp => self.preferences.torrent.upnp = value,
                     settings::TorrentOption::Lsd => self.preferences.torrent.lsd = value,
@@ -2320,6 +2335,9 @@ impl App {
                         self.preferences.torrent.seed_minutes = value
                     }
                     settings::TorrentField::MaxPeers => self.preferences.torrent.max_peers = value,
+                    settings::TorrentField::MaxGlobalPeers => {
+                        self.preferences.torrent.max_global_peers = value
+                    }
                     settings::TorrentField::Interface => self.preferences.torrent.interface = value,
                     settings::TorrentField::Blocklist => self.preferences.torrent.blocklist = value,
                 }
@@ -2348,21 +2366,35 @@ impl App {
                 let change = self.engine.clone().map_or_else(Task::none, |engine| {
                     Task::perform(
                         async move {
-                            if engine.set_torrent_settings(settings).await.is_ok() {
-                                engine.torrent_telemetry().await.ok()
-                            } else {
-                                None
-                            }
+                            use ruscello_engine::{EngineError, TorrentError};
+                            engine.set_torrent_settings(settings).await.map_err(
+                                |error| match error {
+                                    EngineError::Torrent(TorrentError::PortUnavailable(_)) => {
+                                        "torrent-port-unavailable"
+                                    }
+                                    EngineError::Torrent(TorrentError::InvalidInterface(_)) => {
+                                        "torrent-interface-unavailable"
+                                    }
+                                    EngineError::Torrent(
+                                        TorrentError::InterfaceBindingUnsupported,
+                                    ) => "torrent-interface-unsupported",
+                                    _ => "action-failed",
+                                },
+                            )?;
+                            engine
+                                .torrent_telemetry()
+                                .await
+                                .map_err(|_| "action-failed")
                         },
                         Message::TorrentSettingsApplied,
                     )
                 });
                 return Task::batch([change, self.save_preferences()]);
             }
-            Message::TorrentSettingsApplied(Some(telemetry)) => {
+            Message::TorrentSettingsApplied(Ok(telemetry)) => {
                 self.queue.torrent_telemetry(telemetry);
             }
-            Message::TorrentSettingsApplied(None) => self.banner = Some("action-failed"),
+            Message::TorrentSettingsApplied(Err(message)) => self.banner = Some(message),
             Message::TorrentDetails(id, details) => {
                 self.details_in_flight = false;
                 if self.queue.selected == Some(id) {
@@ -3378,6 +3410,9 @@ impl App {
                 settings::TorrentField::Ratio => self.preferences.torrent.seed_ratio.clone(),
                 settings::TorrentField::Minutes => self.preferences.torrent.seed_minutes.clone(),
                 settings::TorrentField::MaxPeers => self.preferences.torrent.max_peers.clone(),
+                settings::TorrentField::MaxGlobalPeers => {
+                    self.preferences.torrent.max_global_peers.clone()
+                }
                 settings::TorrentField::Interface => self.preferences.torrent.interface.clone(),
                 settings::TorrentField::Blocklist => self.preferences.torrent.blocklist.clone(),
             },
@@ -3761,7 +3796,7 @@ impl App {
             return Task::none();
         }
         self.closing = true;
-        self.finish_close()
+        window::set_mode(self.window, window::Mode::Hidden).chain(self.finish_close())
     }
 
     fn show_window(&self) -> Task<Message> {

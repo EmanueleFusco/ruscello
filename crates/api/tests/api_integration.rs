@@ -9,7 +9,7 @@ use ruscello_api::{
 };
 use ruscello_engine::{DlcKeyService, EngineHandle, EngineOptions, Url};
 use ruscello_platform::language::Language;
-use ruscello_testkit::{Reply, StatusCode as MockStatus, TestServer};
+use ruscello_testkit::{FileSpec, Reply, StatusCode as MockStatus, TestServer};
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::connect_async;
@@ -32,6 +32,98 @@ fn minimal_valid_torrent_bytes() -> Vec<u8> {
     out.extend_from_slice(&[0xAB_u8; 20]);
     out.extend_from_slice(b"ee");
     out
+}
+
+#[tokio::test]
+async fn one_batch_deduplicates_urls_and_emits_exact_row_and_package_ids() -> TestResult {
+    let server = TestServer::start().await?;
+    let file = server.route("/a.bin", |_| {
+        Reply::bytes("application/octet-stream", b"data".to_vec())
+    });
+    let other = server.route("/b.bin", |_| {
+        Reply::bytes("application/octet-stream", b"other".to_vec())
+    });
+    let dir = TempDir::new()?;
+    let engine = start_test_engine(&dir, None).await?;
+    let api = ApiServer::start(
+        engine.clone(),
+        ApiConfig {
+            local_port: 0,
+            cli_token: Some("fixture-token".into()),
+            data_dir: Some(dir.path().to_owned()),
+            ..ApiConfig::default()
+        },
+    )
+    .await?;
+    let client = reqwest::Client::new();
+    let base = format!("http://{}", api.local_addr());
+    let urls = [
+        file.clone(),
+        format!(" {file}#ignored "),
+        other,
+        file.clone(),
+    ];
+    let response: AddDownloadsResponse = client
+        .post(format!("{base}/api/v1/downloads"))
+        .bearer_auth("fixture-token")
+        .json(&serde_json::json!({"urls":urls, "package_name":"QA", "start_immediately":false}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(response.count, 2);
+    assert_eq!(
+        response.added_id_strings,
+        response
+            .added_ids
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+    );
+    let exact = &response.added_id_strings[0];
+    let queue: QueueSnapshotDto = client
+        .get(format!("{base}/api/v1/queue"))
+        .bearer_auth("fixture-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let row = queue
+        .downloads
+        .iter()
+        .find(|row| row.id_string == *exact)
+        .ok_or("row missing")?;
+    assert_eq!(row.filename, "a.bin");
+    assert_eq!(
+        row.package_id_string.as_deref(),
+        queue
+            .packages
+            .first()
+            .map(|package| package.id_string.as_str())
+    );
+    assert_eq!(queue.packages.len(), 1);
+    client
+        .post(format!("{base}/api/v1/downloads/{exact}/resume"))
+        .bearer_auth("fixture-token")
+        .send()
+        .await?
+        .error_for_status()?;
+    let again: AddDownloadsResponse = client
+        .post(format!("{base}/api/v1/downloads"))
+        .bearer_auth("fixture-token")
+        .json(&serde_json::json!({"urls":[file], "start_immediately":false}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(again.count, 1);
+    assert_ne!(again.added_id_strings[0], *exact);
+    api.shutdown().await;
+    engine.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -201,6 +293,69 @@ async fn extension_one_click_and_pending_pairing_flows() -> TestResult {
         .send()
         .await?;
     assert_eq!(ff_q.status(), StatusCode::OK);
+
+    let source = TestServer::start().await?;
+    let file = source.file(FileSpec::random(25, 128 * 1024).filename("handoff.bin"));
+    let stage = || {
+        client
+            .post(format!("{base}/api/v1/downloads"))
+            .header(header::ORIGIN, firefox_origin)
+            .bearer_auth(&ff_token)
+            .json(&serde_json::json!({"urls":[file.url()], "start_immediately":false}))
+            .send()
+    };
+    let queue = || {
+        client
+            .get(format!("{base}/api/v1/queue"))
+            .header(header::ORIGIN, firefox_origin)
+            .bearer_auth(&ff_token)
+            .send()
+    };
+    let staged: AddDownloadsResponse = stage().await?.error_for_status()?.json().await?;
+    let id = staged.added_id_strings.first().ok_or("missing staged ID")?;
+    let snapshot: QueueSnapshotDto = queue().await?.error_for_status()?.json().await?;
+    assert_eq!(snapshot.downloads[0].status, "Paused");
+    assert_eq!(snapshot.downloads[0].id_string, *id);
+    assert_eq!(snapshot.downloads[0].downloaded_bytes, 0);
+    client
+        .delete(format!("{base}/api/v1/downloads/{id}?delete_files=false"))
+        .header(header::ORIGIN, firefox_origin)
+        .bearer_auth(&ff_token)
+        .send()
+        .await?
+        .error_for_status()?;
+    let snapshot: QueueSnapshotDto = queue().await?.error_for_status()?.json().await?;
+    assert!(snapshot.downloads.is_empty());
+    assert!(file.requests().is_empty());
+
+    let staged: AddDownloadsResponse = stage().await?.error_for_status()?.json().await?;
+    let id = staged.added_id_strings.first().ok_or("missing staged ID")?;
+    client
+        .post(format!("{base}/api/v1/downloads/{id}/resume"))
+        .header(header::ORIGIN, firefox_origin)
+        .bearer_auth(&ff_token)
+        .send()
+        .await?
+        .error_for_status()?;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot: QueueSnapshotDto = queue().await?.error_for_status()?.json().await?;
+            if snapshot
+                .downloads
+                .iter()
+                .any(|row| row.id_string == *id && row.status == "Completed")
+            {
+                return Ok::<_, reqwest::Error>(());
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await??;
+    let expected = file.payload();
+    assert_eq!(
+        std::fs::read(dir.path().join("downloads/handoff.bin"))?,
+        expected.bytes(0..expected.len()),
+    );
 
     // Revoking extension tokens invalidates all issued extension tokens immediately.
     let revoked = api.revoke_extension_tokens()?;

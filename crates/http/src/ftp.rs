@@ -12,7 +12,7 @@ use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::CertificateDer;
 use rustls_platform_verifier::BuilderVerifierExt;
 use suppaftp::{
-    FtpError,
+    FtpError, Status,
     tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream, AsyncRustlsStream, TransferStream},
     types::FileType as FtpFileType,
 };
@@ -253,12 +253,15 @@ async fn connect_and_prepare(
         () = cancellation.cancelled() => return Err(HttpError::Cancelled),
         result = time::timeout(CONNECT_TIMEOUT, async {
             if target.implicit_tls {
-                AsyncRustlsFtpStream::connect_secure_implicit(
+                let mut stream = AsyncRustlsFtpStream::connect_secure_implicit(
                     addr.as_str(),
                     AsyncRustlsConnector::from(tls.clone()),
                     &target.host,
                 )
-                .await
+                .await?;
+                stream.custom_command("PBSZ 0", &[Status::CommandOk]).await?;
+                stream.custom_command("PROT P", &[Status::CommandOk]).await?;
+                Ok(stream)
             } else {
                 let plain = AsyncRustlsFtpStream::connect(addr.as_str()).await?;
                 if target.secure {
@@ -303,7 +306,7 @@ async fn connect_and_prepare(
         .mdtm(&target.filename)
         .await
         .ok()
-        .map(|dt| dt.format("%Y%m%d%H%M%S").to_string());
+        .map(|dt| dt.strftime("%Y%m%d%H%M%S").to_string());
     Ok((stream, size, mdtm))
 }
 
@@ -690,5 +693,45 @@ fn map_ftp_error(error: FtpError) -> HttpError {
             message: other.to_string(),
             transient: false,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ruscello_testkit::{FtpServerOptions, MockFtpServer};
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn implicit_ftps_negotiates_a_protected_data_channel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = MockFtpServer::start(FtpServerOptions {
+            implicit_tls: true,
+            require_tls: true,
+            ..FtpServerOptions::default()
+        })
+        .await;
+        let data = b"protected implicit FTPS data";
+        server.register_file("/fixture.bin", data.to_vec());
+        let mut target = parse_target(&Url::parse(&server.url("ftps", "/fixture.bin"))?)?;
+        // Reproduce implicit FTPS on an ephemeral port without a system port dependency.
+        target.implicit_tls = true;
+        let tls = build_tls_connector(&[server.ca_cert_der().to_vec()])?;
+        let credentials = FtpCredentials {
+            username: "fixture".to_owned(),
+            password: String::new(),
+        };
+        let (mut control, length, _) =
+            connect_and_prepare(&target, &credentials, &tls, &CancellationToken::new()).await?;
+        assert_eq!(length, Some(data.len() as u64));
+        let mut stream = control.retr_as_stream(&target.filename).await?;
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).await?;
+        stream.finish().await?;
+        assert_eq!(received, data);
+        let commands = server.observed_commands();
+        assert!(commands.iter().any(|command| command == "PBSZ 0"));
+        assert!(commands.iter().any(|command| command == "PROT P"));
+        Ok(())
     }
 }

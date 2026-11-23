@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::{DateTime, Datelike, Local, Timelike, Weekday};
+use jiff::{
+    Zoned,
+    civil::{DateTime, Weekday},
+};
 use ruscello_platform::power::QueueCompletionAction;
 use serde::{Deserialize, Serialize};
 
@@ -14,15 +17,15 @@ const DEFAULT_WATCH_POLL_SECS: u64 = 5;
 
 /// Time source abstraction so scheduling logic is deterministic in tests.
 pub trait Clock: Send + Sync {
-    fn local_now(&self) -> DateTime<Local>;
+    fn local_now(&self) -> DateTime;
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn local_now(&self) -> DateTime<Local> {
-        Local::now()
+    fn local_now(&self) -> DateTime {
+        Zoned::now().datetime()
     }
 }
 
@@ -46,12 +49,12 @@ impl WeekdayMask {
     }
 
     pub fn contains(self, weekday: Weekday) -> bool {
-        let bit = 1_u8 << weekday.num_days_from_monday();
+        let bit = 1_u8 << weekday.to_monday_zero_offset();
         (self.0 & bit) != 0
     }
 
     pub fn with_day(self, weekday: Weekday, enabled: bool) -> Self {
-        let bit = 1_u8 << weekday.num_days_from_monday();
+        let bit = 1_u8 << weekday.to_monday_zero_offset();
         if enabled {
             Self((self.0 | bit) & 0b0111_1111)
         } else {
@@ -123,11 +126,11 @@ impl Default for ScheduleRule {
 }
 
 impl ScheduleRule {
-    pub fn matches(&self, local_time: DateTime<Local>) -> bool {
+    pub fn matches(&self, local_time: DateTime) -> bool {
         if !self.enabled || self.days.is_empty() {
             return false;
         }
-        let minute = (local_time.hour() * 60 + local_time.minute()) as u16;
+        let minute = u16::from(local_time.hour() as u8) * 60 + u16::from(local_time.minute() as u8);
         let start = self.start_minute.min(MINUTES_PER_DAY - 1);
         let end = self.end_minute.min(MINUTES_PER_DAY - 1);
         let today = local_time.weekday();
@@ -140,7 +143,7 @@ impl ScheduleRule {
         // Overnight window (e.g. 23:00..07:00): evening belongs to `today`,
         // early-morning tail belongs to yesterday's rule day.
         (self.days.contains(today) && minute >= start)
-            || (self.days.contains(today.pred()) && minute < end)
+            || (self.days.contains(today.previous()) && minute < end)
     }
 
     pub fn normalized(mut self) -> Self {
@@ -172,7 +175,7 @@ pub struct ScheduleDecision {
 }
 
 impl ScheduleSettings {
-    pub fn evaluate(&self, local_time: DateTime<Local>) -> ScheduleDecision {
+    pub fn evaluate(&self, local_time: DateTime) -> ScheduleDecision {
         if !self.enabled {
             return ScheduleDecision::default();
         }
@@ -468,15 +471,10 @@ fn clean_optional_path(path: PathBuf) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
-
     use super::*;
 
-    fn local_at(year: i32, month: u32, day: u32, hour: u32, min: u32) -> DateTime<Local> {
-        Local
-            .with_ymd_and_hms(year, month, day, hour, min, 0)
-            .single()
-            .unwrap_or_else(Local::now)
+    fn local_at(year: i16, month: i8, day: i8, hour: i8, min: i8) -> DateTime {
+        DateTime::constant(year, month, day, hour, min, 0, 0)
     }
 
     #[test]

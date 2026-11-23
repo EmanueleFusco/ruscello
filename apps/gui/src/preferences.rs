@@ -11,6 +11,7 @@ use ruscello_engine::TorrentSettings;
 pub(crate) struct TorrentPreferences {
     pub(crate) port: String,
     pub(crate) dht: bool,
+    pub(crate) utp: bool,
     pub(crate) pex: bool,
     pub(crate) upnp: bool,
     pub(crate) lsd: bool,
@@ -19,6 +20,7 @@ pub(crate) struct TorrentPreferences {
     pub(crate) seed_ratio: String,
     pub(crate) seed_minutes: String,
     pub(crate) max_peers: String,
+    pub(crate) max_global_peers: String,
     pub(crate) interface: String,
     pub(crate) blocklist: String,
 }
@@ -26,8 +28,9 @@ pub(crate) struct TorrentPreferences {
 impl Default for TorrentPreferences {
     fn default() -> Self {
         Self {
-            port: "6881".into(),
+            port: String::new(),
             dht: true,
+            utp: false,
             pex: true,
             upnp: true,
             lsd: true,
@@ -36,6 +39,7 @@ impl Default for TorrentPreferences {
             seed_ratio: String::new(),
             seed_minutes: String::new(),
             max_peers: String::new(),
+            max_global_peers: String::new(),
             interface: String::new(),
             blocklist: String::new(),
         }
@@ -54,12 +58,17 @@ impl TorrentPreferences {
         let upload_limit_bps = parse_optional_nonzero_u64(&self.upload_limit)?;
         let seed_ratio_millis = parse_optional_ratio_millis(&self.seed_ratio)?;
         let seed_time_limit_minutes = parse_optional_u64(&self.seed_minutes)?;
-        let max_peers_per_torrent = parse_optional_nonzero_usize(&self.max_peers)?;
+        let max_peers_per_torrent = parse_optional_nonzero_usize(&self.max_peers)?
+            .or(Some(TorrentSettings::DEFAULT_MAX_PEERS_PER_TORRENT));
+        let max_global_peers = parse_optional_nonzero_usize(&self.max_global_peers)?
+            .unwrap_or(TorrentSettings::DEFAULT_MAX_GLOBAL_PEERS);
         let bind_interface = normalize_optional_str(&self.interface);
         let blocklist_source = normalize_optional_str(&self.blocklist);
         Some(TorrentSettings {
             listen_port,
+            fallback_listen_port: port.is_empty(),
             enable_dht: self.dht,
+            enable_utp: self.utp,
             enable_pex: self.pex,
             enable_upnp: self.upnp,
             enable_lsd: self.lsd,
@@ -69,6 +78,7 @@ impl TorrentPreferences {
             seed_ratio_millis,
             seed_time_limit_minutes,
             max_peers_per_torrent,
+            max_global_peers,
             bind_interface,
             blocklist_source,
             dht_bootstrap_addrs: None,
@@ -282,6 +292,33 @@ mod tests {
         assert_eq!(saved.locale, Locale::Italian);
         assert_eq!(saved.appearance, Appearance::Dark);
         assert!(!saved.details);
+        Ok(())
+    }
+
+    #[test]
+    fn older_torrent_preferences_preserve_custom_limits() -> anyhow::Result<()> {
+        let mut preferences: TorrentPreferences =
+            serde_json::from_str(r#"{"max_peers":"24","download_limit":"262144"}"#)?;
+        let settings = preferences
+            .to_settings()
+            .ok_or_else(|| anyhow::anyhow!("invalid old preferences"))?;
+        assert_eq!(
+            settings.max_peers_per_torrent.map(NonZeroUsize::get),
+            Some(24)
+        );
+        assert_eq!(settings.max_global_peers.get(), 500);
+        assert!(!settings.enable_utp);
+        preferences.utp = true;
+        preferences.max_global_peers = "48".into();
+        let restored: TorrentPreferences =
+            serde_json::from_slice(&serde_json::to_vec(&preferences)?)?;
+        let settings = restored
+            .to_settings()
+            .ok_or_else(|| anyhow::anyhow!("invalid restored preferences"))?;
+        assert!(settings.enable_utp);
+        assert_eq!(settings.max_global_peers.get(), 48);
+        preferences.max_global_peers = "0".into();
+        assert!(preferences.to_settings().is_none());
         Ok(())
     }
 }

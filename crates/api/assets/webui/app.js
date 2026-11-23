@@ -57,6 +57,13 @@
       statusPostProcessing: "Processing",
       statusCompleted: "Completed",
       statusFailed: "Failed",
+      torrentPortUnavailable: "BitTorrent port unavailable. Change it in BitTorrent settings.",
+      torrentInterfaceUnavailable: "BitTorrent network interface unavailable. Check BitTorrent settings.",
+      torrentInterfaceUnsupported: "BitTorrent interface binding is unavailable on Windows. Clear the interface field in desktop settings only if you want to use the system network route.",
+      archiveExtractionFailed: "Extraction failed. The downloaded archive is still available.",
+      checksumVerificationUnavailable: "Could not verify the checksum manifest. The downloaded files are still available.",
+      sourceMissing: "File unavailable. Check the source link.",
+      sourceRateLimited: "The server is limiting requests. Retry later or use fewer connections.",
       actionFailed: "Action could not be completed.",
       itemsCount: "{n} items",
       unknownSize: "Unknown size",
@@ -118,6 +125,13 @@
       statusPostProcessing: "Elaborazione",
       statusCompleted: "Completato",
       statusFailed: "Non riuscito",
+      torrentPortUnavailable: "Porta BitTorrent non disponibile. Cambiala nelle impostazioni BitTorrent.",
+      torrentInterfaceUnavailable: "Interfaccia di rete BitTorrent non disponibile. Controlla le impostazioni BitTorrent.",
+      torrentInterfaceUnsupported: "Il vincolo a un’interfaccia BitTorrent non è disponibile su Windows. Svuota il campo nelle impostazioni dell’app solo se vuoi usare il percorso di rete del sistema.",
+      archiveExtractionFailed: "Estrazione non riuscita. L’archivio scaricato è ancora disponibile.",
+      checksumVerificationUnavailable: "Impossibile verificare il file dei checksum. I file scaricati sono ancora disponibili.",
+      sourceMissing: "File non disponibile. Controlla il link di origine.",
+      sourceRateLimited: "Il server sta limitando le richieste. Riprova più tardi o usa meno connessioni.",
       actionFailed: "Impossibile completare l'operazione.",
       itemsCount: "{n} elementi",
       unknownSize: "Dimensione sconosciuta",
@@ -133,6 +147,7 @@
     theme: "system",
     authRequired: false,
     authenticated: false,
+    sessionRevision: 0,
     filter: "all",
     search: "",
     snapshot: null,
@@ -351,26 +366,34 @@
   }
 
   async function apiFetch(path, options) {
+    const sessionRevision = state.sessionRevision;
     const resp = await fetch(path, Object.assign({ credentials: "same-origin" }, options || {}));
     if (resp.status === 401) {
-      state.authenticated = false;
-      state.authRequired = true;
-      closeStreams();
-      showView();
+      if (sessionRevision === state.sessionRevision) {
+        state.sessionRevision++;
+        state.authenticated = false;
+        state.authRequired = true;
+        closeStreams();
+        showView();
+      }
       throw new Error("unauthorized");
     }
     return resp;
   }
 
   async function syncHealth() {
+    const sessionRevision = state.sessionRevision;
     try {
       const resp = await fetch("/api/v1/health", { credentials: "same-origin" });
       if (!resp.ok) {
         return;
       }
       const health = await resp.json();
-      state.authRequired = Boolean(health.auth_required);
-      state.authenticated = Boolean(health.authenticated) || !state.authRequired;
+      // A focus refresh can return the session state from before a sign-in or sign-out.
+      if (sessionRevision === state.sessionRevision) {
+        state.authRequired = Boolean(health.auth_required);
+        state.authenticated = Boolean(health.authenticated) || !state.authRequired;
+      }
       applyTheme(health.theme);
       if (health.locale === "en" || health.locale === "it") {
         const changed = health.locale !== state.serverLocale;
@@ -609,7 +632,7 @@
     const titleWrap = document.createElement("div");
     const title = document.createElement("div");
     title.className = "dl-title";
-    title.textContent = d.filename || d.source_summary || ("#" + d.id);
+    title.textContent = d.filename || d.source_summary || ("#" + d.id_string);
     titleWrap.appendChild(title);
 
     const badge = document.createElement("span");
@@ -645,7 +668,16 @@
       parts.push(t("etaPrefix") + " " + formatEta(d.eta_secs));
     }
     if (d.failure_reason) {
-      parts.push(d.failure_reason);
+      const messages = {
+        TorrentPortUnavailable: "torrentPortUnavailable",
+        TorrentInterfaceUnavailable: "torrentInterfaceUnavailable",
+        TorrentInterfaceUnsupported: "torrentInterfaceUnsupported",
+        ArchiveExtraction: "archiveExtractionFailed",
+        ChecksumVerification: "checksumVerificationUnavailable",
+        SourceMissing: "sourceMissing",
+        SourceRateLimited: "sourceRateLimited"
+      };
+      parts.push(messages[d.failure_reason] ? t(messages[d.failure_reason]) : d.failure_reason);
     }
     for (const part of parts) {
       const span = document.createElement("span");
@@ -661,7 +693,7 @@
       b.type = "button";
       b.className = "btn btn-sm";
       b.textContent = t("pause");
-      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id + "/pause"));
+      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id_string + "/pause"));
       actions.appendChild(b);
     }
     if (canStopDownload(d)) {
@@ -669,7 +701,7 @@
       b.type = "button";
       b.className = "btn btn-sm";
       b.textContent = d.status === "Seeding" ? t("stopSeeding") : t("stop");
-      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id + "/stop"));
+      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id_string + "/stop"));
       actions.appendChild(b);
     }
     if (canResumeDownload(d)) {
@@ -677,7 +709,7 @@
       b.type = "button";
       b.className = "btn btn-primary btn-sm";
       b.textContent = t("resume");
-      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id + "/resume"));
+      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id_string + "/resume"));
       actions.appendChild(b);
     }
     if (d.status === "Queued" || d.status === "Paused") {
@@ -685,7 +717,7 @@
       b.type = "button";
       b.className = "btn btn-sm";
       b.textContent = t("forceStart");
-      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id + "/force-start"));
+      b.addEventListener("click", () => postAction("/api/v1/downloads/" + d.id_string + "/force-start"));
       actions.appendChild(b);
     }
     const rm = document.createElement("button");
@@ -709,22 +741,22 @@
 
     const pkgById = new Map();
     for (const pkg of snap.packages || []) {
-      pkgById.set(pkg.id, pkg);
+      pkgById.set(pkg.id_string, pkg);
     }
 
     const grouped = new Map();
     const standalone = [];
     for (const d of snap.downloads) {
-      const pkg = d.package_id != null ? pkgById.get(d.package_id) : null;
+      const pkg = pkgById.get(d.package_id_string);
       const pkgName = pkg ? pkg.name : "";
       if (!matchesFilter(d) || !matchesSearch(d, pkgName)) {
         continue;
       }
       if (pkg) {
-        if (!grouped.has(pkg.id)) {
-          grouped.set(pkg.id, { pkg, items: [] });
+        if (!grouped.has(pkg.id_string)) {
+          grouped.set(pkg.id_string, { pkg, items: [] });
         }
-        grouped.get(pkg.id).items.push(d);
+        grouped.get(pkg.id_string).items.push(d);
       } else {
         standalone.push(d);
       }
@@ -737,15 +769,15 @@
       const wrap = document.createElement("section");
       wrap.className = "package-group";
 
-      const collapsed = state.collapsedPackages.has(pkg.id);
+      const collapsed = state.collapsedPackages.has(pkg.id_string);
       const header = document.createElement("button");
       header.type = "button";
       header.className = "package-header";
       header.addEventListener("click", () => {
-        if (state.collapsedPackages.has(pkg.id)) {
-          state.collapsedPackages.delete(pkg.id);
+        if (state.collapsedPackages.has(pkg.id_string)) {
+          state.collapsedPackages.delete(pkg.id_string);
         } else {
-          state.collapsedPackages.add(pkg.id);
+          state.collapsedPackages.add(pkg.id_string);
         }
         renderQueue();
       });
@@ -795,7 +827,7 @@
 
   function openRemoveModal(d) {
     state.removeTarget = d;
-    el.removeTargetName.textContent = d.filename || d.source_summary || ("#" + d.id);
+    el.removeTargetName.textContent = d.filename || d.source_summary || ("#" + d.id_string);
     el.removeDeleteFiles.checked = false;
     el.removeModal.classList.remove("hidden");
   }
@@ -883,6 +915,7 @@
         return;
       }
       el.loginPassword.value = "";
+      state.sessionRevision++;
       state.authenticated = true;
       showView();
       await refreshSnapshot();
@@ -897,6 +930,7 @@
     try {
       await fetch("/api/v1/auth/logout", { method: "POST", credentials: "same-origin" });
     } catch (_) {}
+    state.sessionRevision++;
     state.authenticated = false;
     state.snapshot = null;
     closeStreams();
@@ -994,7 +1028,7 @@
     if (!state.removeTarget) {
       return;
     }
-    const id = state.removeTarget.id;
+    const id = state.removeTarget.id_string;
     const deleteFiles = Boolean(el.removeDeleteFiles.checked);
     closeRemoveModal();
     try {

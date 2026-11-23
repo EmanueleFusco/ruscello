@@ -30,6 +30,24 @@ pub(crate) fn normalize(input: &std::ffi::OsStr) -> String {
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn normalize_association(input: &str) -> Option<String> {
+    let url = ruscello_engine::Url::parse(input).ok()?;
+    match url.scheme() {
+        "magnet" => Some(normalize(url.as_str().as_ref())),
+        "file" => {
+            let path = url.to_file_path().ok()?;
+            let extension = path.extension()?.to_str()?;
+            if extension.eq_ignore_ascii_case("torrent") || extension.eq_ignore_ascii_case("dlc") {
+                Some(normalize(path.as_os_str()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Endpoint {
     port: u16,
@@ -47,6 +65,8 @@ pub(crate) struct Primary {
     stop: Arc<std::sync::atomic::AtomicBool>,
     address: std::net::SocketAddr,
     worker: Option<std::thread::JoinHandle<()>>,
+    #[cfg(target_os = "macos")]
+    native_sender: tokio::sync::mpsc::Sender<Vec<String>>,
     receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Vec<String>>>>,
 }
 
@@ -61,6 +81,11 @@ impl Drop for Primary {
 }
 
 impl Primary {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn native_sender(&self) -> tokio::sync::mpsc::Sender<Vec<String>> {
+        self.native_sender.clone()
+    }
+
     pub(crate) fn receiver(
         &self,
     ) -> Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Vec<String>>>> {
@@ -109,6 +134,8 @@ fn primary(lock: File, path: PathBuf) -> anyhow::Result<Primary> {
     serde_json::to_writer(&mut file, &endpoint)?;
     file.persist(&path)?;
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
+    #[cfg(target_os = "macos")]
+    let native_sender = sender.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_stop = stop.clone();
     let worker = std::thread::Builder::new()
@@ -142,6 +169,8 @@ fn primary(lock: File, path: PathBuf) -> anyhow::Result<Primary> {
         stop,
         address,
         worker: Some(worker),
+        #[cfg(target_os = "macos")]
+        native_sender,
         receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
     })
 }
@@ -197,6 +226,26 @@ impl Read for TimedRead<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_associations_preserve_magnets_and_decode_only_supported_file_types()
+    -> anyhow::Result<()> {
+        let data = tempfile::tempdir()?;
+        for name in ["File con spazi e caffè.TORRENT", "Contenitore #1.dlc"] {
+            let path = data.path().join(name);
+            let url = ruscello_engine::Url::from_file_path(&path)
+                .map_err(|()| anyhow::anyhow!("Test path has no file URL"))?;
+            assert_eq!(
+                normalize_association(url.as_str()),
+                Some(normalize(path.as_os_str()))
+            );
+        }
+        let link = "magnet:?xt=urn:btih:abc&dn=File%20con%20spazi";
+        assert_eq!(normalize_association(link).as_deref(), Some(link));
+        assert!(normalize_association("https://example.test/file.torrent").is_none());
+        assert!(normalize_association("file:///tmp/file.torrent.txt").is_none());
+        Ok(())
+    }
 
     #[test]
     fn rejects_oversized_messages_before_allocating() {

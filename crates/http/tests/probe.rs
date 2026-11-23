@@ -7,6 +7,21 @@ use ruscello_testkit::{FileSpec, Representation, TestServer};
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[tokio::test]
+async fn leaves_extensionless_plain_text_names_intact() -> TestResult {
+    let server = TestServer::start().await?;
+    let file = server.file(
+        FileSpec::random(7, 32)
+            .filename("SHA256")
+            .content_type("text/plain; charset=utf-8"),
+    );
+    assert_eq!(
+        probe(&client()?, &Url::parse(file.url())?).await?.filename,
+        "SHA256"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn reads_redirect_destination_and_prefers_content_disposition() -> TestResult {
     let server = TestServer::start().await?;
     let file = server.file(

@@ -10,13 +10,13 @@ publish.workspace = true
 
 [dependencies]
 bzip2-rs.workspace = true
-chrono.workspace = true
 crc32fast.workspace = true
 flate2.workspace = true
 fs4.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 infer.workspace = true
+jiff.workspace = true
 lzma-rs.workspace = true
 md-5.workspace = true
 mime_guess.workspace = true

@@ -856,7 +856,11 @@ fn status_key(q: &queue::Queue, download: &Download) -> &'static str {
     if q.offline(download.id) {
         "offline"
     } else if matches!(download.source, Source::Torrent(_)) && status == Status::Resolving {
-        "fetching-metadata"
+        if q.checking_torrent(download.id) {
+            "torrent-checking-pieces"
+        } else {
+            "fetching-metadata"
+        }
     } else if status == Status::PostProcessing {
         match q.post_processing_stage(download.id) {
             Some(PostProcessStage::VerifyingChecksum) => "post-verifying-checksum",

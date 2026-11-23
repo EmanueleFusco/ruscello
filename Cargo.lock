@@ -908,10 +908,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 
@@ -3666,8 +3664,6 @@ dependencies = [
 [[package]]
 name = "librqbit"
 version = "9.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e35a06e481e854f69141928d067406397b3ad7a47bfdc095bc31325f44f5d13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3798,16 +3794,14 @@ dependencies = [
 [[package]]
 name = "librqbit-dht"
 version = "9.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "558e74c5bcbb270fc19e1cf0517c26ed132f96c29b43b41f5ec5ce22470393a3"
 dependencies = [
  "anyhow",
  "backon",
  "bytes",
- "chrono",
  "dashmap",
  "futures",
  "indexmap 2.14.2",
+ "jiff",
  "leaky-bucket",
  "librqbit-bencode",
  "librqbit-buffers",
@@ -3829,8 +3823,6 @@ dependencies = [
 [[package]]
 name = "librqbit-dualstack-sockets"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7189f1ff66ca75055137a38b062ba7df9691d071b7172e5090997c62eb4b4de"
 dependencies = [
  "axum",
  "backon",
@@ -3841,6 +3833,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3948,8 +3941,6 @@ dependencies = [
 [[package]]
 name = "librqbit-utp"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f3bfdc73944bc76cab24d5690a98816770040a654c449edf5ff2b9ba22626aa"
 dependencies = [
  "bitvec",
  "dontfrag",
@@ -4130,11 +4121,9 @@ dependencies = [
 [[package]]
 name = "m3u8-rs"
 version = "6.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c94fe25bd0d08c68fd0fac4f9537f747246579cd270658fa9fee3d10af382716"
 dependencies = [
- "chrono",
  "nom 7.1.3",
+ "time",
 ]
 
 [[package]]
@@ -6068,7 +6057,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "ruscello-api"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -6095,7 +6084,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-browser"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "cookie",
  "rusqlite",
@@ -6110,7 +6099,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-cli"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -6130,7 +6119,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -6138,19 +6127,19 @@ dependencies = [
 
 [[package]]
 name = "ruscello-engine"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
  "bzip2-rs",
  "cbc",
- "chrono",
  "crc32fast",
  "flate2",
  "fs4",
  "getrandom 0.4.3",
  "hex",
  "infer",
+ "jiff",
  "lzma-rs",
  "md-5",
  "mime_guess",
@@ -6181,7 +6170,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-gui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -6194,8 +6183,12 @@ dependencies = [
  "iced_test",
  "keyring",
  "notify-rust",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "open",
  "qrcode",
+ "quick-xml",
  "reqwest",
  "rfd",
  "ruscello-api",
@@ -6219,7 +6212,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-http"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -6251,7 +6244,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-media"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aes",
  "bytes",
@@ -6280,7 +6273,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-platform"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "directories",
  "ruscello-core",
@@ -6297,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-resolver"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -6323,7 +6316,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-storage"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "ruscello-core",
  "rusqlite",
@@ -6337,7 +6330,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-testkit"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -6352,10 +6345,11 @@ dependencies = [
 
 [[package]]
 name = "ruscello-torrent"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "librqbit",
+ "librqbit-dualstack-sockets",
  "reqwest",
  "ruscello-core",
  "ruscello-testkit",
@@ -6366,11 +6360,12 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "ruscello-webview"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "cookie",
@@ -7246,11 +7241,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "suppaftp"
 version = "12.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b58fcf921745cca6f0127c9f822069947da8c6dbeff52e9004750bcc448171f"
 dependencies = [
  "async-trait",
- "chrono",
+ "jiff",
  "lazy-regex",
  "log",
  "pin-project",

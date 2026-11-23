@@ -216,6 +216,8 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [x] **M3.5** System tray icon (`tray-icon`), close-to-tray, native desktop notifications (`notify-rust`),
       launch at login, **single-instance IPC** (a second invocation forwards URLs/magnets/`.torrent`/`.dlc` files to the running instance).
 - [x] **M3.6** File/protocol associations: `magnet:`, `.torrent`, and `.dlc` (Windows Registry / `.desktop` + `xdg-mime` on Linux).
+  - [x] Add the macOS bundle declarations and forward Apple open events through desktop input handling.
+  - [ ] Verify Finder and browser delivery on Intel and Apple Silicon with the desktop closed and already running.
 - [x] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
       **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
 - [x] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
@@ -233,10 +235,22 @@ English and Italian, and experience ~0% idle CPU with zero UI thread blocking.
 - [x] **M4.2** Add from magnet / `.torrent` file / `.torrent` URL; pre-add dialog with file tree,
       file selection, total size, destination folder; metadata fetching state ("Fetching metadata") for magnets.
 - [x] **M4.3** Limits: upload/download speed, seed ratio and seeding time limits (with automatic stop), max peers.
+  - [x] Apply configurable session-wide and per-torrent peer budgets and expose TCP + µTP as an opt-in transport.
+    Keep TCP as the default until remote-swarm and macOS wake testing support enabling both.
+  - [x] Share the engine download bandwidth budget with BitTorrent peer requests and retry an occupied
+    default-managed TCP port using an OS-assigned listener. See [ADR-0013](adr/0013-shared-download-bandwidth.md).
+  - [x] Verify TCP and µTP resume and restart in the Windows desktop and torrent engine with a
+    qBittorrent seeder and a loopback tracker.
+  - [x] Keep macOS UDP discovery alive through temporary address and routing errors.
+  - [x] Keep shared BitTorrent UDP receivers alive on Windows when a remote peer's port becomes unreachable.
+  - [x] Bind a common port for both requested BitTorrent transports and handle an occupied UDP port without silently dropping µTP.
+  - [ ] Verify remote qBittorrent peers in both directions and native macOS wake recovery.
 - [x] **M4.4** Details tabs: files with priorities, peers, trackers, piece map bar, speeds; "Force recheck".
 - [x] **M4.5** Map `librqbit` states → common `Status`; torrents appear in the unified list alongside other
       downloads (File Type "Torrents", assignable to user Categories like any other download).
 - [x] **M4.6** Optional: network interface binding (VPN kill-switch binding), IP filter list (eMule/P2P format).
+  - [x] Distinguish platforms without interface binding from a missing interface and keep downloads blocked when a saved binding cannot be applied.
+  - [ ] Verify tunnel loss on a real VPN. Native Windows binding requires support across peer, tracker, and discovery sockets.
 
 ### Definition of Done — M4
 Tests using local tracker + seeder (`librqbit` can create and serve torrents locally) downloading a multi-file
@@ -382,6 +396,7 @@ optional live tests behind feature flag.
     and packages, and allows pausing/resuming/adding downloads remotely;
   - Settings page in the desktop app displays the LAN URL (`http://192.168.x.x:<port>`) and a scannable **QR Code** for instant phone access;
   - Localization in both **English (`en`)** and **Italian (`it`)** matching the desktop app.
+  - [x] Preserve exact queue IDs and keep live updates connected after sign-in when a prior health request finishes late.
 - [x] **M8.3** Manifest V3 browser extension (Chrome + Firefox) with minimal TS/JS code: optional browser download
       interception (filtered by MIME/file size), context menu "Download with Ruscello" on links/selection/page
       ("Analyze page with LinkGrabber"), automatic forwarding of domain cookies for authenticated downloads.
@@ -416,6 +431,8 @@ optional live tests behind feature flag.
       results. The owner approved an exception for the 1.0 release after the default Linux GPU renderer
       measured 127.0 MB idle RSS on the AMD Lucienne reference desktop. GPU rendering remains the default,
       and the 80 MB idle RAM target remains open for future optimization.
+  - [x] Remove the redundant Windows renderer launcher while keeping the saved renderer selection.
+  - [ ] Bring the default Windows renderer within the 80 MB idle target.
 - [x] **M10.4** Packaging: Windows (per-user NSIS installer, optional code signing),
       Linux (AppImage + `.deb` + optional Flatpak), macOS (`.dmg`). Automated GitHub Releases on `v*` tags.
       Draft creation requires Hardening to pass on the tagged commit.
@@ -424,9 +441,12 @@ optional live tests behind feature flag.
   - Compare `semver` against current build version and return `UpdateCheck { available, current_version, version, notes, date }`;
   - Display a non-intrusive in-app update pill/banner in the main window when a newer build is available, showing version & release notes;
   - **One-click in-app update (`download_and_install`)**: if downloads are active, cleanly pause and flush all checkpoints (`.rscpart.ctl`) first (or prompt to pause queue before updating, just like `Scaricatore-di-Porto-rust`); download the platform release asset with a live progress bar (`UpdateProgress { downloaded, total, percent }`), verify SHA-256 checksum / Ed25519 signature, apply the update in-place (`self-replace` crate for standalone binaries / silent installer handoff for packaged installs), and relaunch the app. [ADR-0011](adr/0011-desktop-release-updates.md) records the package replacement and trust design.
+  - [ ] Validate macOS bundle replacement and startup recovery with packaged builds on Intel and Apple Silicon.
 - [x] **M10.6** User documentation (`README.md`, quickstart guide, FAQ) and screenshots.
 - [x] **M10.7** Public repository readiness: scrub any personal path references, audit dependency licenses
       (`cargo-deny`), add `SECURITY.md`.
+- [x] Remove chrono from the active dependency graph and pass Cargo Deny with the existing policy.
+- [ ] Rerun the updated platform gates on native Linux and macOS.
 
 ---
 

@@ -9,7 +9,7 @@ use std::{
 
 use aes::cipher::{BlockModeEncrypt as _, KeyIvInit as _, block_padding::NoPadding};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::{DateTime, Local, TimeZone, Timelike};
+use jiff::civil::DateTime;
 use ruscello_core::{DownloadId, FailureReason, Source, Status};
 use ruscello_engine::{
     AddDownload, AutomationSettings, Clock, DlcKeyService, EngineEvent, EngineHandle, EngineLog,
@@ -31,23 +31,23 @@ const SERVICE_IV: &[u8; 16] = b"9bc24cb995cb8db3";
 
 #[derive(Debug)]
 struct MockClock {
-    now: Mutex<DateTime<Local>>,
+    now: Mutex<DateTime>,
 }
 
 impl MockClock {
-    fn new(now: DateTime<Local>) -> Self {
+    fn new(now: DateTime) -> Self {
         Self {
             now: Mutex::new(now),
         }
     }
 
-    fn set(&self, next: DateTime<Local>) {
+    fn set(&self, next: DateTime) {
         *self.now.lock().unwrap_or_else(PoisonError::into_inner) = next;
     }
 }
 
 impl Clock for MockClock {
-    fn local_now(&self) -> DateTime<Local> {
+    fn local_now(&self) -> DateTime {
         *self.now.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -103,16 +103,13 @@ impl PowerController for RecordingPower {
 }
 
 fn local_datetime(
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-) -> Result<DateTime<Local>, Box<dyn Error>> {
-    Local
-        .with_ymd_and_hms(year, month, day, hour, minute, 0)
-        .single()
-        .ok_or_else(|| "ambiguous or invalid local test datetime".into())
+    year: i16,
+    month: i8,
+    day: i8,
+    hour: i8,
+    minute: i8,
+) -> Result<DateTime, Box<dyn Error>> {
+    Ok(DateTime::new(year, month, day, hour, minute, 0, 0)?)
 }
 
 async fn wait_for_status(
@@ -811,6 +808,7 @@ async fn m9_8_ftps_download_resumes_and_redacts_password_from_persistence() -> T
         credentials: Some(("alice".to_owned(), "super-secret-pw".to_owned())),
         allow_tls: true,
         require_tls: true,
+        implicit_tls: false,
         drop_first_after_bytes: Some(8192),
         allow_restart: true,
         support_size: true,

@@ -12,10 +12,26 @@
 | Crash / Resume | `apps/cli/tests/` | child process `ruscello-cli` + kill | Forcefully kill process at randomized points (reproducible seed) → restart → verify SHA-256. **Mandatory in CI** |
 | Snapshot | `resolver`, `gui` | `insta` | LinkGrabber output on HTML fixtures; `iced` UI views |
 | GUI | `apps/gui/tests/` | `iced_test` | User flows: add, pause, resume, cancel, sidebar filtering, language switching (`en`/`it`) |
-| BitTorrent | `crates/torrent/tests/` | local seeder + tracker | Multi-file torrent, interruption, resume, piece hash recheck |
+| BitTorrent | `crates/torrent/tests/` | local seeder + tracker | Multi-file torrent, interruption, resume, stale checkpoints and piece hash recheck |
 | Fuzzing | `fuzz/` | `cargo-fuzz` | Parsers exposed to untrusted remote input (release check) |
 | Benchmarks | `benches/`, `scripts/bench*` | `criterion`, comparison vs `aria2` | Resource & throughput targets in `PLAN.md` §2 |
 | Live Network | gated by `live-tests` feature | real internet | Real hoster/site checks; manual or non-blocking scheduled workflow |
+
+The vendored UDP receive regression runs separately with
+`cargo test --manifest-path vendor/librqbit-dualstack-sockets/Cargo.toml --lib receive::tests`.
+It injects address and routing errors and checks retry timing, recovery and cancellation without a live
+network. The macOS run also checks the Darwin error mapping. Native sleep, wake and Wi-Fi reconnection
+remain separate acceptance tests with a public magnet and a controlled torrent.
+
+The vendored date changes have focused checks for persisted DHT timestamps, HLS playlist round trips,
+and FTP timestamp parsing. Run them alongside the normal FTP resume and media integration tests.
+
+```text
+cargo test --manifest-path vendor/librqbit-dht/Cargo.toml --lib peer_store::tests
+cargo test --manifest-path vendor/m3u8-rs/Cargo.toml --test lib
+cargo test --manifest-path vendor/suppaftp/Cargo.toml --lib list::tests
+cargo test --manifest-path vendor/suppaftp/Cargo.toml --lib datetime::tests
+```
 
 ## Testkit (`ruscello-testkit`)
 
@@ -77,6 +93,21 @@ verification and import controls in English and Italian.
 | M7 Media | `cargo test -p ruscello-media --test media_streams` | HLS AES-128, segment resume, DASH, and sidecar integration using local fixtures |
 | M8 LAN and browser extension | `cargo test -p ruscello-api` | Loopback authentication, LAN sessions, extension pairing, and live queue events |
 | M9 Automation | `cargo test -p ruscello-engine --test automation` | Schedule, queue completion and sleep inhibition with mock power controls, checksums, extraction, hooks, watch folders, and FTPS resume |
+
+For macOS associations, install the built application bundle in a disposable account. Use Finder's
+Open With menu for a local `.torrent` and `.dlc`, including names with spaces and Unicode. Open a
+magnet from a browser. Repeat each action with Ruscello closed and while its window is running.
+Confirm that the existing Add flow receives each input and that Finder's current default stays selected.
+
+The Download Settings workflow checks both supported languages, applying presets through Save,
+manual limits, and restart persistence. The HTTP transport tests check that an exact-host override
+leaves the other hosts' limits in effect and that lowering a cap lets in-flight requests drain.
+The HTTP integrity tests check that a per-file override follows the effective source after redirects,
+respects a tighter resolver cap, and gives unrelated mirrors the ordinary budget.
+
+The BitTorrent transport regression uses a TCP listener that accepts a socket without completing the
+peer handshake and a UDP relay that drops the first two µTP SYNs. It checks that retransmissions
+keep the connection ID and sequence number, then exercises pause and resume under a one-peer budget.
 | M9 FTP/FTPS | `cargo test -p ruscello-http --test ftp` | Loopback transfers, TLS, interrupted transfers, `REST` fallback, and credential redaction |
 
 ## Mandatory CI Gates (Every PR)
@@ -165,3 +196,44 @@ With 64 KiB write batches, the segmented throughput repeat measured 596.7 MiB/s
 against aria2's 540.3 MiB/s (110.43%). The timed checkpoint test and all three
 ordinary crash-resume tests also passed with the smaller batches. The local kernel
 restricted access to `perf` counters.
+
+### Windows release-mode follow-up
+
+On the Windows QA host, three runs per renderer used fresh profiles and an optimized source
+build with a test-only executable name and settings directory. Each run transferred ten 2 MiB
+files over loopback with a 2 MiB/s global cap, and all 60 files matched the expected SHA-256.
+
+| Working set (decimal MB) | Software 2D | Hardware GPU (DX12) |
+| --- | ---: | ---: |
+| Idle GUI process, median of the three per-run maxima | 38.2 | 133.2 |
+| Ten active downloads, peak GUI process | 46.3 | 142.9 |
+| Ten active downloads, peak sum of GUI and launcher | 57.4 | 154.0 |
+| Minimal Iced window, median of three settled samples | 23.6 | 103.8 |
+
+The sum of process working sets can count shared pages twice. A separate single Vulkan run
+measured 205.2 MB peak idle and 169.8 MB with ten active downloads in the GUI process. On this host,
+the idle GPU target is exceeded by the minimal Iced window as well. A renderer policy change
+needs separate graphics and high-DPI acceptance. The Windows GPU memory budget remains open.
+
+The normal close event hid the window in 10–13 ms. From a seeding session the process exited in
+1.19 s and reopened with its saved row and unchanged contents. After removing the torrent row, it
+exited in 1.16 s and reopened with the row still absent.
+
+One confirmation run with the fair shared limiter measured 132.8 MB peak idle and 143.3 MB under
+load in the DX12 GUI, and 38.0 MB idle and 46.9 MB under load in the Software 2D GUI.
+
+The Windows desktop now selects the saved renderer in the original process. On the GeForce RTX 3080
+test host (driver 32.0.16.2101), the previous build reached 154.6 MB summed working set with ten active
+downloads. Starting that same build with its renderer environment configured in advance reached
+142.7 MB with one process. The launcher previously used up to 2.3 MB of private commit. Summed working
+sets may count shared pages twice.
+
+| Single-process release build on Windows | Hardware GPU (DX12) | Software 2D |
+| --- | ---: | ---: |
+| Idle working set, median of three per-run maxima | 132.9 MB | 38.1 MB |
+| Peak working set with ten active downloads | 143.0 MB | 47.4 MB |
+
+Each of the six runs verified ten 2 MiB payloads with SHA-256. Both torrent shutdown scenarios
+reopened with the expected queue state and verified payload. The minimal Iced DX12 window used
+103.7–103.9 MB under the low-power adapter preference on this host. The 80 MB idle budget remains
+open. Hardware GPU remains the default and explicit backend overrides are preserved.

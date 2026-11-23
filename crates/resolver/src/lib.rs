@@ -13,7 +13,7 @@ pub use containers::{
     ContainerFile, DlcKeyService, ImportedLink, ImportedPackage, import_dlc, import_file, links,
 };
 pub use grabber::{Candidate, CandidateGroup, PageAnalysis, ScoreReason, analyze_html};
-pub use plugins::{Builtin, IndexCrawler};
+pub use plugins::{Builtin, FUCKINGFAST_HOSTS, IndexCrawler};
 pub use recipes::{Recipe, RecipeStep};
 pub use ruscello_browser::{
     BrowserOptions,
@@ -407,10 +407,9 @@ impl Resolver {
                     }
                     Err(error) => return Err(error),
                 };
-                match plugins::resolve_generic_html(&ctx, &base, &body).await {
-                    Ok(Some(direct)) => {
-                        return Ok(Some(ctx.direct(direct, url, HosterLimits::default())));
-                    }
+                let resolved = plugins::resolve_generic_html(&ctx, &base, &body).await;
+                return match resolved {
+                    Ok(Some(direct)) => Ok(Some(ctx.direct(direct, url, HosterLimits::default()))),
                     Ok(None) | Err(ResolveError::VerificationRequired) => {
                         if plugins::is_countdown_page(&body)
                             && !plugins::has_countdown_captcha(&body)
@@ -426,10 +425,14 @@ impl Resolver {
                                 )
                                 .await;
                         }
-                        return Err(ResolveError::VerificationRequired);
+                        if plugins::is_countdown_page(&body) {
+                            Err(ResolveError::VerificationRequired)
+                        } else {
+                            resolved.and(Err(ResolveError::NoDownload))
+                        }
                     }
-                    Err(error) => return Err(error),
-                }
+                    Err(error) => Err(error),
+                };
             }
             let result = http::status(&response)
                 .map(|()| Some(ctx.direct(response.url().clone(), url, HosterLimits::default())));

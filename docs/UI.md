@@ -101,7 +101,7 @@ for that origin resume. Add also offers **Analyze in browser** for pages with sc
 - **General**: Language (*System Default / English / Italiano*), Theme, **UI Renderer** (*Hardware GPU `wgpu` [Default] / Software 2D `tiny-skia` [prevents G-SYNC/OLED flicker & NVIDIA game overlay]*, applied on restart), Launch at startup, and System tray behavior.
   Windows also offers an optional **Fixed refresh rate (NVIDIA)** setting for hardware rendering. It shows existing
   fixed-refresh profiles and can restore an override applied by Ruscello. Restart the app after changing the profile.
-- **Downloads**: Default folder, max concurrent downloads, max connections per file/host, temporary folder.
+- **Downloads**: Default and temporary folders, connection presets, and editable simultaneous-download, per-host, and per-file limits. New desktop profiles start at Balanced (5/16/8). Existing limits are preserved. The FuckingFast batch override applies to its supported share and download hosts and keeps the main queue's slot count.
 - **Speed**: Global limits and Alternative speed limits (`🐢`).
 - **Automation**: OS sleep inhibition, Queue completion actions (with cancellable countdown banner), Time-of-Day scheduler rules, automatic checksum verification (`.sfv`/`.md5`/`.sha256`), automatic archive extraction (`.zip`, `.7z`, `.tar.*`, external `.rar` sidecar, password list), post-download command hook, and Watch Folders (`.torrent`, `.dlc`, `.txt`).
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.

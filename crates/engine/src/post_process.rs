@@ -15,7 +15,10 @@ use crate::{
         ArchiveError, ExtractOptions, ExtractOutcome, extract_archive, parse_archive_volume,
     },
     automation::PostProcessingSettings,
-    checksum_verify::{ChecksumVerifyError, SidecarKind, VerifiedFile, verify_for_completed},
+    checksum_verify::{
+        ChecksumVerifyError, SidecarKind, VerifiedFile, verify_for_completed,
+        verify_in_download_root,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,7 +292,7 @@ async fn verify_target_path(
         .map_err(|err| ChecksumVerifyError::Io(io::Error::other(err)))?;
     let mut verified = Vec::new();
     for manifest in manifests {
-        let mut partial = verify_for_completed(&manifest, cancellation).await?;
+        let mut partial = verify_in_download_root(&manifest, target_path, cancellation).await?;
         verified.append(&mut partial);
     }
     Ok(verified)
@@ -304,10 +307,12 @@ fn collect_manifests_recursive(root: &Path) -> Vec<PathBuf> {
         };
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() && SidecarKind::from_path(&path).is_some() {
-                found.push(path);
+            if let Ok(kind) = entry.file_type() {
+                if kind.is_dir() {
+                    stack.push(path);
+                } else if kind.is_file() && SidecarKind::from_path(&path).is_some() {
+                    found.push(path);
+                }
             }
         }
     }

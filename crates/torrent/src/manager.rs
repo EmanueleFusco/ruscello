@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
+    future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     num::NonZeroU32,
     path::{Component, Path, PathBuf},
@@ -11,11 +12,16 @@ use std::{
 use bytes::Bytes;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Api, ByteBufOwned, CloneToOwned,
-    CreateTorrentOptions, DhtSessionConfig, ListOnlyResponse, ListenerMode, ListenerOptions,
-    Magnet, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig, TorrentStatsState,
-    ValidatedTorrentMetaV1Info, api::TorrentIdOrHash, create_torrent as rqbit_create_torrent,
-    dht::DhtPersistenceConfig, limits::LimitsConfig, torrent_from_bytes,
+    CreateTorrentOptions, DhtSessionConfig, ListOnlyResponse, ListenPortUnavailable, ListenerMode,
+    ListenerOptions, Magnet, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
+    TorrentStatsState, ValidatedTorrentMetaV1Info,
+    api::TorrentIdOrHash,
+    create_torrent as rqbit_create_torrent,
+    dht::DhtPersistenceConfig,
+    limits::{DownloadBudget, LimitsConfig},
+    torrent_from_bytes,
 };
+use librqbit_dualstack_sockets::Error as SocketError;
 use ruscello_core::{DownloadId, TorrentSource};
 use serde::Deserialize;
 use tokio::sync::RwLock;
@@ -82,6 +88,7 @@ pub struct TorrentManager {
     session_lock: RwLock<SessionHolder>,
     entries: Mutex<BTreeMap<DownloadId, ManagedEntry>>,
     http: reqwest::Client,
+    download_budget: Option<DownloadBudget>,
 }
 
 impl fmt::Debug for TorrentManager {
@@ -100,13 +107,36 @@ impl TorrentManager {
         default_destination: PathBuf,
         settings: TorrentSettings,
     ) -> Result<Self, TorrentError> {
+        Self::start(data_dir, default_destination, settings, None).await
+    }
+
+    /// Creates a session that acquires payload-request capacity from an external budget.
+    pub async fn with_download_budget<F>(
+        data_dir: PathBuf,
+        default_destination: PathBuf,
+        settings: TorrentSettings,
+        acquire: impl Fn(NonZeroU32) -> F + Send + Sync + 'static,
+    ) -> Result<Self, TorrentError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let budget: DownloadBudget = Arc::new(move |length| Box::pin(acquire(length)));
+        Self::start(data_dir, default_destination, settings, Some(budget)).await
+    }
+
+    async fn start(
+        data_dir: PathBuf,
+        default_destination: PathBuf,
+        settings: TorrentSettings,
+        download_budget: Option<DownloadBudget>,
+    ) -> Result<Self, TorrentError> {
         tokio::fs::create_dir_all(&data_dir).await?;
         let http = reqwest::Client::builder()
             .user_agent(concat!("Ruscello/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| TorrentError::Http(error.to_string()))?;
-        let session = build_session(&data_dir, &default_destination, &settings).await?;
-        pause_all_restored_torrents(&session).await;
+        let session =
+            build_session(&data_dir, &default_destination, &settings, &download_budget).await?;
         let api = Api::new(session.clone(), None);
         Ok(Self {
             data_dir,
@@ -118,6 +148,7 @@ impl TorrentManager {
             }),
             entries: Mutex::new(BTreeMap::new()),
             http,
+            download_budget,
         })
     }
 
@@ -301,18 +332,27 @@ impl TorrentManager {
 
         old_session.stop().await;
 
-        let (new_session, effective_settings, apply_error) =
-            match build_session(&self.data_dir, &self.default_destination, &new_settings).await {
-                Ok(session) => (session, new_settings, None),
-                Err(error) => {
-                    // Roll back to previous settings so active downloads keep running if new settings fail.
-                    let rollback =
-                        build_session(&self.data_dir, &self.default_destination, &old_settings)
-                            .await?;
-                    (rollback, old_settings, Some(error))
-                }
-            };
-        pause_all_restored_torrents(&new_session).await;
+        let (new_session, effective_settings, apply_error) = match build_session(
+            &self.data_dir,
+            &self.default_destination,
+            &new_settings,
+            &self.download_budget,
+        )
+        .await
+        {
+            Ok(session) => (session, new_settings, None),
+            Err(error) => {
+                // Roll back to previous settings so active downloads keep running if new settings fail.
+                let rollback = build_session(
+                    &self.data_dir,
+                    &self.default_destination,
+                    &old_settings,
+                    &self.download_budget,
+                )
+                .await?;
+                (rollback, old_settings, Some(error))
+            }
+        };
         let new_api = Api::new(new_session.clone(), None);
 
         {
@@ -1578,7 +1618,56 @@ async fn build_session(
     data_dir: &Path,
     default_destination: &Path,
     settings: &TorrentSettings,
+    download_budget: &Option<DownloadBudget>,
 ) -> Result<Arc<Session>, TorrentError> {
+    const MAX_AUTOMATIC_RETRIES: usize = 8;
+    let mut port = settings.listen_port;
+    let mut retries = 0;
+    loop {
+        let result = build_session_on_port(
+            data_dir,
+            default_destination,
+            settings,
+            download_budget,
+            port,
+        )
+        .await;
+        if !matches!(&result, Err(TorrentError::PortUnavailable(_)))
+            || (port != 0 && !settings.fallback_listen_port)
+            || retries == MAX_AUTOMATIC_RETRIES
+        {
+            return result;
+        }
+        if port != 0 {
+            tracing::info!(
+                port,
+                "Preferred BitTorrent port unavailable; requesting an automatic port"
+            );
+        }
+        // TCP and UDP have separate port namespaces. The OS may pick a TCP port already used by UDP.
+        port = 0;
+        retries += 1;
+    }
+}
+
+async fn build_session_on_port(
+    data_dir: &Path,
+    default_destination: &Path,
+    settings: &TorrentSettings,
+    download_budget: &Option<DownloadBudget>,
+    port: u16,
+) -> Result<Arc<Session>, TorrentError> {
+    let peer_limit = settings
+        .max_peers_per_torrent
+        .unwrap_or(TorrentSettings::DEFAULT_MAX_PEERS_PER_TORRENT);
+    if [peer_limit, settings.max_global_peers]
+        .into_iter()
+        .any(|limit| limit.get() > tokio::sync::Semaphore::MAX_PERMITS)
+    {
+        return Err(TorrentError::InvalidLimit(
+            "peer count is too large".to_owned(),
+        ));
+    }
     let bind_device_name = settings
         .bind_interface
         .as_deref()
@@ -1591,10 +1680,14 @@ async fn build_session(
     let dht = if settings.enable_dht {
         Some(DhtSessionConfig {
             bootstrap_addrs: settings.dht_bootstrap_addrs.clone(),
-            port: if settings.listen_port == 0 {
+            port: if settings.enable_utp || port == 0 && settings.fallback_listen_port {
+                // DHT and µTP own separate UDP sockets in librqbit. The explicit
+                // ephemeral bind also avoids reusing a previously persisted DHT port.
+                Some(0)
+            } else if port == 0 {
                 None
             } else {
-                Some(settings.listen_port)
+                Some(port)
             },
             persistence: Some(DhtPersistenceConfig {
                 dump_interval: None,
@@ -1609,12 +1702,18 @@ async fn build_session(
         dht,
         bind_device_name: bind_device_name.clone(),
         fastresume: settings.fastresume,
+        restore_paused: true,
         persistence: Some(SessionPersistenceConfig::Json {
             folder: Some(data_dir.to_path_buf()),
         }),
         listen: Some(ListenerOptions {
-            mode: ListenerMode::TcpOnly,
-            listen_addr: (Ipv6Addr::UNSPECIFIED, settings.listen_port).into(),
+            mode: if settings.enable_utp {
+                ListenerMode::TcpAndUtp
+            } else {
+                ListenerMode::TcpOnly
+            },
+            require_utp: settings.enable_utp,
+            listen_addr: (Ipv6Addr::UNSPECIFIED, port).into(),
             enable_upnp_port_forwarding: settings.enable_upnp,
             ..Default::default()
         }),
@@ -1623,15 +1722,26 @@ async fn build_session(
             upload_bps: to_non_zero_u32(settings.upload_limit_bps),
         },
         blocklist_url,
-        peer_limit: settings.max_peers_per_torrent.map(|n| n.get()),
-        disable_local_service_discovery: !settings.enable_lsd || !settings.enable_pex,
+        download_budget: download_budget.clone(),
+        peer_limit: Some(peer_limit.get()),
+        global_peer_limit: Some(settings.max_global_peers.get()),
+        disable_local_service_discovery: !settings.enable_lsd,
+        disable_pex: !settings.enable_pex,
         client_name_and_version: Some(format!("Ruscello {}", env!("CARGO_PKG_VERSION"))),
         ..Default::default()
     };
 
     Session::new_with_opts(default_destination.to_path_buf(), opts)
         .await
-        .map_err(|error| map_session_init_error(&error.to_string(), bind_device_name.as_deref()))
+        .map_err(|error| {
+            if let Some(error) = error.downcast_ref::<ListenPortUnavailable>() {
+                return TorrentError::PortUnavailable(error.port);
+            }
+            if let Some(SocketError::BindDeviceNotSupported) = error.downcast_ref::<SocketError>() {
+                return TorrentError::InterfaceBindingUnsupported;
+            }
+            map_session_init_error(&format!("{error:#}"), bind_device_name.as_deref())
+        })
 }
 
 fn map_session_init_error(message: &str, bind_interface: Option<&str>) -> TorrentError {
@@ -1644,14 +1754,6 @@ fn map_session_init_error(message: &str, bind_interface: Option<&str>) -> Torren
         return TorrentError::Blocklist(message.to_owned());
     }
     TorrentError::Session(message.to_owned())
-}
-
-async fn pause_all_restored_torrents(session: &Arc<Session>) {
-    let handles: Vec<ManagedTorrentHandle> =
-        session.with_torrents(|iter| iter.map(|(_, h)| h.clone()).collect());
-    for handle in handles {
-        let _ = session.pause(&handle).await;
-    }
 }
 
 fn apply_live_ratelimits(session: &Session, settings: &TorrentSettings) {

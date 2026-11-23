@@ -9,10 +9,14 @@ pub enum TorrentError {
     InvalidSource(String),
     #[error("invalid BitTorrent listening port")]
     InvalidPort,
-    #[error("invalid BitTorrent seed limit: {0}")]
+    #[error("BitTorrent listening port {0} is unavailable")]
+    PortUnavailable(u16),
+    #[error("invalid BitTorrent limit: {0}")]
     InvalidLimit(String),
     #[error("invalid network interface '{0}'")]
     InvalidInterface(String),
+    #[error("BitTorrent network interface binding is unsupported on this operating system")]
+    InterfaceBindingUnsupported,
     #[error("failed to load IP blocklist: {0}")]
     Blocklist(String),
     #[error("torrent operation was cancelled")]
@@ -39,9 +43,11 @@ impl TorrentError {
             }
             Self::Io(_) => FailureReason::FileSystem,
             Self::Http(_) | Self::Blocklist(_) => FailureReason::Network,
+            Self::PortUnavailable(_) => FailureReason::TorrentPortUnavailable,
+            Self::InvalidInterface(_) => FailureReason::TorrentInterfaceUnavailable,
+            Self::InterfaceBindingUnsupported => FailureReason::TorrentInterfaceUnsupported,
             Self::InvalidPort
             | Self::InvalidLimit(_)
-            | Self::InvalidInterface(_)
             | Self::Cancelled
             | Self::NotFound
             | Self::Session(_) => FailureReason::Internal,

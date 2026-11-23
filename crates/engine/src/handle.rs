@@ -10,7 +10,7 @@ use ruscello_core::{
     CategoryId, Download, DownloadId, FailureReason, Package, PackageId, Priority, Source, Status,
     Tag, TorrentSource,
 };
-use ruscello_storage::{DatabaseRecovery, Storage, StorageError};
+use ruscello_storage::{Change, DatabaseRecovery, Storage, StorageError};
 use ruscello_torrent::{
     TorrentDetailsSnapshot, TorrentError, TorrentInspection, TorrentManager,
     TorrentSessionTelemetry, TorrentSettings,
@@ -37,6 +37,7 @@ pub struct Limits {
     pub concurrent_downloads: NonZeroUsize,
     pub connections_per_host: NonZeroUsize,
     pub connections_per_download: NonZeroUsize,
+    pub fuckingfast_batch: bool,
     pub bandwidth: Option<NonZeroU64>,
     pub retries: u32,
 }
@@ -47,9 +48,35 @@ impl Default for Limits {
             concurrent_downloads: NonZeroUsize::MIN.saturating_add(2),
             connections_per_host: NonZeroUsize::MIN.saturating_add(7),
             connections_per_download: NonZeroUsize::MIN.saturating_add(3),
+            fuckingfast_batch: false,
             bandwidth: None,
             retries: 8,
         }
+    }
+}
+
+impl Limits {
+    pub const FUCKINGFAST_CONNECTIONS_PER_HOST: NonZeroUsize = NonZeroUsize::MIN.saturating_add(99);
+
+    pub(super) fn host_override(self, url: &crate::Url) -> bool {
+        self.fuckingfast_batch
+            && matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some_and(|host| {
+                ruscello_resolver::FUCKINGFAST_HOSTS.contains(&host.trim_end_matches('.'))
+            })
+    }
+
+    pub(super) fn configure_hosts(self, hosts: &ruscello_http::HostConnections) {
+        let overrides = ruscello_resolver::FUCKINGFAST_HOSTS
+            .map(|host| (host, Self::FUCKINGFAST_CONNECTIONS_PER_HOST));
+        hosts.set_limits(
+            self.connections_per_host,
+            if self.fuckingfast_batch {
+                &overrides
+            } else {
+                &[]
+            },
+        );
     }
 }
 
@@ -63,6 +90,8 @@ pub struct EngineOptions {
     pub disk: DiskPolicy,
     /// Initial limits for a database without saved limits.
     pub limits: Limits,
+    /// A starting profile for newly created databases, persisted before opening the queue.
+    pub new_profile_limits: Option<Limits>,
     /// Root directory for BitTorrent session persistence and cached metadata.
     pub data_dir: Option<PathBuf>,
     /// Initial BitTorrent session settings when not yet persisted in storage.
@@ -114,6 +143,7 @@ impl EngineOptions {
             temporary_directory: None,
             disk: DiskPolicy::default(),
             limits: Limits::default(),
+            new_profile_limits: None,
             data_dir: None,
             torrent: TorrentSettings::offline_ephemeral(),
             eager_torrent_session: false,
@@ -234,6 +264,7 @@ pub struct TorrentRuntimeProgress {
     pub seeders_connected: u32,
     pub eta_secs: Option<u64>,
     pub piece_count: u32,
+    pub checking_existing_pieces: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,13 +442,25 @@ impl EngineHandle {
             *directory = std::path::absolute(&directory)?;
         }
         let snapshot = recover_queue(&storage, recovery, directories).await?;
-        options.limits = snapshot
+        let saved_limits = snapshot
             .settings
             .get(LIMITS_KEY)
             .cloned()
             .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or(options.limits);
+            .transpose()?;
+        if let Some(limits) = saved_limits {
+            options.limits = limits;
+        } else if recovery == DatabaseRecovery::Created
+            && let Some(limits) = options.new_profile_limits
+        {
+            storage
+                .apply(vec![Change::SaveSetting {
+                    key: LIMITS_KEY.into(),
+                    value: serde_json::to_value(limits)?,
+                }])
+                .await?;
+            options.limits = limits;
+        }
         options.torrent = snapshot
             .settings
             .get(TORRENT_SETTINGS_KEY)

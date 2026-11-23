@@ -692,16 +692,7 @@ fn parse_mpd(bytes: &[u8]) -> Result<MpdDocument, MediaError> {
                     }
                     "Representation" => {
                         rep_seq += 1;
-                        let id = attr(e, "id").unwrap_or_else(|| format!("rep-{rep_seq}"));
-                        cur_rep = Some(Representation {
-                            id,
-                            bandwidth: attr_u64(e, "bandwidth").unwrap_or(0),
-                            width: attr_u32(e, "width"),
-                            height: attr_u32(e, "height"),
-                            codecs: attr(e, "codecs"),
-                            mime_type: attr(e, "mimeType"),
-                            ..Default::default()
-                        });
+                        cur_rep = Some(parse_representation_attrs(e, rep_seq));
                     }
                     "SegmentTemplate" => {
                         cur_tpl = Some(parse_segment_template_attrs(e));
@@ -737,6 +728,14 @@ fn parse_mpd(bytes: &[u8]) -> Result<MpdDocument, MediaError> {
             Ok(Event::Empty(ref e)) => {
                 let name = local_name(e);
                 match name.as_str() {
+                    "Representation" => {
+                        rep_seq += 1;
+                        if let Some(adapt) = &mut cur_adapt {
+                            adapt
+                                .representations
+                                .push(parse_representation_attrs(e, rep_seq));
+                        }
+                    }
                     "SegmentTemplate" => {
                         let tpl = parse_segment_template_attrs(e);
                         assign_template(&mut cur_rep, &mut cur_adapt, &mut cur_period, tpl);
@@ -834,6 +833,18 @@ fn parse_mpd(bytes: &[u8]) -> Result<MpdDocument, MediaError> {
         ));
     }
     Ok(mpd)
+}
+
+fn parse_representation_attrs(e: &BytesStart<'_>, sequence: usize) -> Representation {
+    Representation {
+        id: attr(e, "id").unwrap_or_else(|| format!("rep-{sequence}")),
+        bandwidth: attr_u64(e, "bandwidth").unwrap_or(0),
+        width: attr_u32(e, "width"),
+        height: attr_u32(e, "height"),
+        codecs: attr(e, "codecs"),
+        mime_type: attr(e, "mimeType"),
+        ..Default::default()
+    }
 }
 
 fn assign_template(

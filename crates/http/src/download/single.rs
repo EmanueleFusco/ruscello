@@ -34,7 +34,7 @@ pub(super) async fn download(
                     error
                 }
             })?;
-        if detect_page && looks_like_page(response.headers()) {
+        if detect_page && response.status().is_success() && looks_like_page(response.headers()) {
             return Err(HttpError::ExpiredRepresentation);
         }
         if response.status() != StatusCode::OK {

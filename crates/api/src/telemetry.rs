@@ -144,7 +144,9 @@ impl TelemetryState {
 
             downloads.push(DownloadDto {
                 id: dl.id.0,
+                id_string: dl.id.0.to_string(),
                 package_id: dl.package.map(|p| p.0),
+                package_id_string: dl.package.map(|p| p.0.to_string()),
                 filename: display_name(dl),
                 source_summary: source_summary(&dl.source),
                 file_type: file_type_name(dl.file_type.unwrap_or(ruscello_core::FileType::Other))
@@ -167,6 +169,7 @@ impl TelemetryState {
             .values()
             .map(|pkg| PackageDto {
                 id: pkg.id.0,
+                id_string: pkg.id.0.to_string(),
                 name: pkg.name.clone(),
             })
             .collect();

@@ -13,7 +13,12 @@ use serde::{Deserialize, Serialize};
 pub struct TorrentSettings {
     /// TCP listening port (`0` selects an OS-assigned ephemeral port).
     pub listen_port: u16,
+    /// Allow the preferred port to fall back to an OS-assigned port when occupied.
+    #[serde(default)]
+    pub fallback_listen_port: bool,
     pub enable_dht: bool,
+    /// Allow µTP connections alongside TCP.
+    pub enable_utp: bool,
     pub enable_pex: bool,
     pub enable_upnp: bool,
     pub enable_lsd: bool,
@@ -25,6 +30,8 @@ pub struct TorrentSettings {
     /// Stop seeding automatically once active seeding time reaches this many minutes.
     pub seed_time_limit_minutes: Option<u64>,
     pub max_peers_per_torrent: Option<NonZeroUsize>,
+    /// Budget shared by all torrents and outgoing metadata lookups.
+    pub max_global_peers: NonZeroUsize,
     /// Optional network interface name to bind all BitTorrent/DHT/tracker traffic to.
     pub bind_interface: Option<String>,
     /// Optional eMule/P2P IP blocklist (`http://`, `https://`, `file://`, or local path).
@@ -38,7 +45,9 @@ impl Default for TorrentSettings {
     fn default() -> Self {
         Self {
             listen_port: 6881,
+            fallback_listen_port: true,
             enable_dht: true,
+            enable_utp: false,
             enable_pex: true,
             enable_upnp: true,
             enable_lsd: true,
@@ -47,7 +56,8 @@ impl Default for TorrentSettings {
             upload_limit_bps: None,
             seed_ratio_millis: None,
             seed_time_limit_minutes: None,
-            max_peers_per_torrent: None,
+            max_peers_per_torrent: Some(Self::DEFAULT_MAX_PEERS_PER_TORRENT),
+            max_global_peers: Self::DEFAULT_MAX_GLOBAL_PEERS,
             bind_interface: None,
             blocklist_source: None,
             dht_bootstrap_addrs: None,
@@ -56,11 +66,16 @@ impl Default for TorrentSettings {
 }
 
 impl TorrentSettings {
+    pub const DEFAULT_MAX_PEERS_PER_TORRENT: NonZeroUsize = NonZeroUsize::MIN.saturating_add(99);
+    pub const DEFAULT_MAX_GLOBAL_PEERS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(499);
+
     /// Offline-friendly defaults used for local tests and fallback initialization.
     pub fn offline_ephemeral() -> Self {
         Self {
             listen_port: 0,
+            fallback_listen_port: false,
             enable_dht: false,
+            enable_utp: false,
             enable_pex: true,
             enable_upnp: false,
             enable_lsd: false,
@@ -69,7 +84,8 @@ impl TorrentSettings {
             upload_limit_bps: None,
             seed_ratio_millis: None,
             seed_time_limit_minutes: None,
-            max_peers_per_torrent: None,
+            max_peers_per_torrent: Some(Self::DEFAULT_MAX_PEERS_PER_TORRENT),
+            max_global_peers: Self::DEFAULT_MAX_GLOBAL_PEERS,
             bind_interface: None,
             blocklist_source: None,
             dht_bootstrap_addrs: Some(Vec::new()),
@@ -79,12 +95,15 @@ impl TorrentSettings {
     /// Returns whether changing from `self` to `other` requires recreating the underlying session.
     pub fn needs_session_restart(&self, other: &Self) -> bool {
         self.listen_port != other.listen_port
+            || self.fallback_listen_port != other.fallback_listen_port
             || self.enable_dht != other.enable_dht
+            || self.enable_utp != other.enable_utp
             || self.enable_upnp != other.enable_upnp
             || self.enable_lsd != other.enable_lsd
             || self.enable_pex != other.enable_pex
             || self.fastresume != other.fastresume
             || self.max_peers_per_torrent != other.max_peers_per_torrent
+            || self.max_global_peers != other.max_global_peers
             || self.bind_interface != other.bind_interface
             || self.blocklist_source != other.blocklist_source
             || self.dht_bootstrap_addrs != other.dht_bootstrap_addrs

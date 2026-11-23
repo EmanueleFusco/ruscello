@@ -461,16 +461,10 @@ async fn dash_mpd_segment_template_and_segment_list_mux_and_video_fallback() -> 
 <MPD type="static" mediaPresentationDuration="PT4.0S">
   <Period>
     <AdaptationSet mimeType="video/mp4" contentType="video">
-      <Representation id="v1080" bandwidth="4000000" width="1920" height="1080" codecs="avc1.640028">
-        <SegmentTemplate initialization="/dash/v1080/init.mp4" media="/dash/v1080/$Number$.m4s" startNumber="1" timescale="1000">
-          <SegmentTimeline><S t="0" d="2000" r="1"/></SegmentTimeline>
-        </SegmentTemplate>
-      </Representation>
-      <Representation id="v720" bandwidth="2000000" width="1280" height="720" codecs="avc1.4d401f">
-        <SegmentTemplate initialization="/dash/v720/init.mp4" media="/dash/v720/$Number$.m4s" startNumber="1" timescale="1000">
-          <SegmentTimeline><S t="0" d="2000" r="1"/></SegmentTimeline>
-        </SegmentTemplate>
-      </Representation>
+      <SegmentTemplate initialization="/dash/$RepresentationID$/init.mp4" media="/dash/$RepresentationID$/$Number$.m4s" startNumber="1" timescale="1000">
+        <SegmentTimeline><S t="0" d="2000" r="1"/></SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="v720" bandwidth="2000000" width="1280" height="720" codecs="avc1.4d401f"/>
     </AdaptationSet>
     <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
       <Representation id="a1" bandwidth="128000" codecs="mp4a.40.2">
@@ -528,7 +522,6 @@ async fn dash_mpd_segment_template_and_segment_list_mux_and_video_fallback() -> 
             url: &timeline_url,
             request: &MediaRequest {
                 kind: MediaKind::Dash,
-                format_selector: Some("720p".to_owned()),
                 ..MediaRequest::default()
             },
             session_headers: &headers,
