@@ -383,8 +383,7 @@ impl MaybeDualstackSocket<tokio::net::UdpSocket> {
 
     pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         #[cfg(any(target_os = "macos", test))]
-        let (size, addr) =
-            crate::receive::retry_network_errors(async || self.socket.recv_from(buf).await).await?;
+        let (size, addr) = crate::receive::recv_from(&self.socket, buf).await?;
         #[cfg(not(any(target_os = "macos", test)))]
         let (size, addr) = self.socket.recv_from(buf).await?;
         Ok((size, addr.try_to_ipv4()))
