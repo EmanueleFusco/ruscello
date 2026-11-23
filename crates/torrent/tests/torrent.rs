@@ -1289,10 +1289,18 @@ async fn disables_peer_exchange_without_breaking_extended_handshakes() -> TestRe
 
 #[tokio::test]
 async fn preferred_port_falls_back_but_fixed_port_fails_without_moving() -> TestResult {
+    // Use the session's address family so systems that separate IPv4 and IPv6 binds
+    // reliably report a conflict on the listener actually requested by the session.
     #[cfg(not(windows))]
-    let occupied = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+    let occupied = librqbit_dualstack_sockets::TcpListener::bind_tcp(
+        (Ipv6Addr::UNSPECIFIED, 0).into(),
+        librqbit_dualstack_sockets::BindOpts::default(),
+    )?;
     #[cfg(windows)]
     let occupied = bind_exclusive_dual_stack()?;
+    #[cfg(not(windows))]
+    let port = occupied.bind_addr().port();
+    #[cfg(windows)]
     let port = occupied.local_addr()?.port();
     let dir = TempDir::new()?;
     let mut settings = TorrentSettings {

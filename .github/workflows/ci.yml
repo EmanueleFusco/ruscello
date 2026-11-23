@@ -66,7 +66,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --workspace --locked --no-tests=pass
+      - run: cargo nextest run --workspace --locked --no-tests=pass --no-fail-fast
       - run: cargo test --workspace --doc --locked
 
   deny:
