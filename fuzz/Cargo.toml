@@ -15,6 +15,11 @@ ruscello-http = { path = "../crates/http", features = ["fuzzing"] }
 ruscello-media = { path = "../crates/media", features = ["fuzzing"] }
 ruscello-resolver = { path = "../crates/resolver" }
 
+# Cargo does not inherit patches from the workspace of a path dependency.
+[patch.crates-io]
+m3u8-rs = { path = "../vendor/m3u8-rs" }
+suppaftp = { path = "../vendor/suppaftp" }
+
 [[bin]]
 name = "content_disposition"
 path = "fuzz_targets/content_disposition.rs"
