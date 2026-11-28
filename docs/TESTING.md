@@ -105,6 +105,15 @@ leaves the other hosts' limits in effect and that lowering a cap lets in-flight 
 The HTTP integrity tests check that a per-file override follows the effective source after redirects,
 respects a tighter resolver cap, and gives unrelated mirrors the ordinary budget.
 
+The queue workflow verifies separate rate cells at the minimum window width, header and row alignment,
+column width persistence, and pointer placement and dismissal for the row context menu. The bandwidth controls
+display readable units and keep the stored values in bytes per second.
+
+`cargo test -p ruscello-torrent --test rate_limits` verifies a sub-block upload cap over TCP and µTP while
+seeding, with an uncapped concurrent download, and with a capped concurrent download. It also tests removing a
+cap while a block waits for tokens. Upload counters count torrent data sent to peers. TCP and µTP acknowledgments,
+BitTorrent control messages, and other traffic counted by OS network monitors are outside the payload cap.
+
 The BitTorrent transport regression uses a TCP listener that accepts a socket without completing the
 peer handshake and a UDP relay that drops the first two µTP SYNs. It checks that retransmissions
 keep the connection ID and sequence number, then exercises pause and resume under a one-peer budget.

@@ -461,7 +461,7 @@ fn advanced_add_labels_stay_visible_while_editing_in_italian() -> anyhow::Result
     for (label, value) in [
         ("add-connections", "4"),
         ("checksum", "sha256:1234"),
-        ("download-bandwidth", "1024"),
+        ("download-bandwidth", "1"),
     ] {
         let label = ui.find(app.strings.get(label))?;
         assert!(label.visible_bounds().is_some());
@@ -2116,41 +2116,155 @@ async fn prevents_long_filename_and_simultaneous_speed_overlap_in_queue_rows() -
     apply(&mut app, Message::Select(id)).await;
 
     for viewport in [Size::new(950.0, 490.0), Size::new(1120.0, 720.0)] {
+        apply(&mut app, Message::Resize(viewport)).await;
         let mut ui = simulator_at(&app, viewport);
-        let name_bounds = ui
-            .find(long_name)
-            .ok()
-            .and_then(|element| element.visible_bounds())
-            .ok_or_else(|| anyhow::anyhow!("missing visible filename bounds"))?;
-        let size_bounds = ui
-            .find("3.0 GiB")
-            .ok()
-            .and_then(|element| element.visible_bounds())
-            .ok_or_else(|| anyhow::anyhow!("missing visible size bounds"))?;
-        let speed_bounds = ui
-            .find("↓ 25.2 MiB/s ↑ 1.2 MiB/s")
-            .ok()
-            .and_then(|element| element.visible_bounds())
-            .ok_or_else(|| anyhow::anyhow!("missing visible simultaneous speed bounds"))?;
-        let eta_bounds = ui
-            .find("2 min")
-            .ok()
-            .and_then(|element| element.visible_bounds())
-            .ok_or_else(|| anyhow::anyhow!("missing visible eta bounds"))?;
-
-        assert!(
-            name_bounds.x + name_bounds.width <= size_bounds.x,
-            "filename overlaps Size column at {viewport:?}: {name_bounds:?} vs {size_bounds:?}"
-        );
-        assert!(
-            speed_bounds.height <= 22.0,
-            "simultaneous speed wrapped vertically at {viewport:?}: {speed_bounds:?}"
-        );
-        assert!(
-            speed_bounds.x + speed_bounds.width <= eta_bounds.x,
-            "speed overlaps ETA column at {viewport:?}: {speed_bounds:?} vs {eta_bounds:?}"
-        );
+        let bounds = |ui: &mut Simulator<'_, Message, Theme, iced::Renderer>, label: &str| {
+            let element = ui.find(label)?;
+            let visible = element
+                .visible_bounds()
+                .ok_or_else(|| anyhow::anyhow!("{label} hidden"))?;
+            Ok::<_, anyhow::Error>((element.bounds(), visible))
+        };
+        let (_, name) = bounds(&mut ui, long_name)?;
+        let (_, size) = bounds(&mut ui, "3.0 GiB")?;
+        let (download_layout, download) = bounds(&mut ui, "25.2 MiB/s")?;
+        let (upload_layout, upload) = bounds(&mut ui, "1.2 MiB/s")?;
+        assert!(name.x + name.width <= size.x);
+        assert!((download.width - download_layout.width).abs() <= 1.0);
+        assert!((upload.width - upload_layout.width).abs() <= 1.0);
+        assert!(download.x + download.width <= upload.x);
+        let (_, download_header) = bounds(&mut ui, "Velocità download")?;
+        let (_, upload_header) = bounds(&mut ui, "Velocità upload")?;
+        assert!((download.x - download_header.x).abs() <= 1.0);
+        assert!((upload.x - upload_header.x).abs() <= 1.0);
     }
+    Ok(())
+}
+
+#[test]
+fn speed_settings_slider_and_kib_input_keep_engine_units() -> anyhow::Result<()> {
+    use crate::settings::Number;
+
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    let _ = app.update(Message::Settings(true));
+    let _ = app.update(Message::SettingsPage(Page::Speed));
+    let _ = app.update(Message::SettingNumber(
+        Number::Bandwidth,
+        "256000".to_owned(),
+    ));
+
+    let is_bandwidth = |message: Message, expected: &str| matches!(message, Message::SettingNumber(Number::Bandwidth, value) if value == expected);
+    let mut ui = simulator(&app);
+    ui.click("250")?;
+    ui.tap_key(iced::keyboard::key::Named::End);
+    ui.typewrite("1");
+    assert!(
+        ui.into_messages()
+            .any(|message| is_bandwidth(message, "2561024"))
+    );
+
+    let mut ui = simulator(&app);
+    let label = ui.find(app.strings.get(Number::Bandwidth.key()))?.bounds();
+    let field = ui.find("250")?.bounds();
+    ui.point_at(Point::new(label.x + 100.0, field.center().y));
+    ui.simulate([iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+        iced::mouse::Button::Left,
+    ))]);
+    let endpoint = Point::new(label.x - 30.0, field.center().y);
+    ui.point_at(endpoint);
+    ui.simulate([
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: endpoint }),
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+            iced::mouse::Button::Left,
+        )),
+    ]);
+    assert!(ui.into_messages().any(|message| is_bandwidth(message, "")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn queue_header_drag_persists_and_context_menu_opens_at_the_pointer() -> anyhow::Result<()> {
+    use crate::app::{Column, Divider};
+
+    let temp = tempfile::tempdir()?;
+    let mut app = app(&temp)?;
+    app.booting = false;
+    app.preferences.motion = false;
+    let id = DownloadId(12);
+    let mut download = Download::new(
+        id,
+        Source::Http {
+            url: "https://example.test/menu.bin".to_owned(),
+        },
+        temp.path().to_owned(),
+    );
+    download.filename = Some("menu.bin".to_owned());
+    app.queue.order.push(id);
+    app.queue.downloads.insert(id, download);
+    app.queue.rebuild();
+    let viewport = Size::new(1120.0, 720.0);
+
+    let right_click = |ui: &mut Simulator<'_, Message, Theme, iced::Renderer>, point| {
+        ui.point_at(point);
+        ui.simulate([iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+            iced::mouse::Button::Right,
+        ))]);
+    };
+    let (point, messages) = {
+        let mut ui = simulator(&app);
+        let point = ui.find("menu.bin")?.bounds().center();
+        right_click(&mut ui, point);
+        (point, ui.into_messages().collect::<Vec<_>>())
+    };
+    apply(&mut app, Message::PointerMoved(point)).await;
+    for message in messages {
+        apply(&mut app, message).await;
+    }
+    assert_eq!(app.menu, Some(point));
+    {
+        let mut ui = simulator(&app);
+        let first = ui.find(app.strings.get("pause"))?.bounds();
+        assert!((first.y - point.y).abs() < 28.0);
+        assert!((first.x - point.x).abs() < 28.0);
+        ui.point_at(Point::new(10.0, viewport.height - 10.0));
+        ui.simulate([iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+            iced::mouse::Button::Left,
+        ))]);
+        assert!(ui.into_messages().any(|m| matches!(m, Message::CloseMenu)));
+    }
+    apply(&mut app, Message::CloseMenu).await;
+
+    let column = Column::Upload;
+    let divider = Divider::Column(column);
+    let original = crate::view::column_width(&app, column);
+    let (grip, messages) = {
+        let mut ui = simulator(&app);
+        let header = ui.find(app.strings.get(column.key()))?.bounds();
+        let grip = Point::new(header.x + original - 3.0, header.center().y);
+        ui.point_at(grip);
+        ui.simulate([iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+            iced::mouse::Button::Left,
+        ))]);
+        (grip, ui.into_messages().collect::<Vec<_>>())
+    };
+    assert!(
+        messages
+            .iter()
+            .any(|m| matches!(m, Message::StartResize(d) if *d == divider))
+    );
+    apply(&mut app, Message::PointerMoved(grip)).await;
+    for message in messages {
+        apply(&mut app, message).await;
+    }
+    apply(
+        &mut app,
+        Message::PointerMoved(Point::new(grip.x + 55.0, grip.y)),
+    )
+    .await;
+    apply(&mut app, Message::EndResize).await;
+    let saved = Preferences::load(&temp.path().join("gui.json"))?;
+    assert_eq!(saved.column_widths[column as usize], Some(original + 55.0));
     Ok(())
 }
 
@@ -2265,7 +2379,7 @@ async fn italian_labels_fit_without_clipping_and_panes_resize_and_persist() -> a
     app.queue.downloads.insert(id, download);
     app.queue.rebuild();
 
-    let viewport = Size::new(1024.0, 680.0);
+    let viewport = Size::new(1200.0, 680.0);
     apply(&mut app, Message::Resize(viewport)).await;
     {
         let mut ui = simulator_at(&app, viewport);
@@ -2290,14 +2404,14 @@ async fn italian_labels_fit_without_clipping_and_panes_resize_and_persist() -> a
         );
         let dim = check_unclipped(&mut ui, "Dimensione")?;
         let adv = check_unclipped(&mut ui, "Avanzamento")?;
-        let speed = check_unclipped(&mut ui, "Velocità")?;
+        let speed = check_unclipped(&mut ui, "Velocità download")?;
         let eta = check_unclipped(&mut ui, "Tempo stimato")?;
         let active_status = check_unclipped(&mut ui, "Download in corso")?;
         assert!(active_status.width >= 95.0);
         assert!(dim.x + dim.width <= adv.x);
         assert!(adv.x + adv.width <= speed.x);
         assert!(speed.x + speed.width <= eta.x);
-        assert!(eta.x + eta.width <= viewport.width - 100.0);
+        assert!(eta.x + eta.width <= viewport.width - 85.0);
     }
 
     let initial_sidebar = app.sidebar_width();

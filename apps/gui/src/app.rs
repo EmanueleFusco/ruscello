@@ -65,6 +65,7 @@ const MAX_SIDEBAR_WIDTH: f32 = 360.0;
 pub(crate) enum Divider {
     Sidebar,
     Details,
+    Column(Column),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -86,11 +87,9 @@ struct RowDragState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutomationTextField {
     CompletionCountdown,
-    OutsideSpeed,
     ScheduleName(usize),
     ScheduleStart(usize),
     ScheduleEnd(usize),
-    ScheduleSpeed(usize),
     ArchivePassword,
     ExternalExtractor,
     PostCommand,
@@ -107,7 +106,6 @@ pub(crate) enum TextTarget {
     GrabberSearch,
     AddConnections,
     AddChecksum,
-    AddBandwidth,
     CategoryName,
     CategoryRule,
     CookieSite,
@@ -165,34 +163,59 @@ pub(crate) enum Column {
     Speed,
     Eta,
     Status,
+    Upload,
+    Name,
 }
 
 impl Column {
-    pub(crate) const ALL: [Self; 5] = [
+    // The discriminants also identify the visibility bits stored in older profiles.
+    pub(crate) const ALL: [Self; 6] = [
         Self::Size,
         Self::Progress,
-        Self::Speed,
-        Self::Eta,
         Self::Status,
+        Self::Speed,
+        Self::Upload,
+        Self::Eta,
     ];
+
+    pub(crate) const COUNT: usize = 7;
 
     pub(crate) fn key(self) -> &'static str {
         match self {
+            Self::Name => "name",
             Self::Size => "size",
             Self::Progress => "progress",
-            Self::Speed => "speed",
+            Self::Speed => "column-download-speed",
+            Self::Upload => "column-upload-speed",
             Self::Eta => "eta",
             Self::Status => "status",
         }
     }
 
-    pub(crate) fn width(self) -> u32 {
+    pub(crate) fn default_width(self) -> f32 {
         match self {
-            Self::Size => 70,
-            Self::Progress => 80,
-            Self::Speed => 96,
-            Self::Eta => 94,
-            Self::Status => 116,
+            Self::Name => 104.0,
+            Self::Size => 76.0,
+            Self::Progress => 88.0,
+            Self::Speed => 112.0,
+            Self::Upload => 106.0,
+            Self::Eta => 98.0,
+            Self::Status => 122.0,
+        }
+    }
+
+    pub(crate) fn min_width(self) -> f32 {
+        match self {
+            Self::Name => self.default_width(),
+            Self::Speed | Self::Upload => 95.0,
+            _ => 48.0,
+        }
+    }
+
+    pub(crate) fn max_width(self) -> f32 {
+        match self {
+            Self::Name => 4096.0,
+            _ => 1600.0,
         }
     }
 
@@ -324,6 +347,7 @@ pub(crate) enum Message {
     Modifiers(keyboard::Modifiers),
     Shortcut(Shortcut),
     Menu(DownloadId),
+    CloseMenu,
     Hover(Option<DownloadId>),
     RowAction(Action),
     SingleAction(DownloadId, Action),
@@ -485,7 +509,7 @@ pub(crate) struct App {
     pub(crate) detail_tab: DetailTab,
     pub(crate) offset: f32,
     pub(crate) viewport_height: f32,
-    window_size: Size,
+    pub(crate) window_size: Size,
     cursor: Point,
     dragging: Option<DragState>,
     hovered_divider: Option<Divider>,
@@ -506,7 +530,7 @@ pub(crate) struct App {
     details_in_flight: bool,
     pub(crate) selection: BTreeSet<DownloadId>,
     modifiers: keyboard::Modifiers,
-    pub(crate) menu: Option<DownloadId>,
+    pub(crate) menu: Option<Point>,
     pub(crate) hovered: Option<DownloadId>,
     pub(crate) remove: Option<(Vec<DownloadId>, bool)>,
     deferred_inputs: Vec<String>,
@@ -1004,6 +1028,9 @@ impl App {
                     }
                     self.selection
                         .retain(|id| self.queue.downloads.contains_key(id));
+                    if self.selection.is_empty() {
+                        self.menu = None;
+                    }
                     if self
                         .torrent_details
                         .as_ref()
@@ -1300,6 +1327,7 @@ impl App {
                 self.window_size = size;
                 self.viewport_height = size.height;
                 self.text_menu = None;
+                self.menu = None;
             }
             Message::HoverDivider(divider) => self.hovered_divider = divider,
             Message::StartResize(divider) => {
@@ -1308,6 +1336,7 @@ impl App {
                 let initial = match divider {
                     Divider::Sidebar => self.sidebar_width(),
                     Divider::Details => self.expanded_details_height(),
+                    Divider::Column(column) => view::column_width(self, column),
                 };
                 self.dragging = Some(DragState {
                     divider,
@@ -1333,6 +1362,20 @@ impl App {
                                 .clamp(MIN_DETAILS_HEIGHT, max);
                             self.preferences.details_height = Some(height);
                         }
+                        Divider::Column(column) => {
+                            let delta = position.x - drag.origin.x;
+                            let name_index = Column::Name as usize;
+                            if delta != 0.0
+                                && column != Column::Name
+                                && self.preferences.column_widths[name_index].is_none()
+                            {
+                                self.preferences.column_widths[name_index] =
+                                    Some(view::column_width(self, Column::Name));
+                            }
+                            let width = (drag.initial + delta)
+                                .clamp(column.min_width(), column.max_width());
+                            self.preferences.column_widths[column as usize] = Some(width);
+                        }
                     }
                 } else if self.row_drag.is_some() {
                     self.update_row_drag();
@@ -1351,6 +1394,9 @@ impl App {
                 match divider {
                     Divider::Sidebar => self.preferences.sidebar_width = None,
                     Divider::Details => self.preferences.details_height = None,
+                    Divider::Column(column) => {
+                        self.preferences.column_widths[column as usize] = None
+                    }
                 }
                 return self.save_preferences();
             }
@@ -1494,6 +1540,7 @@ impl App {
             }
             Message::PasteIntoAdd(None) => {}
             Message::OpenTextMenu(target) => {
+                self.menu = None;
                 let pos = self.clamp_text_menu_pos(self.cursor);
                 self.text_menu = Some((target, pos));
                 return operation::focus(target.widget_id());
@@ -1937,6 +1984,9 @@ impl App {
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Shortcut(shortcut) => return self.shortcut(shortcut),
             Message::Menu(id) => {
+                if !self.queue.downloads.contains_key(&id) {
+                    return Task::none();
+                }
                 self.row_drag = None;
                 self.text_menu = None;
                 if !self.selection.contains(&id) {
@@ -1944,8 +1994,13 @@ impl App {
                     self.selection.insert(id);
                 }
                 self.queue.selected = Some(id);
-                self.menu = (self.menu != Some(id)).then_some(id);
+                if !self.detail_tab.allowed(self.selected_is_torrent()) {
+                    self.detail_tab = DetailTab::General;
+                }
+                self.menu = Some(self.cursor);
+                return self.sync_details_after_selection();
             }
+            Message::CloseMenu => self.menu = None,
             Message::RowAction(action) => return self.row_action(action),
             Message::Hover(id) => {
                 self.hovered = id;
@@ -3388,11 +3443,6 @@ impl App {
                 .as_ref()
                 .map(|dialog| dialog.checksum.clone())
                 .unwrap_or_default(),
-            TextTarget::AddBandwidth => self
-                .add
-                .as_ref()
-                .map(|dialog| dialog.bandwidth.clone())
-                .unwrap_or_default(),
             TextTarget::CategoryName => self.category_draft.name.clone(),
             TextTarget::CategoryRule => self.category_draft.rule.clone(),
             TextTarget::CookieSite => self.cookie_site.clone(),
@@ -3424,7 +3474,6 @@ impl App {
                     AutomationTextField::CompletionCountdown => {
                         draft.completion_countdown_secs.clone()
                     }
-                    AutomationTextField::OutsideSpeed => draft.outside_speed_bps.clone(),
                     AutomationTextField::ScheduleName(index) => draft
                         .schedule_rules
                         .get(index)
@@ -3439,11 +3488,6 @@ impl App {
                         .schedule_rules
                         .get(index)
                         .map(|r| r.end_hhmm.clone())
-                        .unwrap_or_default(),
-                    AutomationTextField::ScheduleSpeed(index) => draft
-                        .schedule_rules
-                        .get(index)
-                        .map(|r| r.speed_bps.clone())
                         .unwrap_or_default(),
                     AutomationTextField::ArchivePassword => draft.new_archive_password.clone(),
                     AutomationTextField::ExternalExtractor => draft.external_extractor_path.clone(),
@@ -3472,7 +3516,6 @@ impl App {
             TextTarget::GrabberSearch => self.update(Message::GrabberSearch(value)),
             TextTarget::AddConnections => self.update(Message::AddConnections(value)),
             TextTarget::AddChecksum => self.update(Message::AddChecksum(value)),
-            TextTarget::AddBandwidth => self.update(Message::AddBandwidth(value)),
             TextTarget::CategoryName => {
                 self.update(Message::CategoryEdit(settings::CategoryEdit::Name, value))
             }
@@ -3495,9 +3538,6 @@ impl App {
                     AutomationTextField::CompletionCountdown => {
                         AutomationMsg::CompletionCountdownChanged(value)
                     }
-                    AutomationTextField::OutsideSpeed => {
-                        AutomationMsg::OutsideHoursSpeedChanged(value)
-                    }
                     AutomationTextField::ScheduleName(index) => {
                         AutomationMsg::ScheduleRuleName(index, value)
                     }
@@ -3506,9 +3546,6 @@ impl App {
                     }
                     AutomationTextField::ScheduleEnd(index) => {
                         AutomationMsg::ScheduleRuleEnd(index, value)
-                    }
-                    AutomationTextField::ScheduleSpeed(index) => {
-                        AutomationMsg::ScheduleRuleSpeedChanged(index, value)
                     }
                     AutomationTextField::ArchivePassword => {
                         AutomationMsg::ArchivePasswordInput(value)

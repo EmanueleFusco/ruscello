@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Fill, Padding, Theme, mouse,
+    Alignment, Element, Fill, Padding, Point, Theme, mouse,
     widget::{
         self, button, column, container, mouse_area, progress_bar, row, rule, space, stack, text,
         text_editor, tooltip,
@@ -29,6 +29,11 @@ const ROW_ACTION_WIDTH: u32 = 22;
 const ROW_ACTIONS_WIDTH: u32 = ROW_ACTION_WIDTH * 4;
 const TABLE_CELL_GAP: u32 = 6;
 const TABLE_RIGHT_PADDING: u32 = 8;
+const TABLE_LEFT_PADDING: u32 = 2;
+const ROW_CHECK_WIDTH: u32 = 22;
+const ROOT_PADDING: u16 = 14;
+const ROW_MENU_WIDTH: f32 = 228.0;
+const ROW_MENU_ITEM_HEIGHT: f32 = 28.0;
 const SPLITTER_SIZE: f32 = 10.0;
 
 pub(crate) fn queue_id() -> widget::Id {
@@ -114,28 +119,50 @@ pub(crate) fn main(app: &App) -> Element<'_, Message> {
             }),
         );
     }
-    let root = container(body).padding(14).width(Fill).height(Fill);
-    if let Some((target, pos)) = app.text_menu {
-        stack![
-            root,
-            mouse_area(space::horizontal().width(Fill).height(Fill))
-                .on_press(Message::CloseTextMenu)
-                .on_right_press(Message::CloseTextMenu),
-            container(text_context_menu(app, target))
-                .padding(Padding {
-                    left: pos.x,
-                    top: pos.y,
-                    ..Padding::ZERO
-                })
-                .width(Fill)
-                .height(Fill),
-        ]
+    let root = container(body)
+        .padding(ROOT_PADDING)
         .width(Fill)
-        .height(Fill)
-        .into()
+        .height(Fill);
+    if let Some((target, pos)) = app.text_menu {
+        anchored_menu(
+            root.into(),
+            text_context_menu(app, target),
+            pos,
+            Message::CloseTextMenu,
+        )
+    } else if let Some(pos) = app.menu {
+        let (menu, pos) = context_menu(app, pos);
+        anchored_menu(root.into(), menu, pos, Message::CloseMenu)
     } else {
         root.into()
     }
+}
+
+fn anchored_menu<'a>(
+    root: Element<'a, Message>,
+    menu: Element<'a, Message>,
+    pos: Point,
+    close: Message,
+) -> Element<'a, Message> {
+    stack![
+        root,
+        widget::opaque(
+            mouse_area(space::horizontal().width(Fill).height(Fill))
+                .on_press(close.clone())
+                .on_right_press(close),
+        ),
+        container(widget::opaque(menu))
+            .padding(Padding {
+                left: pos.x,
+                top: pos.y,
+                ..Padding::ZERO
+            })
+            .width(Fill)
+            .height(Fill)
+    ]
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 fn toolbar(app: &App) -> Element<'_, Message> {
@@ -442,7 +469,7 @@ fn filter(
 }
 
 fn center(app: &App) -> Element<'_, Message> {
-    let mut table = column![header(app)].width(Fill).height(Fill);
+    let mut table = column![].width(Fill).height(Fill);
     if app.show_columns {
         let chrome_opacity = app.chrome_opacity();
         let controls = Column::ALL.into_iter().fold(
@@ -460,18 +487,24 @@ fn center(app: &App) -> Element<'_, Message> {
             },
         );
         table = table.push(
-            container(controls.align_y(Alignment::Center))
+            container(theme::horizontal(controls.align_y(Alignment::Center)))
                 .padding([4, 10])
                 .width(Fill)
                 .style(theme::inset),
         );
     }
-    table = table.push(download_list(app));
-    if app.selection.len() >= 2 && app.menu.is_none() {
+    table = table.push(
+        theme::horizontal(
+            column![header(app), download_list(app)]
+                .width(table_width(app))
+                .height(Fill),
+        )
+        .spacing(0)
+        .width(Fill)
+        .height(Fill),
+    );
+    if app.selection.len() >= 2 {
         table = table.push(selection_bar(app));
-    }
-    if app.menu.is_some() {
-        table = table.push(context_menu(app));
     }
     let middle: Element<'_, Message> = if app.preferences.details {
         horizontal_splitter(app)
@@ -500,6 +533,75 @@ fn columns(app: &App) -> impl Iterator<Item = Column> + '_ {
         .filter(|column| app.preferences.columns & column.mask() != 0)
 }
 
+fn fixed_column_width(app: &App, column: Column) -> f32 {
+    app.preferences.column_widths[column as usize]
+        .filter(|width| width.is_finite())
+        .map_or_else(
+            || column.default_width(),
+            |width| width.clamp(column.min_width(), column.max_width()),
+        )
+}
+
+fn table_width_without_name(app: &App) -> f32 {
+    let cell_widths: f32 = columns(app)
+        .map(|column| fixed_column_width(app, column) + TABLE_CELL_GAP as f32)
+        .sum();
+    cell_widths
+        + (ROW_CHECK_WIDTH
+            + TABLE_LEFT_PADDING
+            + TABLE_RIGHT_PADDING
+            + ROW_ACTIONS_WIDTH
+            + theme::SCROLLBAR_GUTTER) as f32
+}
+
+pub(crate) fn column_width(app: &App, column: Column) -> f32 {
+    let width = fixed_column_width(app, column);
+    if column == Column::Name && app.preferences.column_widths[column as usize].is_none() {
+        let available = app.window_size.width
+            - (2 * ROOT_PADDING + 2) as f32
+            - SPLITTER_SIZE
+            - app.sidebar_width();
+        (available - table_width_without_name(app)).clamp(width, column.max_width())
+    } else {
+        width
+    }
+}
+
+fn table_width(app: &App) -> f32 {
+    table_width_without_name(app) + column_width(app, Column::Name)
+}
+
+fn header_cell(app: &App, column: Column) -> Element<'_, Message> {
+    let width = column_width(app, column);
+    let divider = Divider::Column(column);
+    let (hovered, dragging) = app.divider_state(divider);
+    let label = container(
+        text(app.strings.get(column.key()))
+            .size(12)
+            .wrapping(text::Wrapping::None)
+            .style(muted),
+    )
+    .padding(Padding {
+        right: 6.0,
+        ..Padding::ZERO
+    })
+    .width(width)
+    .height(Fill)
+    .align_y(Alignment::Center)
+    .clip(true);
+    let line = container(space::horizontal())
+        .width(2)
+        .height(Fill)
+        .style(move |theme| theme::splitter_handle(theme, hovered, dragging));
+    let grip = mouse_area(container(line).center_x(6).height(Fill))
+        .on_press(Message::StartResize(divider))
+        .on_right_press(Message::ResetDivider(divider))
+        .on_enter(Message::HoverDivider(Some(divider)))
+        .on_exit(Message::HoverDivider(None))
+        .interaction(mouse::Interaction::ResizingHorizontally);
+    stack![label, container(grip).align_right(width).height(Fill)].into()
+}
+
 fn header(app: &App) -> Element<'_, Message> {
     let select_all = tooltip(
         container(
@@ -508,49 +610,24 @@ fn header(app: &App) -> Element<'_, Message> {
                 .spacing(0)
                 .on_toggle(|_| Message::ToggleSelectAll),
         )
-        .width(18)
-        .center_x(18),
+        .center_x(ROW_CHECK_WIDTH),
         container(text(app.strings.get("select-all")).size(12))
             .padding(6)
             .style(theme::panel),
         tooltip::Position::Bottom,
     )
     .delay(std::time::Duration::from_millis(550));
-    let mut cells = row![
-        select_all,
-        container(
-            text(app.strings.get("name"))
-                .size(12)
-                .wrapping(text::Wrapping::None)
-                .style(muted)
-        )
+    let cells = std::iter::once(Column::Name)
+        .chain(columns(app))
+        .fold(row![].spacing(TABLE_CELL_GAP), |cells, column| {
+            cells.push(header_cell(app, column))
+        });
+    let header = container(row![select_all, cells].align_y(Alignment::Center))
+        .width(Fill)
+        .height(32)
         .padding(Padding {
-            right: 8.0,
+            left: TABLE_LEFT_PADDING as f32,
             ..Padding::ZERO
-        })
-        .clip(true)
-        .width(Fill)
-    ]
-    .spacing(TABLE_CELL_GAP)
-    .align_y(Alignment::Center);
-    for column in columns(app) {
-        cells = cells.push(
-            container(
-                text(app.strings.get(column.key()))
-                    .size(12)
-                    .wrapping(text::Wrapping::None)
-                    .style(muted),
-            )
-            .clip(true)
-            .width(column.width()),
-        );
-    }
-    let header = container(cells)
-        .width(Fill)
-        .padding(Padding {
-            left: 4.0,
-            right: (TABLE_RIGHT_PADDING + ROW_ACTIONS_WIDTH + theme::SCROLLBAR_GUTTER) as f32,
-            ..Padding::new(9.0)
         })
         .style(theme::inset);
     mouse_area(header)
@@ -659,13 +736,18 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             .spacing(6)
         )
         .padding(Padding {
+            left: if download.package.is_some() {
+                12.0
+            } else {
+                0.0
+            },
             right: 8.0,
             ..Padding::ZERO
         })
         .height(Fill)
         .align_y(Alignment::Center)
         .clip(true)
-        .width(Fill)
+        .width(column_width(app, Column::Name))
     ]
     .spacing(TABLE_CELL_GAP)
     .align_y(Alignment::Center);
@@ -706,22 +788,22 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
                 .spacing(6)
                 .into()
             }
-            Column::Speed => {
-                let both = speed > 0 && upload > 0;
-                let label = if both {
-                    format!("↓ {} ↑ {}", rate(l, speed), rate(l, upload))
-                } else if upload > 0 {
-                    format!("↑ {}", rate(l, upload))
-                } else if speed > 0 {
-                    rate(l, speed)
+            Column::Speed | Column::Upload => {
+                let value = if column == Column::Speed {
+                    speed
                 } else {
-                    l.get("unknown")
+                    upload
                 };
-                text(label)
-                    .size(if both { 11 } else { 12 })
-                    .wrapping(text::Wrapping::None)
-                    .into()
+                text(if value == 0 {
+                    l.get("unknown")
+                } else {
+                    rate(l, value)
+                })
+                .size(12)
+                .wrapping(text::Wrapping::None)
+                .into()
             }
+            Column::Name => continue,
             Column::Eta => text(
                 q.eta_secs(id)
                     .map_or_else(|| l.get("unknown"), |secs| duration(l, secs)),
@@ -739,7 +821,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
         };
         cells = cells.push(
             container(content)
-                .width(column.width())
+                .width(column_width(app, column))
                 .height(Fill)
                 .align_y(Alignment::Center)
                 .clip(true),
@@ -751,7 +833,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             .spacing(0)
             .on_toggle(move |_| Message::ToggleSelect(id)),
     )
-    .width(22)
+    .width(ROW_CHECK_WIDTH)
     .height(ROW_HEIGHT)
     .align_y(Alignment::Center)
     .padding(Padding {
@@ -766,11 +848,7 @@ fn download_row<'a>(app: &'a App, download: &Download) -> Element<'a, Message> {
             .width(Fill)
             .height(ROW_HEIGHT)
             .padding(Padding {
-                left: if download.package.is_some() {
-                    14.0
-                } else {
-                    2.0
-                },
+                left: TABLE_LEFT_PADDING as f32,
                 right: TABLE_RIGHT_PADDING as f32,
                 top: 4.0,
                 bottom: 4.0,
@@ -1287,9 +1365,17 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             .size(12)
             .wrapping(text::Wrapping::None),
         icon('\u{e04a}').size(14).style(muted),
-        text(l.with("upload-rate", [("speed", rate(l, q.total_upload_speed()))]))
-            .size(12)
-            .wrapping(text::Wrapping::None),
+        tooltip(
+            text(l.with("upload-rate", [("speed", rate(l, q.total_upload_speed()))]))
+                .size(12)
+                .wrapping(text::Wrapping::None),
+            container(text(l.get("torrent-upload-payload-hint")).size(12))
+                .max_width(300)
+                .padding(7)
+                .style(theme::panel),
+            tooltip::Position::Top,
+        )
+        .delay(std::time::Duration::from_millis(550)),
         rule::vertical(1).style(theme::separator),
         text(speed)
             .size(12)
@@ -1374,6 +1460,120 @@ pub(crate) fn size(l: &Strings, bytes: u64) -> String {
 
 fn rate(l: &Strings, bytes: u64) -> String {
     l.with("rate", [("size", size(l, bytes))])
+}
+
+// Give smaller caps finer control while keeping multi-gigabit rates in reach.
+const RATE_STEPS: u16 = 384;
+
+fn slider_rate(step: u16) -> u64 {
+    if step <= 64 {
+        return u64::from(step) * 1024;
+    }
+    let offset = step - 64;
+    let band = 65_536_u64 << (offset / 16);
+    band + band / 16 * u64::from(offset % 16)
+}
+
+fn slider_step(bytes: u64) -> u16 {
+    let mut low = 0;
+    let mut high = RATE_STEPS;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if slider_rate(mid) < bytes {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    if low > 0
+        && bytes.saturating_sub(slider_rate(low - 1)) < slider_rate(low).saturating_sub(bytes)
+    {
+        low - 1
+    } else {
+        low
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn rate_slider_steps_are_monotonic_and_round_trip() {
+    assert_eq!(slider_rate(0), 0);
+    assert_eq!(slider_rate(25), 25 * 1024);
+    for step in 1..=RATE_STEPS {
+        let rate = slider_rate(step);
+        assert!(rate > slider_rate(step - 1));
+        assert_eq!(slider_step(rate), step);
+    }
+    assert_eq!(slider_rate(slider_step(1024 * 1024)), 1024 * 1024);
+    assert!(slider_rate(slider_step(u64::from(u32::MAX))) >= u64::from(u32::MAX));
+}
+
+pub(crate) fn speed_control<'a>(
+    l: &Strings,
+    label: &'static str,
+    value: &str,
+    unlimited: Option<&'static str>,
+    max: u64,
+    on_change: impl Fn(String) -> Message + Clone + 'a,
+) -> Element<'a, Message> {
+    let min = u16::from(unlimited.is_none());
+    let max_step = slider_step(max);
+    let bytes = value.trim().parse::<u64>().unwrap_or_default();
+    let position = if bytes > 0 {
+        slider_step(bytes).clamp(1, max_step)
+    } else {
+        min
+    };
+    let shown = if bytes == 0 && unlimited.is_some() {
+        l.get("rate-unlimited")
+    } else {
+        rate(l, bytes)
+    };
+    let precise = if bytes > 0 && bytes.is_multiple_of(1024) {
+        (bytes / 1024).to_string()
+    } else {
+        String::new()
+    };
+    let previous = value.to_owned();
+    let change_slider = on_change.clone();
+    column![
+        row![
+            text(l.get(label)).size(13).width(Fill),
+            text(shown).size(13).style(muted),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        row![
+            widget::slider(min..=max_step, position, move |step| {
+                let value = if step == 0 {
+                    unlimited.unwrap_or_default().to_owned()
+                } else {
+                    slider_rate(step).min(max).to_string()
+                };
+                change_slider(value)
+            }),
+            theme::field("", &precise).width(88).on_input(move |value| {
+                let value = if value.is_empty() || (value == "0" && unlimited.is_some()) {
+                    unlimited.unwrap_or_default().to_owned()
+                } else if let Ok(kib) = value.parse::<u64>() {
+                    kib.checked_mul(1024)
+                        .filter(|bytes| *bytes <= max && *bytes > 0)
+                        .map_or_else(|| previous.clone(), |bytes| bytes.to_string())
+                } else {
+                    previous.clone()
+                };
+                on_change(value)
+            }),
+            text(l.with("rate", [("size", "KiB".to_owned())]))
+                .size(12)
+                .style(muted),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    ]
+    .spacing(5)
+    .width(Fill)
+    .into()
 }
 
 fn duration(l: &Strings, seconds: u64) -> String {
@@ -1792,18 +1992,17 @@ fn add_dialog<'a>(app: &'a App, dialog: &'a crate::add::Dialog) -> Element<'a, M
                 ]
                 .spacing(5)
                 .width(Fill),
-                column![
-                    text(l.get("download-bandwidth")).size(13).style(muted),
-                    context_field(
-                        TextTarget::AddBandwidth,
-                        theme::field("", &dialog.bandwidth).on_input(Message::AddBandwidth),
-                    ),
-                ]
-                .spacing(5)
-                .width(Fill),
             ]
             .spacing(8),
         );
+        advanced = advanced.push(speed_control(
+            l,
+            "download-bandwidth",
+            &dialog.bandwidth,
+            Some(""),
+            u64::MAX,
+            Message::AddBandwidth,
+        ));
     }
     let sources = column![
         row![
@@ -2089,7 +2288,7 @@ fn score_reason(reason: ScoreReason) -> &'static str {
     }
 }
 
-fn context_menu(app: &App) -> Element<'_, Message> {
+fn context_menu(app: &App, cursor: Point) -> (Element<'_, Message>, Point) {
     use ruscello_core::Priority;
     let l = &app.strings;
     let chrome_opacity = app.chrome_opacity();
@@ -2112,17 +2311,14 @@ fn context_menu(app: &App) -> Element<'_, Message> {
                 .get(id)
                 .is_some_and(|download| download.status() == Status::Seeding)
         });
-    let mut actions = row![].spacing(4);
+    let mut actions = Vec::new();
     if app.selection.iter().any(|id| {
         app.queue
             .downloads
             .get(id)
             .is_some_and(|download| download.status() == Status::WaitingUser)
     }) {
-        actions = actions.push(
-            theme::action(text(l.get("open-verification")).size(12))
-                .on_press(Message::RowAction(Action::Verify)),
-        );
+        actions.push(("open-verification", Action::Verify));
     }
     let selected_only_completed_torrent = !app.selection.is_empty()
         && app.selection.iter().all(|id| {
@@ -2154,22 +2350,26 @@ fn context_menu(app: &App) -> Element<'_, Message> {
     } else {
         "pause-resume"
     };
-    actions = actions.push(
-        theme::action(text(l.get(pause_resume_key)).size(12))
-            .on_press(Message::RowAction(Action::TogglePause)),
-    );
+    if app.selection.iter().any(|id| {
+        app.queue.downloads.get(id).is_some_and(|download| {
+            crate::actions::can_pause(download.status())
+                || crate::actions::can_resume_download(download)
+        })
+    }) {
+        actions.push((pause_resume_key, Action::TogglePause));
+    }
     if selected_stoppable {
         let stop_key = if selected_only_seeding {
             "stop-seeding"
         } else {
             "stop"
         };
-        actions = actions.push(
-            theme::action(text(l.get(stop_key)).size(12))
-                .on_press(Message::RowAction(Action::Stop)),
-        );
+        actions.push((stop_key, Action::Stop));
     }
-    for (key, action) in [
+    if selected_torrent {
+        actions.push(("force-recheck", Action::ForceRecheck));
+    }
+    actions.extend([
         ("open-file", Action::OpenFile),
         ("open-folder", Action::OpenFolder),
         ("copy-link", Action::CopyLink),
@@ -2179,27 +2379,36 @@ fn context_menu(app: &App) -> Element<'_, Message> {
         ("move-up", Action::MoveUp),
         ("move-down", Action::MoveDown),
         ("remove", Action::Cancel),
-    ] {
-        actions = actions.push(
-            theme::action(text(l.get(key)).size(12))
-                .on_press(Message::RowAction(action))
-                .style(move |theme, state| match action {
-                    Action::Cancel => theme::danger(theme, state),
-                    _ => theme::secondary(theme, state),
-                }),
-        );
-    }
-    if selected_torrent {
-        actions = actions.push(
-            theme::action(text(l.get("force-recheck")).size(12))
-                .on_press(Message::RowAction(Action::ForceRecheck)),
-        );
-    }
-    container(theme::horizontal(actions).width(Fill))
-        .width(Fill)
+    ]);
+    let height = (ROW_MENU_ITEM_HEIGHT * actions.len() as f32 + 12.0)
+        .min((app.window_size.height - 16.0).max(1.0));
+    let pos = Point::new(
+        cursor
+            .x
+            .clamp(8.0, (app.window_size.width - ROW_MENU_WIDTH - 8.0).max(8.0)),
+        cursor
+            .y
+            .clamp(8.0, (app.window_size.height - height - 8.0).max(8.0)),
+    );
+    let items = column(actions.into_iter().map(|(key, action)| {
+        button(text(l.get(key)).size(13).wrapping(text::Wrapping::None))
+            .padding([4, 10])
+            .width(Fill)
+            .height(ROW_MENU_ITEM_HEIGHT)
+            .style(move |theme, state| match action {
+                Action::Cancel => theme::danger(theme, state),
+                _ => theme::selection_plain(theme, state),
+            })
+            .on_press(Message::RowAction(action))
+            .into()
+    }))
+    .width(Fill);
+    let menu = container(theme::vertical(items).width(Fill).height(Fill))
+        .width(ROW_MENU_WIDTH)
+        .height(height)
         .style(move |theme| theme::animated_panel(theme, None, chrome_opacity))
-        .padding(6)
-        .into()
+        .padding(6);
+    (menu.into(), pos)
 }
 
 fn selection_bar(app: &App) -> Element<'_, Message> {
