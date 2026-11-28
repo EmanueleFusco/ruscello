@@ -1,4 +1,3 @@
-use arc_swap::ArcSwapOption;
 use futures::future::BoxFuture;
 use governor::DefaultDirectRateLimiter as RateLimiter;
 use governor::Quota;
@@ -6,6 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 /// Optional request budget shared with other protocols by an embedding application.
 pub type DownloadBudget = Arc<dyn Fn(NonZeroU32) -> BoxFuture<'static, ()> + Send + Sync>;
@@ -17,43 +17,57 @@ pub struct LimitsConfig {
 }
 
 struct Limit {
-    limiter: ArcSwapOption<RateLimiter>,
-    current_bps: std::sync::atomic::AtomicU32,
+    config: watch::Sender<Option<(NonZeroU32, Arc<RateLimiter>)>>,
 }
 
 impl Limit {
-    fn new_inner(bps: Option<NonZeroU32>) -> Option<Arc<RateLimiter>> {
-        let bps = bps?;
-        Some(Arc::new(RateLimiter::direct(Quota::per_second(bps))))
+    fn config(bps: Option<NonZeroU32>) -> Option<(NonZeroU32, Arc<RateLimiter>)> {
+        bps.map(|bps| (bps, Arc::new(RateLimiter::direct(Quota::per_second(bps)))))
     }
 
     fn new(bps: Option<NonZeroU32>) -> Self {
-        use std::sync::atomic::AtomicU32;
         Self {
-            limiter: ArcSwapOption::new(Self::new_inner(bps)),
-            current_bps: AtomicU32::new(bps.map(|v| v.get()).unwrap_or(0)),
+            config: watch::Sender::new(Self::config(bps)),
         }
     }
 
     async fn acquire(&self, size: NonZeroU32) -> crate::Result<()> {
-        let lim = self.limiter.load().clone();
-        if let Some(rl) = lim.as_ref() {
-            rl.until_n_ready(size).await?;
+        if self.config.borrow().is_none() {
+            return Ok(());
         }
-        Ok(())
+        let mut config = self.config.subscribe();
+        let mut remaining = size.get();
+        loop {
+            let Some((bps, limiter)) = config.borrow_and_update().clone() else {
+                return Ok(());
+            };
+            // Governor rejects requests larger than the bucket's burst capacity.
+            let Some(batch) = NonZeroU32::new(remaining.min(bps.get())) else {
+                return Ok(());
+            };
+            tokio::select! {
+                biased;
+                _ = config.changed() => {}
+                result = limiter.until_n_ready(batch) => {
+                    result?;
+                    remaining -= batch.get();
+                }
+            }
+        }
     }
 
     fn set(&self, limit: Option<NonZeroU32>) {
-        use std::sync::atomic::Ordering;
-        let new = Self::new_inner(limit);
-        self.limiter.swap(new);
-        self.current_bps
-            .store(limit.map(|v| v.get()).unwrap_or(0), Ordering::Relaxed);
+        self.config.send_if_modified(|current| {
+            if current.as_ref().map(|(bps, _)| *bps) == limit {
+                return false;
+            }
+            *current = Self::config(limit);
+            true
+        });
     }
 
     fn get(&self) -> Option<NonZeroU32> {
-        use std::sync::atomic::Ordering;
-        NonZeroU32::new(self.current_bps.load(Ordering::Relaxed))
+        self.config.borrow().as_ref().map(|(bps, _)| *bps)
     }
 }
 
