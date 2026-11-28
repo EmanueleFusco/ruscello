@@ -1059,9 +1059,9 @@ dependencies = [
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "percent-encoding",
  "time",
@@ -6057,7 +6057,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "ruscello-api"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -6084,7 +6084,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-browser"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "cookie",
  "rusqlite",
@@ -6099,7 +6099,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-cli"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -6119,7 +6119,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -6127,7 +6127,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-engine"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -6170,7 +6170,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-gui"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -6212,7 +6212,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-http"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -6244,7 +6244,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-media"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aes",
  "bytes",
@@ -6273,7 +6273,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-platform"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "directories",
  "ruscello-core",
@@ -6290,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-resolver"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -6316,7 +6316,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-storage"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "ruscello-core",
  "rusqlite",
@@ -6330,7 +6330,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-testkit"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "axum",
  "futures-util",
@@ -6345,7 +6345,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-torrent"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "bytes",
  "librqbit",
@@ -6365,7 +6365,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-webview"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "cookie",

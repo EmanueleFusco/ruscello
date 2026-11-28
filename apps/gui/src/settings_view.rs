@@ -15,7 +15,7 @@ use crate::{
     },
     theme,
     updater::UpdateStatus,
-    view::{context_field, heading, muted, option},
+    view::{context_field, heading, muted, option, speed_control},
 };
 
 pub(crate) fn view(app: &App) -> Element<'_, Message> {
@@ -298,8 +298,22 @@ fn connection_overrides(app: &App) -> Element<'_, Message> {
 
 fn speed(app: &App) -> Element<'_, Message> {
     column![
-        number(app, Number::Bandwidth),
-        number(app, Number::Alternate),
+        speed_control(
+            &app.strings,
+            Number::Bandwidth.key(),
+            &app.settings_draft.fields[Number::Bandwidth.index()],
+            Some(""),
+            u64::MAX,
+            |value| Message::SettingNumber(Number::Bandwidth, value),
+        ),
+        speed_control(
+            &app.strings,
+            Number::Alternate.key(),
+            &app.settings_draft.fields[Number::Alternate.index()],
+            None,
+            u64::MAX,
+            |value| Message::SettingNumber(Number::Alternate, value),
+        ),
         save(app)
     ]
     .spacing(10)
@@ -400,21 +414,14 @@ fn automation_schedule_section(app: &App) -> Element<'_, Message> {
     ]
     .spacing(8);
     if draft.outside_mode == OutsideHoursMode::LimitSpeed {
-        section = section.push(
-            row![
-                text(l.get("schedule-speed-limit")).width(220),
-                context_field(
-                    TextTarget::Automation(AutomationTextField::OutsideSpeed),
-                    theme::field(&l.get("bytes-per-sec-hint"), &draft.outside_speed_bps)
-                        .width(160)
-                        .on_input(|val| Message::Automation(
-                            AutomationMsg::OutsideHoursSpeedChanged(val)
-                        )),
-                ),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(8),
-        );
+        section = section.push(speed_control(
+            l,
+            "schedule-speed-limit",
+            &draft.outside_speed_bps,
+            Some("0"),
+            u64::MAX,
+            |value| Message::Automation(AutomationMsg::OutsideHoursSpeedChanged(value)),
+        ));
     }
     for (index, rule) in draft.schedule_rules.iter().enumerate() {
         section = section.push(schedule_rule_card(app, index, rule));
@@ -500,21 +507,14 @@ fn schedule_rule_card<'a>(
     ]
     .spacing(6);
     if rule.mode == ScheduleRuleMode::SpeedLimit {
-        card = card.push(
-            row![
-                text(l.get("schedule-speed-limit")).width(200),
-                context_field(
-                    TextTarget::Automation(AutomationTextField::ScheduleSpeed(index)),
-                    theme::field(&l.get("bytes-per-sec-hint"), &rule.speed_bps)
-                        .width(160)
-                        .on_input(move |val| {
-                            Message::Automation(AutomationMsg::ScheduleRuleSpeedChanged(index, val))
-                        }),
-                ),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(8),
-        );
+        card = card.push(speed_control(
+            l,
+            "schedule-speed-limit",
+            &rule.speed_bps,
+            Some("0"),
+            u64::MAX,
+            move |value| Message::Automation(AutomationMsg::ScheduleRuleSpeedChanged(index, value)),
+        ));
     }
     container(card)
         .padding(10)
@@ -768,16 +768,6 @@ fn torrent(app: &App) -> Element<'_, Message> {
     for (key, value, field) in [
         ("torrent-port", &preferences.port, TorrentField::Port),
         (
-            "torrent-download-limit",
-            &preferences.download_limit,
-            TorrentField::DownloadLimit,
-        ),
-        (
-            "torrent-upload-limit",
-            &preferences.upload_limit,
-            TorrentField::UploadLimit,
-        ),
-        (
             "torrent-ratio",
             &preferences.seed_ratio,
             TorrentField::Ratio,
@@ -817,6 +807,27 @@ fn torrent(app: &App) -> Element<'_, Message> {
             .align_y(Alignment::Center)
             .spacing(8),
         );
+    }
+    for (key, value, field) in [
+        (
+            "torrent-download-limit",
+            &preferences.download_limit,
+            TorrentField::DownloadLimit,
+        ),
+        (
+            "torrent-upload-limit",
+            &preferences.upload_limit,
+            TorrentField::UploadLimit,
+        ),
+    ] {
+        controls = controls.push(speed_control(
+            l,
+            key,
+            value,
+            Some(""),
+            u64::from(u32::MAX),
+            move |value| Message::TorrentField(field, value),
+        ));
     }
     #[cfg(windows)]
     {

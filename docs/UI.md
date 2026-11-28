@@ -44,11 +44,13 @@ rather than cluttering toolbars.
 
 - **Sidebar** with three sections (*Status*, *File Types*, *Categories*) and item counters; sections act as
   combinable filters (e.g., *Active* + *Video*). Optional fourth *Tags* section shown only if the user creates tags.
-- **Virtualized list** (handles thousands of rows smoothly); configurable columns via header right-click;
-  expandable Packages; file-type icon next to the name; slim progress bar colored by state
+- **Virtualized list** (handles thousands of rows smoothly). Download and upload have separate columns.
+  Drag the header dividers to resize, right-click a divider to restore its width, and right-click a header label
+  to configure visibility. The header and rows scroll horizontally together.
+  Packages expand in place. Rows show a file-type icon and a slim progress bar colored by state
   (accent = active, gray = paused, green = completed, amber = waiting for user, red = failed).
 - **Row hover actions**: reveals 2–3 subtle icons (pause/resume, open folder, `⋯`); all other operations live
-  in the right-click / `⋯` context menu.
+  in a vertical context menu opened at the pointer by right-click or `⋯`.
 - **Toolbar**: only Add, Search, Pause/Resume All, Alternative Speed Mode (`🐢`, qBittorrent-style), Settings, and (when a new GitHub Release is detected) a subtle **"⬆ Update available (`vX.Y.Z`)"** pill that opens the in-app updater dialog with release notes, download progress bar, and *Update & Restart* button.
 - **Collapsible details panel** (remembers open/closed state): click the Details heading or the toolbar toggle
   to expand or collapse the panel. The heading remains visible when collapsed. Tabs include *General* (URL, folder, hashes, timestamps),
@@ -102,7 +104,10 @@ for that origin resume. Add also offers **Analyze in browser** for pages with sc
   Windows also offers an optional **Fixed refresh rate (NVIDIA)** setting for hardware rendering. It shows existing
   fixed-refresh profiles and can restore an override applied by Ruscello. Restart the app after changing the profile.
 - **Downloads**: Default and temporary folders, connection presets, and editable simultaneous-download, per-host, and per-file limits. New desktop profiles start at Balanced (5/16/8). Existing limits are preserved. The FuckingFast batch override applies to its supported share and download hosts and keeps the main queue's slot count.
-- **Speed**: Global limits and Alternative speed limits (`🐢`).
+- **Speed**: Global and alternative download limits (`🐢`). Rate controls across the desktop use sliders
+  with finer steps at lower rates and a KiB/s field for precise entry. The low endpoint selects Unlimited
+  where supported. BitTorrent upload limits apply to data sent to peers. The status bar describes this
+  scope in the upload tooltip.
 - **Automation**: OS sleep inhibition, Queue completion actions (with cancellable countdown banner), Time-of-Day scheduler rules, automatic checksum verification (`.sfv`/`.md5`/`.sha256`), automatic archive extraction (`.zip`, `.7z`, `.tar.*`, external `.rar` sidecar, password list), post-download command hook, and Watch Folders (`.torrent`, `.dlc`, `.txt`).
 - **BitTorrent**: Listening port, DHT/PEX, UPnP/NAT-PMP, seed ratio/time targets, network interface binding.
 - **Categories & Rules**: User categories, default folders, auto-assignment rules.

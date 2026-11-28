@@ -193,6 +193,9 @@ impl Renderer {
     }
 }
 
+// The high bit marks masks saved after the upload column was introduced.
+const COLUMNS_WITH_UPLOAD: u8 = 1 << 7;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Preferences {
@@ -200,7 +203,9 @@ pub(crate) struct Preferences {
     pub(crate) appearance: Appearance,
     pub(crate) details: bool,
     pub(crate) motion: bool,
+    #[serde(deserialize_with = "deserialize_columns")]
     pub(crate) columns: u8,
+    pub(crate) column_widths: [Option<f32>; crate::app::Column::COUNT],
     pub(crate) renderer: Renderer,
     pub(crate) default_folder: Option<PathBuf>,
     pub(crate) temporary_folder: Option<PathBuf>,
@@ -233,7 +238,8 @@ impl Default for Preferences {
             appearance: Appearance::System,
             details: true,
             motion: true,
-            columns: 0b1_1111,
+            columns: COLUMNS_WITH_UPLOAD | 0b11_1111,
+            column_widths: [None; crate::app::Column::COUNT],
             renderer: Renderer::Hardware,
             default_folder: None,
             temporary_folder: None,
@@ -251,6 +257,15 @@ impl Default for Preferences {
             details_height: None,
         }
     }
+}
+
+fn deserialize_columns<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    let columns = u8::deserialize(deserializer)?;
+    Ok(if columns & COLUMNS_WITH_UPLOAD == 0 {
+        columns | COLUMNS_WITH_UPLOAD | crate::app::Column::Upload.mask()
+    } else {
+        columns
+    })
 }
 
 impl Preferences {
@@ -292,6 +307,20 @@ mod tests {
         assert_eq!(saved.locale, Locale::Italian);
         assert_eq!(saved.appearance, Appearance::Dark);
         assert!(!saved.details);
+        Ok(())
+    }
+
+    #[test]
+    fn older_column_visibility_is_preserved_and_upload_can_be_hidden() -> anyhow::Result<()> {
+        use crate::app::Column;
+
+        let mut old: Preferences = serde_json::from_str(r#"{"columns":1}"#)?;
+        assert_eq!(old.columns & Column::Size.mask(), Column::Size.mask());
+        assert_eq!(old.columns & Column::Status.mask(), 0);
+        assert_eq!(old.columns & Column::Upload.mask(), Column::Upload.mask());
+        old.columns ^= Column::Upload.mask();
+        let restored: Preferences = serde_json::from_slice(&serde_json::to_vec(&old)?)?;
+        assert_eq!(restored.columns, old.columns);
         Ok(())
     }
 

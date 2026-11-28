@@ -352,6 +352,11 @@ async fn exercise_shared_peer_budget(limit_seed: bool) -> TestResult {
 
 #[tokio::test]
 async fn tcp_and_utp_mode_resumes_when_tcp_accepts_without_a_peer_handshake() -> TestResult {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, Session, SessionOptions};
 
     let root = TempDir::new()?;
@@ -389,6 +394,8 @@ async fn tcp_and_utp_mode_resumes_when_tcp_accepts_without_a_peer_handshake() ->
     let relay = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let address = relay.local_addr()?;
     let (report_syn, mut syns) = mpsc::unbounded_channel();
+    let acknowledgments = Arc::new(AtomicUsize::new(0));
+    let observed_acks = acknowledgments.clone();
     let relay_task = tokio::spawn(async move {
         let mut data = [0u8; 2048];
         let mut receiver = None;
@@ -401,6 +408,10 @@ async fn tcp_and_utp_mode_resumes_when_tcp_accepts_without_a_peer_handshake() ->
                 receiver
             } else {
                 receiver = Some(sender);
+                // BEP 29 defines ST_STATE packets as acknowledgments without payload.
+                if length >= 20 && data[0] == 0x21 {
+                    observed_acks.fetch_add(1, Ordering::Relaxed);
+                }
                 if length >= 20 && data[0] == 0x41 && dropped_syns < 3 {
                     let fields = ([data[2], data[3]], [data[16], data[17]]);
                     let _ = report_syn.send(fields);
@@ -488,11 +499,13 @@ async fn tcp_and_utp_mode_resumes_when_tcp_accepts_without_a_peer_handshake() ->
             .start_or_resume(request.clone(), &CancellationToken::new())
             .await?;
     }
-    poll_until(&receiver, id, Duration::from_secs(20), |snap| {
+    let completed = poll_until(&receiver, id, Duration::from_secs(20), |snap| {
         matches!(snap.phase, TorrentPhase::Seeding)
     })
     .await?;
     assert_eq!(std::fs::read(started.completed_path)?, data);
+    assert!(acknowledgments.load(Ordering::Relaxed) > 0);
+    assert_eq!(completed.uploaded_bytes, 0);
     tcp_task.abort();
     relay_task.abort();
     receiver.shutdown().await;
@@ -1389,9 +1402,17 @@ async fn udp_port_conflict_keeps_requested_mixed_transport_or_reports_the_fixed_
     // Pinning the negotiated port restarts the session at the same TCP/UDP address.
     settings.listen_port = actual;
     settings.fallback_listen_port = false;
-    manager.apply_settings(settings).await?;
+    manager.apply_settings(settings.clone()).await?;
     assert_eq!(manager.listen_port().await, Some(actual));
     assert_paired_listener(actual).await?;
+
+    settings.listen_port = 0;
+    manager.apply_settings(settings).await?;
+    let automatic = manager
+        .listen_port()
+        .await
+        .ok_or("missing automatic port")?;
+    assert_paired_listener(automatic).await?;
     manager.shutdown().await;
     Ok(())
 }

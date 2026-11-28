@@ -221,6 +221,7 @@ engine restart mid-run → all resumed and completed). Zero `unwrap()` on runtim
 - [x] **M3.7** Light/dark theme (follows OS with manual override), bundled Inter font, Lucide icons (ISC) as icon font;
       **i18n with `fluent` supporting both English (`en`) and Italian (`it`) from day one, switchable at runtime in Settings**.
 - [x] **M3.8** Headless GUI tests with `iced_test` covering primary workflows + view snapshots.
+- [x] Queue rate columns are separate and resizable. Row actions open at the pointer, and desktop bandwidth controls use sliders with KiB/s entry.
 
 ### Definition of Done — M3
 Users can add, monitor, pause, resume, and cancel HTTP downloads from the GUI, switch UI language between
@@ -244,6 +245,7 @@ English and Italian, and experience ~0% idle CPU with zero UI thread blocking.
   - [x] Keep macOS UDP discovery alive through temporary address and routing errors.
   - [x] Keep shared BitTorrent UDP receivers alive on Windows when a remote peer's port becomes unreachable.
   - [x] Bind a common port for both requested BitTorrent transports and handle an occupied UDP port without silently dropping µTP.
+  - [x] Honor sub-block rate limits and live limit changes. Cover TCP and µTP uploads in seeding and concurrent download scenarios with loopback peers.
   - [ ] Verify remote qBittorrent peers in both directions and native macOS wake recovery.
 - [x] **M4.4** Details tabs: files with priorities, peers, trackers, piece map bar, speeds; "Force recheck".
 - [x] **M4.5** Map `librqbit` states → common `Status`; torrents appear in the unified list alongside other

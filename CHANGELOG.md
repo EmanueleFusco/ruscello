@@ -5,6 +5,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-28
+
+### Changed
+
+- Show download and upload speeds in separate, resizable queue columns. Column widths persist across sessions.
+- Open download actions in a vertical context menu at the pointer.
+- Use bandwidth sliders with precise KiB/s entry for global, alternate, scheduled, per-download, and BitTorrent limits.
+
+### Fixed
+
+- Keep torrent transfers running at caps below one BitTorrent block and apply updated limits to pending blocks.
+- Use a UDP-assigned port when BitTorrent selects a shared TCP and µTP port automatically.
+- Clarify that the global download limit is separate from torrent upload limits and that upload statistics measure torrent payload.
+
+### Security
+
+- Update the transitive `cookie` dependency to address RustSec advisory RUSTSEC-2026-0594.
+
 ## [1.1.0]
 
 ### Added
