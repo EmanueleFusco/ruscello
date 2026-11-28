@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-28
+
 ### Changed
 
 - Show download and upload speeds in separate, resizable queue columns. Column widths persist across sessions.

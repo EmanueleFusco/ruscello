@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-browser"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "cookie",
  "rusqlite",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-http"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2090,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-media"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aes",
  "bytes",
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "ruscello-resolver"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aes",
  "base64",

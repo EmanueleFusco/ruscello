@@ -19,5 +19,5 @@ prerelease suffix. Build on the target OS and architecture.
 
 Outputs go to `dist/`. The release workflow builds all ten packages together, smoke-checks their contents,
 and creates a draft GitHub release with all assets and SHA-256 sums when a stable `v*` tag matches the
-workspace version. Release notes come from the Unreleased section of the changelog. Before pushing a tag,
+workspace version. Release notes come from the matching version section of the changelog. Before pushing a tag,
 verify the CI and packaging workflows on the commit being tagged. Package names are part of the updater contract.
