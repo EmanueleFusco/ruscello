@@ -16,6 +16,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), follow
 ### Fixed
 
 - Keep torrent transfers running at caps below one BitTorrent block and apply updated limits to pending blocks.
+- Use a UDP-assigned port when BitTorrent selects a shared TCP and µTP port automatically.
 - Clarify that the global download limit is separate from torrent upload limits and that upload statistics measure torrent payload.
 
 ### Security

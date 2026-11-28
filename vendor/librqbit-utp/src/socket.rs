@@ -795,8 +795,12 @@ impl UtpSocketUdp {
             },
         )
         .map_err(|e| Error::Dualstack(Box::new(e)))?;
+        Self::from_bound_udp(sock, opts)
+    }
 
-        if bind_addr.is_ipv4() {
+    /// Start µTP on a UDP socket that is already bound.
+    pub fn from_bound_udp(sock: UdpSocket, opts: SocketOpts) -> crate::Result<Arc<Self>> {
+        if sock.bind_addr().is_ipv4() {
             if let Err(e) = sock.socket().set_dontfrag_v4(true) {
                 warn!("error setting IPV4_DONTFRAG: {e:#}");
             }

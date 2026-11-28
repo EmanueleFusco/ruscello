@@ -1402,9 +1402,17 @@ async fn udp_port_conflict_keeps_requested_mixed_transport_or_reports_the_fixed_
     // Pinning the negotiated port restarts the session at the same TCP/UDP address.
     settings.listen_port = actual;
     settings.fallback_listen_port = false;
-    manager.apply_settings(settings).await?;
+    manager.apply_settings(settings.clone()).await?;
     assert_eq!(manager.listen_port().await, Some(actual));
     assert_paired_listener(actual).await?;
+
+    settings.listen_port = 0;
+    manager.apply_settings(settings).await?;
+    let automatic = manager
+        .listen_port()
+        .await
+        .ok_or("missing automatic port")?;
+    assert_paired_listener(automatic).await?;
     manager.shutdown().await;
     Ok(())
 }

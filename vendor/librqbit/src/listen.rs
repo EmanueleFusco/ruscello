@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
-use librqbit_dualstack_sockets::{BindOpts, Error as SocketError, TcpListener};
+use librqbit_dualstack_sockets::{BindOpts, Error as SocketError, TcpListener, UdpSocket};
 use librqbit_utp::{BindDevice, UtpSocketUdp, UtpSocketUdpOpts};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
@@ -121,6 +121,28 @@ impl ListenerOptions {
             self.listen_addr
         };
 
+        // TCP and UDP can have different ephemeral port ranges. When both are required,
+        // let UDP select its port before binding TCP. Keep the raw UDP socket reserved
+        // until TCP succeeds so a failed attempt does not leave a running dispatcher.
+        let reserved_udp = if listen_addr.port() == 0
+            && self.require_utp
+            && matches!(self.mode, ListenerMode::TcpAndUtp)
+        {
+            let socket = UdpSocket::bind_udp(
+                listen_addr,
+                BindOpts {
+                    request_dualstack: true,
+                    reuseport: false,
+                    device: bind_device,
+                },
+            )
+            .map_err(|error| listener_error(error, 0, "error starting µTP listener"))?;
+            listen_addr = socket.bind_addr();
+            Some(socket)
+        } else {
+            None
+        };
+
         let tcp_socket = if self.mode.tcp_enabled() {
             let listener = TcpListener::bind_tcp(
                 listen_addr,
@@ -144,12 +166,17 @@ impl ListenerOptions {
         };
 
         let utp_socket = if self.mode.utp_enabled() {
-            let bind_result = UtpSocketUdp::new_udp_with_opts(
-                listen_addr,
-                utp_opts,
-                UtpSocketUdpOpts { bind_device },
-            )
-            .await;
+            let bind_result = match reserved_udp {
+                Some(socket) => UtpSocketUdp::from_bound_udp(socket, utp_opts),
+                None => {
+                    UtpSocketUdp::new_udp_with_opts(
+                        listen_addr,
+                        utp_opts,
+                        UtpSocketUdpOpts { bind_device },
+                    )
+                    .await
+                }
+            };
             match bind_result {
                 Ok(sock) => {
                     listen_addr = sock.bind_addr();
